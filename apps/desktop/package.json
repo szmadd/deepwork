@@ -1,0 +1,31 @@
+{
+  "name": "@deepwork/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron 壳：窗口、权限网关、内核子进程托管、IPC 通道",
+  "author": "深边AI",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k -n vite,electron -c cyan,magenta \"vite\" \"wait-on tcp:5173 && cross-env DEEPWORK_DEV=1 electron .\"",
+    "build:renderer": "vite build",
+    "icon": "node ../../tools/make-icon.js",
+    "start": "npm run build:renderer && electron .",
+    "dist": "npm run icon && npm run build:renderer && electron-builder --config electron-builder.yml",
+    "dist:dir": "npm run icon && npm run build:renderer && electron-builder --config electron-builder.yml --dir",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "44.3.0",
+    "electron-builder": "^26.15.3",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.5",
+    "wait-on": "^8.0.1"
+  }
+}

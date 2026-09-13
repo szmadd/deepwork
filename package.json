@@ -1,0 +1,48 @@
+{
+  "name": "deepwork",
+  "version": "0.1.0",
+  "private": true,
+  "description": "深边AI Work —— 本地优先的桌面级通用 AI Agent 工作台（DeepSeek Harness 内核 + Electron 壳）",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "npm run build -w @deepwork/protocol && npm run build -w @deepwork/core-host",
+    "clean": "npm run clean -w @deepwork/protocol && npm run clean -w @deepwork/core-host",
+    "demo": "npm run build && npm run demo -w @deepwork/core-host",
+    "smoke": "npm run build && node tools/smoke-ipc.js",
+    "test:diff": "npm run build && node tools/diff-selftest.js",
+    "test:tools": "npm run build && node tools/tool-guard-test.js",
+    "test:replay": "npm run build && node tools/replay-verify.js",
+    "test:partial": "npm run build && node tools/approval-partial-test.js",
+    "test:terminal": "npm run build && node tools/terminal-test.js",
+    "test:acp": "npm run build && node tools/acp-conformance.js",
+    "test:real-dsh": "npm run build && node tools/real-dsh-e2e.js",
+    "test:skills": "npm run build && node tools/skill-system-test.js",
+    "test:skillctx": "npm run build && node tools/skill-context-test.js",
+    "test:memory": "npm run build && node tools/memory-test.js",
+    "test:schedule": "npm run build && node tools/schedule-test.js",
+    "test:connectors": "npm run build && node tools/connector-test.js",
+    "test:usage": "npm run build && node tools/usage-test.js",
+    "test:browser": "npm run build && node tools/browser-test.js",
+    "test:office": "npm run build && node tools/office-test.js",
+    "test:real-dsh-mcp": "npm run build && node tools/real-dsh-mcp-test.js && node tools/model-endpoint-test.js",
+    "test:modelcfg": "npm run build && node tools/model-endpoint-test.js",
+    "verify": "npm run build && node tools/diff-selftest.js && node tools/tool-guard-test.js && node tools/replay-verify.js && node tools/smoke-ipc.js && node tools/approval-partial-test.js && node tools/terminal-test.js && node tools/acp-conformance.js && node tools/real-dsh-e2e.js && node tools/skill-system-test.js && node tools/skill-context-test.js && node tools/memory-test.js && node tools/schedule-test.js && node tools/connector-test.js && node tools/usage-test.js && node tools/browser-test.js && node tools/office-test.js && node tools/model-endpoint-test.js && node tools/real-dsh-mcp-test.js",
+    "dev": "npm run build && npm run dev -w @deepwork/desktop",
+    "start": "npm run build && npm run start -w @deepwork/desktop",
+    "dist": "npm run build && npm run dist -w @deepwork/desktop",
+    "dist:dir": "npm run build && npm run dist:dir -w @deepwork/desktop",
+    "test:package": "node tools/package-verify.js",
+    "typecheck": "npm run typecheck -w @deepwork/protocol && npm run typecheck -w @deepwork/core-host"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh": "0.1.5-rc.1",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.6.3"
+  }
+}

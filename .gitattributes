@@ -1,0 +1,36 @@
+# ── 换行符策略 ────────────────────────────────────────────
+# 仓库内统一存 LF，检出时也保持 LF。
+# 本项目多处依赖逐字节比对（会话日志回放、差异还原断言），
+# 若发生 CRLF 转换会让这些断言出现难以定位的假失败。
+* text=auto eol=lf
+
+# ── 二进制文件：禁止任何换行符转换 ────────────────────────
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.icns binary
+*.webp binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary
+*.exe  binary
+*.dll  binary
+*.so   binary
+*.dylib binary
+*.node binary
+*.asar binary
+*.pak  binary
+
+# Office / 版式归档文件本身是 zip 容器（二进制）。
+# 必须显式声明：即使 git 的 auto 探测通常也能判对，但本项目的 fixture
+# （tools/fixtures/sample*.ofd）要参与逐字节校验（CRC32 / zip 结构），
+# 一旦发生换行符转换会直接变成「CRC32 校验失败」——症状像代码 bug，根因在检出。
+*.ofd  binary
+*.docx binary
+*.xlsx binary
+
+# ── 自动生成的文件：折叠 diff，减少评审噪音 ───────────────
+package-lock.json linguist-generated=true

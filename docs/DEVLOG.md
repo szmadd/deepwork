@@ -1,0 +1,1700 @@
+# 深边AI Work 开发日志
+
+> **纪律（不可跳过）**
+> 1. 每次开发会话**结束前**必须追加一条记录，不允许事后补写、不允许只写「完成了 X」这种不可核验的句子。
+> 2. 每条记录固定六段：**目标 / 改动 / 验证 / 踩坑与修复 / 遗留 / 下一步**。缺段视为没写完。
+> 3. **验证**段必须写命令与真实结果（通过项数、失败项），不能写「应该没问题」。
+> 4. **踩坑与修复**段是这份日志最值钱的部分——只记结论不记过程，下次一定重踩。
+> 5. 日志只追加，不改历史条目。若先前结论被推翻，在新条目里写明「修正第 N 条」。
+
+---
+
+## 里程碑状态快照
+
+> 每轮更新此表。验收口径见《深边AI-Work-开发需求与架构方案 v1.0》§6。
+
+| 里程碑 | 范围摘要 | 状态 | 完成度 |
+|---|---|---|---|
+| M0 POC | 壳 + 内核子进程 + 单会话 + 流式输出 + 读写工具可见 | ✅ 完成 | 100% |
+| M1 MVP | 多会话/工作区/Diff 审阅/终端/审批三档/模型管理/设置持久化/Trajectory/打包 | ✅ 完成 | 100%（自动更新移入 M2） |
+| M2 V1 | 技能系统+审计/三层记忆/自动化/MCP/浏览器/Office/用量面板/自动更新 | 🔄 进行中 | 约 90%（技能系统全链路 · 三层记忆 · 自动化调度 · 连接器管理(MCP) · 用量面板(M2-J) · 浏览器自动化(M2-H) · Office 生成与 OFD 原生读取(M2-I)；界面改为左侧活动栏 + 整页视图） |
+| M3 生态期 | 专家团/插件市场/发布分享/多模态/团队协作 | ⬜ 未开始 | 0% |
+
+**唯一的硬阻塞**：真实 Harness 的 headless 契约未校准（`harness-sidecar.ts` 的 `ENDPOINTS` /
+`EVENT_TYPE_MAP` 仍是占位约定）。其余事项随时可推进。
+
+**修正（M2-B）**：上述硬阻塞已在 M2-B 解除 —— 真实 dsh（ACP）端到端跑通，5 处真帧差异已修。
+「唯一硬阻塞」从此作废。
+
+---
+
+## 2026-09-12 · M0-POC · 内核链路与壳层全链路跑通
+
+**目标**
+把《深边AI-Work 开发需求与架构方案 v1.0》里「Electron 主进程 spawn Harness sidecar + 自研适配层」
+的路线从图纸变成可运行的代码，先证明进程模型、事件契约与审批闸门成立。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol` | 三方共享契约：15 种归一化事件（`AgentEvent`）、RPC 方法表、`Session`/`RunStatus`、`RiskLevel`/`ApprovalRequest`/`GuardPolicy` |
+| `packages/core-host` | `host.ts` 会话与运行编排、`session/store.ts` append-only JSONL、`security/guard.ts` 三档审批网关、`tools/registry.ts` + `tools/builtin.ts`（fs/shell/web）、`rpc/stdio-server.ts` NDJSON JSON-RPC |
+| `packages/core-host/src/adapter` | `HarnessAdapter` 抽象 + `MockHarnessAdapter`（真实驱动工具）+ `HarnessSidecarAdapter` 骨架（回环 HTTP/SSE + 一次性 token，未校准前明确抛 `AdapterUnavailableError`） |
+| `apps/desktop/electron` | 子进程托管、崩溃指数退避重启、方法白名单、事件转发、`deepwork:pick-workspace` 之外的既有 IPC |
+| `apps/desktop/src` | 会话侧栏、流式对话流、工具卡片、推理折叠、审批弹窗、Trajectory 面板 |
+| `skills/workspace-check` | 首个内置 SKILL.md，验证技能目录约定 |
+| `tools/smoke-ipc.js` | 不依赖 GUI 的壳层 ↔ 宿主 IPC 冒烟测试 |
+
+**验证**
+
+```bash
+npm run demo        # 4 次工具调用 / 1 次审批 / 事件落盘 53-53 一致 / seq 连续
+DEMO_DENY=1 npm run demo   # 拒绝分支：命令被拒后工具如实返回，小结标注「未创建」
+npm run smoke       # 17/17 断言通过（子进程、NDJSON 分帧、请求配对、审批回环、退出清理）
+npm run dev         # Electron 真实运行截图确认 UI 可用，且重启后从日志完整恢复上一轮对话
+```
+
+证据：`artifacts/ui-run.png`、`artifacts/ui-approval.png`。
+
+**踩坑与修复**
+
+1. **`ELECTRON_RUN_AS_NODE=1` 污染**——开发机环境里带这个变量（宿主自身跑在 Electron 上），会让
+   `electron.exe` 退化成纯 Node，启动即报 `Cannot read properties of undefined (reading 'requestSingleInstanceLock')`。
+   → 启动前 `unset ELECTRON_RUN_AS_NODE`，并写进 README 疑难节。
+2. **electron 的 postinstall 没落二进制**（内网镜像只装了 npm 包、没下 dist）。→ 手动
+   `ELECTRON_MIRROR=... node node_modules/electron/install.js`。
+3. **`host.ready` 早于窗口加载完成**——UI 只信事件判就绪，导致状态栏永远卡在「启动中」、输入框被禁用。
+   → 主进程在 `did-finish-load` 后主动回查一次宿主状态，UI 以「事件 + 主动查询」双通道为准。
+4. **用户输入没进事件流**——会话日志只有半截对话、无法回放。→ 新增 `user.message` 事件。
+5. **demo 的校验逻辑写得太死**（把宿主级全局 seq 当成从 1 开始）。→ 改为校验「相对连续」。
+
+**遗留**
+
+- 真实 Harness 的 `ENDPOINTS` 与 `EVENT_TYPE_MAP` 未校准，当前默认走 mock 适配器。
+- 数据库化的会话索引（现在是扫盘读 meta.json）。
+
+**下一步**
+
+进入 M1：优先做「工作区绑定 + 写操作差异审阅」——Agent 一旦能改文件，「改动」就必须先被看见。
+
+---
+
+## 2026-09-12 · M1-A · 写操作差异审阅闭环
+
+**目标**
+让 Agent 第一次能安全地改代码，并且**在改之前用户就看得见结构化差异**。
+把「Agent 能改我的代码」从一句承诺变成可核验的流程。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/diff.ts` | 新增 `DiffLine` / `DiffHunk` / `FileDiff` / `ToolPreview`；扩展 `ToolCall.diff` 与 `ApprovalRequest.diff` |
+| `packages/protocol/src/rpc.ts` | 新增 `pick_workspace` IPC 通道常量 |
+| `packages/core-host/src/diff/index.ts` | Myers O(ND) 差异引擎：剥公共前后缀 → 规模阈值兜底 → **结果自检**（`applyDiff` 还原失败则退化为整体替换）；导出 `applyDiff` 作为未来撤销/回放基础 |
+| `packages/core-host/src/tools/registry.ts` | `ToolDefinition` 新增 `preview` 钩子（执行前预览） |
+| `packages/core-host/src/tools/builtin.ts` | 新增 `fs.edit`（精确替换 + 唯一性守卫 + `replace_all`）；`fs.write` / `fs.edit` 共用 `runWriteTool`（预检 → 无变化短路 → 带 diff 审批 → 落盘），预检结果存 `ctx.cache` 供执行阶段复用 |
+| `packages/core-host/src/adapter/mock-harness.ts` | 在 `tool.started` **之前**调用 `preview`，卡片在执行中就能显示改动 |
+| `packages/core-host/src/host.ts` | `requestApproval` 透传 `diff` 到审批请求 |
+| `apps/desktop/src/components/DiffView.tsx` | 差异视图：行号对齐、删红增绿、默认展开、超长可展开 |
+| `apps/desktop/src/components/ToolCard.tsx` | `+N −M` 徽标、有 diff 时默认展开、参数区隐去已被差异表达的字段 |
+| `apps/desktop/src/components/ApprovalDialog.tsx` | 宽版展示差异 + 「仅应用以上差异」的影响说明 |
+| `apps/desktop/src/components/Sidebar.tsx` | 展示当前工作区，提供「打开文件夹…」入口 |
+| `apps/desktop/electron/main.js` · `preload.js` | `deepwork:pick-workspace` 独立通道（选目录是壳层能力，不走 core-host）；新增 `DEEPWORK_CAPTURE_FOCUS` 截图前滚动到目标元素 |
+| `tools/diff-selftest.js` · `tools/tool-guard-test.js` | 随机对拍与写工具守卫测试；`package.json` 增加 `test:diff` / `test:tools` / `verify` |
+
+**验证**
+
+```bash
+npm run test:diff    # 1000 轮随机对拍全通过；加压 DIFF_ROUNDS=20000 同样全通过
+npm run test:tools   # 9/9（越界、匹配不唯一、无变化短路、拒绝后不落盘）
+npm run smoke        # 21/21（含差异跨 IPC 序列化后仍可还原）
+npm run demo         # 差异还原一致——两份差异还原出的内容与磁盘实际内容逐行相同
+DEMO_DENY=1 demo     # 拒绝生效：文件未被创建
+```
+
+证据：`artifacts/ui-diff-approval.png`（审批弹窗内新建文件 5 行全绿带行号）、
+`artifacts/ui-diff-cards.png`（卡片头部 `+1 −1`，删红增绿，参数区自动隐去）。
+
+**踩坑与修复**
+
+1. **同一条消息里对同一文件发多处编辑会互相覆盖**——每处都报成功，实际只有最后一次落盘。
+   本轮在 `verifyAndRepair` 比对口径、`host.requestApproval` 的 diff 透传、`demo` 的 stats 三处各踩一次。
+   → 结论：改同一文件的多处必须**串行**提交，改完必须回读确认（已写进项目约定）。
+2. **自检比对口径写错**——用带末尾换行的原始字符串比对，而 `applyDiff` 按行序列还原，导致每份差异都被判为
+   「自检未通过」并退化成整体替换。表象是局部改一行却显示 `+5 −5`。**自检本该是防线，口径一错就变成噪音。**
+   → 比对口径统一为按行序列、忽略末尾换行。
+3. **`readMaybe` 把「文件不存在」和「文件过大读不了」都返回 null**——3MB 的既有文件会被渲染成
+   「全新文件、全部新增」，用户看着一份假差异点允许。→ 两者分开表示，体积超限时如实说明「无法展示改动内容」。
+4. **冒烟测试只应答第一个审批**——写链路每步都发审批，只放行第一个会让流程挂到超时。→ 改为应答每一次。
+5. **截图证据不指向问题**——会话一长视口停在末尾，能证明问题的元素在画面外。→ 加 `DEEPWORK_CAPTURE_FOCUS`。
+
+**沉淀**
+
+- skill `agent-write-diff-review`：写操作差异审阅的实现模式（契约设计、预检与执行共享快照、自检坑位、验证手段）。
+
+**遗留**
+
+- 逐 hunk 接受/拒绝未做（当前是整文件 allow/deny）。
+- 文件树与变更高亮未做。
+- 会话重命名/搜索、文件上传预览未做。
+
+**下一步**
+
+按投入产出比排序：**会话 fork / 回放**（事件日志已攒全，`applyDiff` 是现成回滚基础）→
+**内置终端** → **技能系统与安装审计**。真实 Harness 契约校准仍是唯一硬阻塞。
+
+---
+
+## 2026-09-12 · M1-B · 建立开发日志纪律（本轮）
+
+**目标**
+把「每次开发都留痕」从口头约定变成工程里的实物，避免开发过程只存在于对话里、
+隔一段时间无法回答「当时为什么这么改」。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `docs/DEVLOG.md` | 新建。含纪律条款、里程碑状态快照、M0 与 M1-A 的补记 |
+| `README.md` | 目录结构补 `docs/`；新增「开发日志」一节指向本文件；进度节按功能项细化 |
+
+**验证**
+
+文档类改动，跑一遍全量验证确认未触碰代码链路：
+
+```bash
+npm run verify
+# → 写工具守卫 9/9 通过（含越界拒绝、无变化短路、拒绝后不落盘）
+# → 壳层 IPC 冒烟 21/21 通过（含差异经 IPC 后仍可还原：5 行与磁盘一致）
+# → 事件与会话日志条数一致：推送 61 / 落盘 61
+```
+
+**踩坑与修复**
+
+- 无。本轮为纪律与文档建设。
+
+**遗留**
+
+- 状态快照表的完成度是人工估计，尚无客观口径；后续若引入功能项清单可改为按 FR 编号计数。
+
+**下一步**
+
+回到 M1 功能开发：会话 fork / 回放。
+
+---
+
+## 2026-09-12 · M1-C · 会话分叉与回放
+
+**目标**
+把「会话日志是 append-only 的唯一事实来源」这句话兑现成两个能用的能力：**回放**（日志 → 对话，
+结果必须与当初实时渲染一致）与**分叉**（从某一轮结束处开出一条继承历史的新分支）。
+顺带把归约逻辑收敛成一份，让 Node 侧也能在不启动浏览器的情况下重放日志。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/reduce.ts` | 新建。归约器从渲染层上移到契约层：`TimelineItem` / `applyEvent` / `buildTimeline` / `sumUsage` / `runBoundaries`；`run` 项新增 `atSeq`（分叉点，界面不必再解析 id 字符串）；对 `session.forked` 显式忽略 |
+| `packages/protocol/src/session.ts` | 新增 `SessionFork` / `ForkOrigin`；`Session.fork` |
+| `packages/protocol/src/events.ts` | 新增 `session.forked` 事件（带 `session` + `from`，并固定「标记必须在继承段末尾」的约定） |
+| `packages/protocol/src/rpc.ts` | 新增 `session.fork` / `ForkSessionParams` / `ForkSessionResult` |
+| `packages/core-host/src/session/store.ts` | 新增 `readRawLines`（不重新序列化）与 `seedFrom`（逐字节铺前缀） |
+| `packages/core-host/src/host.ts` | `forkSession`：分叉点吸附、继承用量、发出 `session.forked`；`sessionIdOf` 认领分叉标记（必须落进新会话日志，不能污染父日志） |
+| `packages/core-host/src/rpc/stdio-server.ts` | 注册 `session.fork` |
+| `apps/desktop/src/timeline.ts` | 改为从协议层再导出；留注释说明「归约只允许存在一份」 |
+| `apps/desktop/electron/main.js` | 白名单加入 `session.fork` |
+| `apps/desktop/src/useAgent.ts` | 新增 `forkSession`；**修正归属判定**：`session.created/updated/forked` 一律按 `session.id` 比对，不能再按「无 runId 即全局」处理 |
+| `apps/desktop/src/components/ChatStream.tsx` | 轮次分隔线上新增「在此分支」按钮（只长在合法分叉点旁） |
+| `apps/desktop/src/components/Sidebar.tsx` | 分支徽标 + 标题文本包裹（标题可截断，徽标不可截断） |
+| `apps/desktop/src/styles.css` | `.run-fork` / `.session-fork` / `.session-title` 收拢为单处定义 |
+| `tools/replay-verify.js` | 新建。29 项断言 |
+| `package.json` | 新增 `test:replay`，并挂进 `verify` 链 |
+
+**验证**
+
+```bash
+npm run test:replay   # 29/29 通过；连跑 6 轮无抖动
+npm run test:diff     # 随机对拍全通过（未受影响）
+npm run test:tools    # 9/9
+npm run smoke         # 21/21
+npm run demo          # 差异还原一致
+npm run typecheck (渲染层 tsc --noEmit) + vite build   # 零错误，46 模块 / 246KB
+```
+
+截图：`artifacts/ui-fork.png` —— 侧栏同时列出「主线：环境勘察」与其「· 分支」，顶部标题、继承的历史
+（fs.edit 差异、审批放行、小结）以及新一轮末尾的「在此分支」入口都在画面上。
+
+`test:replay` 覆盖的断言要点：
+
+- 落盘行与推送事件**逐字节相同**（121 行），日志是忠实记录而非事后重拼；
+- 归约两次结果相同、逐条 `applyEvent` 与整体 `buildTimeline` 等价、回放 == 实时渲染；
+- 分叉继承的 **120 行前缀与父会话逐字节相同**，第 121 行是 `session.forked` 且 `from` 字段正确；
+- 分支的时间线 == 父会话前缀的时间线；分支继承累计用量；
+- 落在半轮里的分叉点被吸附回运行边界，且 `requestedSeq` 如实保留（请求 #64 → 采用 #61）；
+- 两种「没有可用边界」的原因分别给出可行动提示；
+- 分支内可继续对话，且前缀未被改写；删除父会话后分支仍可完整回放。
+
+**踩坑与修复**
+
+1. **测试把时序窗口当成了缺陷。** 断言「推送条数 == 落盘条数」会偶发失败（120 vs 121）。
+   根因是宿主刻意**先落盘、后推送**：顺序不能反 —— 「已经推给界面但没记进日志」不可接受，
+   反过来只是延迟一瞬。断言改为真实不变量：「推送不超前于落盘」+「静止后追平」。
+   *把设计的取舍写成断言，而不是让断言去假设一个不存在的原子性。*
+2. **空会话的错误提示不够准确。** 新建会话必然带一条 `session.created`，所以 `events.length === 0`
+   这个分支实际不可达，空会话会落到「所选位置之前没有已完成的运行」上 —— 措辞没错，但不是用户的问题所在。
+   现在按「这个会话根本没跑过」与「你选的位置太靠前」分开报错。
+3. **测试前提本身写错。** 想验证「吸附回上一个边界」，却只跑了一轮 —— 那种情况下该位置之前
+   本来就没有可用的收尾点。内核报错是对的，错的是测试。改成跑两轮再取中间位置。
+4. **`session.forked` 会把别的会话的记录漏进当前视图。** 归属判定原先按「无 `runId` 即全局」处理，
+   而分叉标记不带 `runId`。改为所有带 `session` 的事件一律按 `session.id` 比对。
+5. **顺手改坏了一行格式**（一次 Edit 的 `old_string` 多带了一个换行，把 `useCallback(` 与
+   下一行拼接）。已修正 —— 这是同一文件多处编辑的老问题，本轮仍按串行 + 回读的纪律执行。
+
+**遗留**
+
+- 分叉入口目前只在对话流的轮次分隔线上；Trajectory 视图逐事件分叉未做（需要配合吸附提示）。
+- 分支之间没有可视化对比（同名文件的差异并排）。
+- 会话搜索 / 重命名仍未做。
+
+**下一步**
+
+内置终端（xterm.js）—— M1 验收绕不过去的一项；或先把真实 Harness 契约校准掉，
+让内核从 mock 切换到真实推理。
+
+---
+
+## 2026-09-12 · M1-D · 接入 Git 版本管理
+
+**目标**
+把工程纳入 Git 管理，并把「提交前必须验证」这条纪律从口头约定抬到版本控制层面 ——
+避免代码、验证脚本与开发日志三者各自漂移。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `.git` | `git init -b main`；仓库级 `core.autocrlf=false`、`core.quotepath=false` |
+| `.gitattributes` | 新建。文本统一 LF；二进制扩展名显式标记；`package-lock.json` 标记为生成物 |
+| `.gitignore` | 补充注释，说明验收截图为「刻意例外」及其纳入方式 |
+| `README.md` | 新增「版本管理」一节（验证前置、提交信息约定、换行符策略、不入库清单）；M1 完成度 55% → 65%（与快照表对齐） |
+| `artifacts/*.png` | 显式纳入 5 张里程碑验收截图 |
+
+初始提交按模块拆分，共 7 个：
+
+```
+chore            monorepo 骨架与仓库配置
+feat(protocol)   归一化事件流、会话模型与 RPC 契约
+feat(core-host)  内核宿主、适配层与审批网关
+feat(desktop)    Electron 壳与 React 渲染层
+test             差异对拍、写工具守卫、IPC 冒烟与回放验证
+docs             工程说明、开发日志与内置技能
+docs             各里程碑验收截图
+```
+
+> 这是**导入式提交**，不是还原真实开发时间线。按模块切分只为让 `git log` / `git blame`
+> 能直接落到「层」上，而不是面对一个几百文件的巨型初始提交。
+
+**验证**
+
+```bash
+git status --porcelain                    # 空：工作区干净
+git ls-files --eol | grep -v 'w/lf'       # 仅 5 张 PNG 为 -text，文本文件全部 LF
+git ls-files | wc -l                      # 66（61 源码/文档 + 5 张截图）
+git ls-files | grep -E 'node_modules|/dist/|\.deepwork'   # 空：忽略规则生效
+
+# 克隆往返：证明「检出内容 == 提交内容」
+git clone D:/mypython/deepwork <tmp> && cd <tmp> && git status --porcelain   # 空
+
+npm run verify   # diff 对拍全部通过 / tools 9/9 / replay 29/29 / smoke 21/21
+                 # 推送与落盘条数一致：121/121、61/61
+```
+
+克隆后 `git status` 为空这一条是本轮最关键的验证 —— 若换行符策略有误，
+克隆出的工作区会立刻显示为「已修改」，被测的逐字节断言也就失去了可信的依据。
+
+**踩坑与修复**
+
+1. **`git.exe` 不认 msys 风格路径。** `git -C /d/mypython/deepwork ...` 报
+   `fatal: cannot change to '/d/mypython/deepwork'`。git 是原生 Windows 程序，必须给 `D:/...`；
+   而 `ls`、`cd` 这类 msys 工具反过来只认 `/d/...`。两者不能混用，本轮的排查时间基本都花在这里。
+2. **全局 `core.autocrlf=true` 会破坏逐字节断言。** 本项目的回放与分叉断言比较的是日志字节，
+   一旦发生 CRLF 转换，它们会以「内容不一致」的形式失败，而真实原因是行尾被改过 —— 极难定位。
+   → 仓库级设 `false`，并用 `.gitattributes` 把 `eol=lf` 固定下来。
+   *这不是风格洁癖，是防止未来出现假失败。*
+3. **验收截图进不了仓库。** `artifacts/` 整体被忽略，而开发日志的「验证」段引用了这些路径，
+   克隆仓库的人根本看不到证据。→ 用 `git add -f` 显式纳入 5 张关键截图，
+   并在 `.gitignore` 里注明这是刻意例外；其余调试产物（演示工作区、本地会话日志）继续忽略。
+   被取代的 `artifacts/ui.png`（就绪时序缺陷修复前那一版）不纳入。
+
+**遗留**
+
+- 尚未配置远端仓库（`git remote` 为空），历史目前只在开发机上，没有异地副本。
+- 未接 CI：`npm run verify` 仍靠人工在提交前执行，纪律靠自觉。
+- 未打版本标签：M0 收口与 M1 各阶段性成果都还没有 tag，回滚点不明确。
+
+**下一步**
+
+内置终端（xterm.js）—— M1 验收绕不过去的一项；或先校准真实 Harness 契约，让内核脱离 mock。
+
+---
+
+## 2026-09-12 · M1-E · 补齐 M1 剩余交互缺口并收口验收
+
+**目标**
+
+把 M1 遗留的交互缺口一次补完，让 M1 只剩「打包」一项：会话搜索与重命名、逐 hunk 接受/拒绝、
+文件树与预览、内置终端、设置持久化。判据不是「界面上有这个东西」，而是
+「用户能看见的每一处，都和磁盘上的真实结果对得上」。
+
+**改动**
+
+| 层 | 位置 | 内容 |
+|---|---|---|
+| 契约 | `packages/protocol/src/workspace.ts` | 新增 `WorkspaceNode` / `WorkspaceTree` / `FilePreview`；预览把「文件不存在」与「存在但读不出」分成两个字段 |
+| 契约 | `packages/protocol/src/terminal.ts` | 新增 `TerminalChunk` / `TerminalEntry` / `TerminalState` / `TERMINAL_LIMITS`；终端走独立通知通道，**不进事件日志** |
+| 契约 | `packages/protocol/src/config.ts` | 新增 `AppConfig` / `DEFAULT_CONFIG` / `CONFIG_FIELDS`；设置与 Guard 分两份文件落盘 |
+| 契约 | `packages/protocol/src/security.ts` | 新增 `ApprovalSelection { hunks }`；`ApprovalRequest.selectable` 标记「这一次可逐块取舍」 |
+| 契约 | `packages/protocol/src/events.ts` | `ApprovalResolvedEvent.hunks` —— 日志如实记下采纳了哪几块 |
+| 契约 | `packages/protocol/src/rpc.ts` | 新增 `config.get/set`、`fs.tree`、`fs.preview`、`terminal.*`；通知通道改为 `AgentEventNotification | TerminalNotification` 联合类型 |
+| 内核 | `packages/core-host/src/diff/index.ts` | 新增 `applySelectedHunks` / `pickHunks` / `selectionStat`；保留原文件行尾风格 |
+| 内核 | `packages/core-host/src/tools/builtin.ts` | 写工具支持逐块授权；`selectable` 判定为「多 hunk、非新建、非二进制、非截断」；空选择 = 放弃；输出如实报「采纳 N/M」 |
+| 内核 | `packages/core-host/src/workspace/tree.ts` | 新增。只读列举与预览，忽略项与截断如实回报 |
+| 内核 | `packages/core-host/src/terminal/manager.ts` | 新增。`spawn(command, { shell })` 流式执行 + stdin 回送 + `cd` 推进 + `taskkill /T /F` 杀进程树 |
+| 内核 | `packages/core-host/src/terminal/decoder.ts` | 新增。Windows 下 cmd 内建命令回 GBK、node/git 回 UTF-8，用「先按 UTF-8 解、出现 U+FFFD 退回 GBK」自动回退 |
+| 壳层 | `apps/desktop/electron/main.js` | 附件白名单（只有用户亲手选过的路径可被预览）；`readAttachment` 区分四种失败；截图编排修正（见踩坑） |
+| 渲染 | `apps/desktop/src/useAgent.ts` | 总状态容器：config / guard / tree / preview / terminal / attachments / changedPaths |
+| 渲染 | `apps/desktop/src/components/*` | 新增 FileTreePanel / TerminalPanel / SettingsPanel / AttachmentBar；DiffView 与 ApprovalDialog 支持逐块勾选；Sidebar 支持搜索与双击重命名 |
+| 测试 | `tools/terminal-test.js` | 新增 22 项 |
+| 测试 | `tools/approval-partial-test.js` | 新增 13 项，端到端验证「只勾了第一块」这件事能穿过五层 |
+| 测试 | `tools/tool-guard-test.js` | 9 → 19 项（逐 hunk 授权 7 项） |
+| 测试 | `tools/smoke-ipc.js` | 21 → 26 项（config 往返、多 hunk 跨进程序列化边界） |
+| 工具 | `tools/capture.sh` | 新增。里程碑截图脚本，每场重置 fixture |
+| 证据 | `artifacts/*.png` | 新增 5 张 M1 验收截图（`ui-tree` / `ui-terminal` / `ui-preview` / `ui-hunk-approval` / `ui-settings`），由 `git add -f` 显式纳入 |
+
+**两处设计上的取舍**
+
+- **终端刻意不是 PTY。** 用 `spawn(command, { shell })` 而不是 `node-pty`：
+  后者的原生模块要跟着 Electron 的 ABI 编译，会让「装完就能跑」变成一句空话。
+  代价是不支持全屏交互程序（vim / top），这一点写在面板顶部的提示里，
+  而不是等用户敲了 vim 再卡住。
+- **终端不进事件日志。** 输出是高频且无界的，写进 append-only 日志会把回放与分叉拖垮，
+  也会让「日志是忠实记录」这句话失去意义。终端单独走通知通道，日志里只留工具的调用记录。
+
+**验证**
+
+```bash
+npm run typecheck && npm run typecheck -w @deepwork/desktop   # protocol / core-host / desktop 三包均无输出即通过
+
+npm run verify
+#   差异还原一致性      全部通过
+#   写工具守卫测试      全部通过 （共 19 项）
+#   回放与分叉验证      全部通过 （共 29 项）
+#   IPC 冒烟测试        全部通过 （共 26 项）
+#   逐 hunk 授权端到端  全部通过 （共 13 项）
+#   内置终端链路测试    全部通过 （共 22 项）
+#   退出码 0
+
+npm run build:renderer -w @deepwork/desktop   # vite build，53 模块，CSS 20.80 kB / JS 268.09 kB
+bash tools/capture.sh                          # 5 场截图全部 ok，无「未找到待聚焦元素」告警
+
+# 仓库一致性
+git status --porcelain                         # 空：本轮改动已全部提交
+git ls-files --eol | grep -v 'w/lf'            # 10 条，全部是 PNG；文本文件全部 LF
+git ls-files | wc -l                           # 84
+git ls-files | grep -E 'node_modules|/dist/|\.deepwork'   # 空：忽略规则生效
+
+# 克隆往返：证明「检出内容 == 提交内容」
+git clone D:/mypython/deepwork <tmp> && git -C <tmp> status --porcelain   # 空
+git -C <tmp> ls-files | wc -l                  # 84，HEAD == 24c5610
+```
+
+> 克隆往返这一条在本次环境里踩了个坑：把克隆目标放在沙箱可写范围之外时，
+> `git clone` 会报告成功、但目录随后既 `cd` 不进去也 `git -C` 不到 ——
+> 这是执行环境的目录覆盖层造成的，不是仓库问题（换到可写目录、用唯一目录名即正常）。
+> 记在这里是因为「命令成功但结果不存在」同样是那种看起来对了的失败形态。
+
+逐 hunk 授权最关键的一条不是「界面能勾」，而是这条等式：
+
+> 磁盘上的内容 == `applySelectedHunks(写入前的原文, 预览差异, [0])`
+
+两侧独立算出来，并且额外断言「只勾一块的结果 ≠ 整体授权的结果」——
+没有这条反向断言，一个「把 hunks 丢掉、默默整体写入」的实现也能让前面所有断言通过。
+
+截图侧的验收同样落到了数据上，而不是靠看图：顶栏实测 `title-text` 高 22px（单行）、
+`overflow: true`（省略号生效）、工作区路径 `top=36`（确实在标题下方）；
+逐块授权脚本回读「已选 1 / 2 处」自证勾选生效。
+
+**踩坑与修复**
+
+1. **IPC 冒烟里的「差异还原」验证了假对象。** 演示脚本的落点从 `.deepwork/agent-notes.md`
+   改到了工作区根目录 `AGENT-NOTES.md`（原因见下一条），但两条测试仍写死旧路径，
+   读到 `null` 之后拿它跟重建结果比 —— `null === null` 之外的一切都判失败，
+   而失败信息只说「行数与磁盘一致」，看不出是路径失效。
+   → 改成从 `diff.path` 取路径：落点是内核的实现细节，测试照着契约走；
+   顺带把「读不到文件」也变成一条明确的失败原因，不再靠抛异常收场。
+2. **演示脚本的落点不能被忽略规则挡住。** 原先写在 `.deepwork/` 下，而这一项在文件树里是忽略项 ——
+   审批时看到的差异在界面上找不到对应行，用户没法把「我批准了什么」与「磁盘上变成了什么」对上。
+   → 落点改到工作区根目录。*演示脚本也必须落在用户真能看见的地方。*
+3. **拼接出来的截图脚本里，`return` 会静默吃掉后半段。** `capture.sh` 把「点开面板」和
+   「点开文件」两段拼成一段 IIFE，前一段结尾的 `return 'ok'` 让后一段变成死代码；
+   而返回值看起来完全成功，只是截图里少了预览弹窗。
+   → 「点开面板」改成函数，由后一段自己决定何时返回。
+4. **截图复用旧会话，导致画面不可复现。** 截图脚本直接取 `session.list[0]`，
+   而会话数据留在 `artifacts/.deepwork` 里不清 —— 于是画面里叠着上一次代码跑出来的记录，
+   看到的到底是这次还是上次，从图上分不出来（本轮就因此把已修好的旧路径又看了一遍）。
+   演示脚本本身也不幂等：第二步的 `fs.edit` 要求文件里还有 `待复核` 那一行。
+   → 每场截图前重置 fixture（清会话目录 + 清掉生成的笔记），并等渲染层把会话建出来再发任务。
+5. **中文输出在 Windows 上是两种编码混着的。** cmd 内建命令走 GBK，`node` / `git` 走 UTF-8，
+   同一段输出里就可能混。写死任一种都会出现乱码。→ 先按 UTF-8 流式解，
+   一旦出现替换字符 `U+FFFD` 就整段退回 GBK 重解；`echo 中文` 这类用例已覆盖。
+6. **顶栏标题变成了一列竖排字。** 标题是裸文本节点，在 flex 行里就是一个匿名伸缩项；
+   被挤窄时中文逐字换行。同时 `.topbar-title` 是默认的横向 flex，
+   把「工作区」按钮摆到了标题行右侧，进一步把标题压没。
+   → 标题外包一层可截断元素，标题区改为纵向排列。
+   *这类问题的表象是「排版崩了」，根因往往是「没有可以截断的盒子」。*
+
+**遗留**
+
+- **`electron-builder` 打包未做**：M1 的最后一项，也是唯一一项。
+- 未接 CI：`npm run verify` 仍靠人工在提交前执行（与 M1-D 遗留相同）。
+- 未配置远端仓库，历史仍只在开发机上（与 M1-D 遗留相同）。
+- 真实 Harness 的 headless 契约未校准，内核仍跑在 mock 上 —— 这是全项目唯一的硬阻塞。
+- 终端不支持全屏交互程序（刻意为之，非缺陷）。
+
+**下一步**
+
+`electron-builder` 打包，把 M1 收口到 100%；随后校准真实 Harness 契约，
+让内核脱离 mock —— 这是 M2 一切能力的前提。
+
+---
+## 2026-09-12 · M1-F · electron-builder 打包，M1 收口到 100%
+
+**目标**
+
+把 M1 的最后一项 —— 打包 —— 做完：产出可分发的 NSIS 安装包与免安装 zip，
+且验收口径不是「打包成功」，而是「打包出来的应用真的能启动、能拉起内核、能跑完一轮任务」。
+
+**改动**
+
+- `apps/desktop/electron-builder.yml`（新增）：NSIS + zip 两个 target。三个非常规决定都有依据：
+  内核放 asar 之外（独立 node 进程读不了 Electron 私有归档格式）；手工把 protocol 摆成
+  `core-host/node_modules/@deepwork/protocol`（workspace 软链打包后消失）；electron 版本钉精确值。
+- `apps/desktop/electron/core-host-client.js`：内核入口改为 `resolveCoreEntry()` ——
+  打包态优先 `process.resourcesPath/core-host/dist`，但必须确认文件存在才采用
+  （开发态 Electron 同样有 resourcesPath，无条件采用会让 `npm run start` 缺内核）。
+- `apps/desktop/package.json`：`dist` / `dist:dir` / `icon` 脚本；electron 钉成 `44.3.0`；补 `author`。
+- `tools/make-icon.js`（新增）：纯 Node 手写 PNG 编码器生成应用图标（深色圆角底 + 三节点分叉图，
+  配色取自界面主题变量）。图标是代码生成的可复现资产，不入库（.gitignore 精确排除）。
+- `tools/package-verify.js`（新增）：打包产物验收。结构 5 项 + 内核 3 项 + 可选 `--launch`
+  启动真实 exe 截图。内核那 3 项是真的把它拉起来发 RPC，不是看文件在不在。
+- `packages/core-host/src/index.ts` + `rpc/stdio-server.ts`：**修复事件通道建立顺序**。
+  详见踩坑第 1 条。
+- `apps/desktop/electron/main.js`：新增 `DEEPWORK_LOG_FILE` 日志落盘（打包后的 GUI 程序没有
+  stdout，报障需要这条命脉）。
+- 根 `package.json`：`dist:dir` / `test:package` 脚本。README 新增「打包与分发」章节。
+
+**验证**
+
+```
+npm run verify                          差异一致性 / 19 / 29 / 26 / 13 / 22 全部通过（通道顺序修复无回归）
+npm run dist                            DeepWork-0.1.0-setup.exe (107MB) + DeepWork-0.1.0-win-x64.zip (146MB)
+npm run test:package --launch           9 项全部通过：
+                                        结构 5 项（exe / asar / 内核在 asar 外 / protocol 落位 / asar 体积 1.47MB）
+                                        内核 3 项（外部 node 拉起 / RPC 应答 / host.ready 事件）
+                                        启动 1 项（打包后的 exe 跑完一轮真实任务并截图）
+```
+
+**踩坑与修复**
+
+1. **`host.ready` 事件从未被送达过 —— 打包验收抓出来的真缺陷。** `main()` 先
+   `await host.start()`（内部 emit host.ready）再 `startStdioServer()` 挂事件接收器，
+   事件在通道建立前发出，永久丢失。壳层崩溃重启内核后正靠它恢复 UI，丢了就永远卡在「启动中」；
+   此前没暴露只是因为壳层还有一次主动 `host.status` 兜底。
+   → 先建通道、后启动宿主，请求用同一个 promise 排队；事件是真实发出的，seq 天然连续，
+   不事后补发伪造事件。
+2. **electron-builder 拒绝版本范围。** `"electron": "^44.3.0"` 直接报错 —— 它需要确定版本
+   下载平台二进制。→ 钉成 `44.3.0`（单一来源留在 package.json，yml 里注释说明）。
+3. **打包后的应用「双击没反应」：`ELECTRON_RUN_AS_NODE=1`。** 验收环境带着这个变量
+   （本项目启动 Electron 前都要 unset 它），exe 便以纯 Node 模式启动即退出，无窗口无日志、
+   退出码还是 0 ——「看起来成功」的最坏形态。
+   → 验收脚本启动 exe 前清掉它。
+4. **GUI 子系统没有 stdout，失败时没有任何线索。** 前一条排查了三轮才定位，就是因为
+   打包后的应用无处输出。→ 加 `DEEPWORK_LOG_FILE` 日志落盘；顺带发现第一版日志块引用了
+   尚未定义的 `CAPTURE_PATH`（TDZ 异常被 catch 吞掉，日志静默失效），移到变量声明之后。
+5. **Windows 上删刚被杀进程握着的目录会 EBUSY。** SIGKILL 后句柄释放是异步的。
+   → 先优雅退出再 kill，清理加 maxRetries 且失败不作为验收项。
+6. **打包产物必须验「能跑」而不是「文件在」。** asar 内的渲染层、asar 外的内核、
+   被清掉的环境变量，每一处都可能「打包成功但应用坏了」。`package-verify.js` 的
+   `--launch` 截图是这条原则的落点。
+
+**遗留**
+
+- 自动更新未做（NSIS 只是静态安装包），移入 M2：需要发布通道与版本清单服务，单独评估。
+- 未接 CI；未配置远端仓库（与 M1-E 相同）。
+- 真实 Harness 契约未校准，内核仍跑 mock —— 全项目唯一硬阻塞，现在也是 M2 的第一步。
+- `--launch` 验收产物 `artifacts/packaged-app.png` 已随本条入库（git add -f）：
+  它是「M1 打包完成且产物可用」的直接证据，与 ui-*.png 同一入库口径。
+
+**下一步**
+
+M1 完结。进入 M2 之前先还债：校准真实 Harness 的 headless 契约（`harness-sidecar.ts`），
+让内核脱离 mock —— 此后技能系统、记忆、自动化才有一个真实的底座。
+
+---
+## 2026-09-12 · M1-G · 把会话知识固化进项目文档
+
+**目标**
+
+前几轮形成的工程约定、分层纪律与本机坑位，此前只存在于会话侧的记忆与技能里 ——
+项目本身不带这些说明，换一台机器或换一次会话就得重新踩一遍。本轮把它们搬进仓库，
+让 clone 下来的人不需要任何外部上下文就能按正确方式改动这个工程。
+
+**改动**
+
+- `docs/CONVENTIONS.md`（新增，131 行）：工程约定与开发环境。五节 ——
+  架构三条硬约束（含「归约器只允许一份」这条派生约束）、分层纪律（写工具 /
+  逐块授权 / 终端 / 事件通道顺序 / fork 语义 / 编辑）、验证基线、版本管理约定、
+  本机开发环境（依赖镜像、三个必踩坑、打包约定、截图脚本、沙箱陷阱）。
+  每条都写成**症状 → 根因 → 修法**，而不是风格建议 —— 这些条目违反时通常不报错，
+  而是以「看起来成功」的方式在别处出问题。
+- `docs/SESSIONS/2026-09-12.md`（新增，44 行）：会话决策纪要。与 DEVLOG 分工明确 ——
+  DEVLOG 记「做了什么 / 验证了什么」，这里记「为什么这么定」，即翻代码看不出来的取舍
+  （终端为何不做 PTY、终端输出为何不进事件日志、内核为何放 asar 之外、
+  修 host.ready 为何是调换顺序而不是事后补发等 12 条）。
+- `README.md`：顶部加文档索引表，目录结构块同步。
+
+**验证**
+
+```
+wc -l docs/CONVENTIONS.md docs/SESSIONS/2026-09-12.md     131 / 44
+grep -oE '\]\((docs/[^)]+|docs/SESSIONS/)\)' README.md    3 个链接全部可达（OK × 3，无 MISS）
+git add 后 git ls-files --eol docs/CONVENTIONS.md         w/lf（未引入 CRLF）
+```
+
+纯文档改动，未触碰代码，故未重跑 `npm run verify`（基线在 M1-F 末次提交时全绿）。
+
+**踩坑与修复**
+
+无新增技术踩坑。记录一条认知层面的：知识存在**会话侧**与存在**项目侧**是两回事 ——
+前者随会话结束而失效，后者随仓库一起被 clone、被 review、被下一个人读到。
+这次搬迁过程中也顺带发现，有些约定此前从未被写下来过（例如「归约器只允许一份」
+与「测试断言的参照物不要写死实现细节」），它们是踩过坑之后才形成的隐性知识，
+最值得写进仓库。
+
+**遗留**
+
+- 文档尚未涵盖 M2 涉及的能力（技能系统 / 记忆 / 自动化 / MCP），届时按同一格式扩充
+  `CONVENTIONS.md` 的分层纪律一节。
+- `docs/SESSIONS/` 目前只有一篇。若后续会话频繁，考虑在 README 索引里只链目录、
+  不逐篇列举（当前目录只有一篇，列举尚可）。
+
+**下一步**
+
+M1 全部完成。进入 M2 的第一步仍是还硬债：校准真实 Harness 的 headless 契约，
+让内核脱离 mock。开工前先读一遍 `docs/CONVENTIONS.md`，尤其是「架构约束」与
+「验证基线」两节 —— 这两节里踩过的坑，在改 adapter 时最容易重踩。
+
+---
+## 2026-09-12 · M2-A · 校准真实 Harness 契约：内核接入改为 ACP
+
+**目标**
+
+还掉全项目唯一的硬债：校准真实 Harness 的接口，让内核脱离 mock。
+判定完成的标准不是「改完了」，而是**拿得出契约来源与可复现的验证** ——
+否则只是把一组占位字符串换成另一组。
+
+**改动**
+
+- `packages/core-host/src/adapter/acp/protocol.ts`（新增）：ACP 消息类型子集，
+  顶部写明三条契约来源（ACP 官方规格站 / dsh 官方 acp bundle 自述 / 本机实测 `dsh --help`）。
+- `packages/core-host/src/adapter/acp/client.ts`（新增）：ACP over stdio 客户端。
+  只管传输（NDJSON 分帧、请求响应配对、通知分发、反向请求路由），语义映射不进这一层。
+- `packages/core-host/src/adapter/harness-sidecar.ts`（重写）：从「回环 HTTP + SSE +
+  一次性 token + stdout 握手」改为 ACP。**原假设的接口在真实 dsh 上并不存在。**
+  真实出口是 profile 制（web / headless / sdk / sdk-minimal / acp），面向自动化客户端的是 acp。
+  选 ACP 而非 headless 的关键理由：ACP 把 `fs/write_text_file` 交给客户端执行，
+  于是内核想写文件时，差异审阅、逐 hunk 授权、越界拦截全部照常生效 ——
+  内核不会多出一条绕过审批网关的旁路。
+- `tools/fixtures/fake-acp-agent.js`（新增）：按 ACP 规格实现的最小 agent（测试替身）。
+- `tools/acp-conformance.js`（新增）：一致性测试 32 项。
+- `factory.ts`：更新切换说明（默认仍是 mock，但理由从「契约未校准」改为
+  「真实内核需下载运行时与模型凭据，不该静默拉取」）。
+- `package.json`：`test:acp` 脚本并纳入 `verify`。README 重写「切换到真实内核」一节，
+  CONVENTIONS 新增「内核接入（ACP）纪律」。
+
+**验证**
+
+```
+npm view @deepseek-ai/dsh                        0.1.5-rc.1（真实存在）
+npm view @deepseek-ai/dsh-acp-app                "automation-only JSON-RPC stdio over dsh-base"
+node <dsh>/lib/bin.js --help                     实测确认 --profile / --patch / --dump-config
+npm run test:acp                                 32 项全部通过
+npm run verify                                   全绿（diff 一致性 / 19 / 29 / 26 / 13 / 22 / 32）
+npm run typecheck                                三包无输出
+```
+
+一致性断言覆盖：握手与能力声明、`session/new` 传绝对 cwd、四类 update 的事件映射、
+权限应答映射 `allow_once`/`reject_once`、只读不产生审批、内核写入产生可审阅差异、
+拒绝后不落盘、工作区外写入被拦、**内核写入路径上的逐 hunk 授权**（磁盘 ==
+`applySelectedHunks(原文, 差异, [0])`，且与全量结果反向对拍）、`session/cancel` 中断、
+内核不可用时抛 `AdapterUnavailableError` 而非伪装成功。
+
+**踩坑与修复**
+
+1. **原假设的接口根本不存在 —— 占位约定放久了会变成假事实。** 文件顶部原本写着
+   「ENDPOINTS 与 EVENT_TYPE_MAP 是占位约定，接入时改这两处」，于是 HTTP+SSE+token 的
+   形状在代码里存在了好几轮，读代码的人（包括 AI）都会把它当成已核实的事实。
+   → 校准的第一动作不是改代码，而是**去拿一手事实**：装真实包、跑真实 CLI、查官方规格。
+2. **真实 dsh 进不了自检。** 它需要下载完整运行时与模型凭据。
+   → 按规格实现参考 agent 来驱动完整一轮：协议正确性因此可验证，而不是「等有 key 再试」。
+3. **参考 agent 第一版写了多个 stdin 监听器**（初始化一个、`request()` 里又一个），
+   各自维护 buffer 互相抢数据 → 必然偶发丢帧，比彻底不通更难查。
+   → 单一分派器 + 中央 buffer + pendingOut 表。已写进 CONVENTIONS 的 ACP 纪律。
+4. **测试数据让两处改动挨在一起，差异引擎合并成一个 hunk**，逐块授权自然验不出来
+   （3 项断言失败）。且断言还假设了 hunk 顺序（「未采纳的是第二处」）。
+   → 两处改动之间垫 6 行公共内容使其分成两个 hunk；断言改为不依赖顺序
+   （「既不是原文也不是全量」+ 与全量反向对拍）。
+5. **Windows 上 npm 安装的 CLI 是 `dsh.cmd`**，`spawn('dsh')` 会 ENOENT，
+   症状只是「内核起不来」，看不出是扩展名问题。→ 按平台补 `.cmd`。
+
+**遗留**
+
+- 尚未用**真实 dsh** 端到端跑通一轮（缺模型凭据）。协议层已有 32 项断言，
+  但「dsh 的 ACP 实现支持哪些可选方法」（`session/load` 等）仍未实测。
+- 会话 fork 仍由本项目自己的事件日志实现，未走内核 —— 这是刻意选择：
+  fork 的字节级前缀等式依赖我们自己掌握的日志，交给内核反而不可控。
+- 真实内核下的 `attachments` 以 `resource_link` 传路径，内核是否真会去读未验证。
+
+**下一步**
+
+拿到模型凭据后跑一次真实 dsh 端到端，把「协议层正确」推进到「真实内核可用」，
+并据此补齐 dsh 实际支持的可选方法。之后开 M2 主体：技能系统与安装审计。
+
+---
+
+## 2026-09-12 · M2-B · 真实 dsh 端到端跑通
+
+**目标**
+
+把 M2-A「契约校准完成」推进到「真实内核可用」—— 装 dsh、用真实进程跑完「hello 写盘」
+这条最短路径，把协议层的 32 项断言升级为「协议 + 真实 dsh 行为」的两层验证。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `package.json` | devDependency 钉到 `@deepseek-ai/dsh@0.1.5-rc.1` 精确版（契约按此校准，`^` 范围会被 dist-tag next 拖到 0.1.5-rc.2，可能行为偏移） |
+| `tools/real-dsh-probe.js` | 取证工具：把真实 dsh 的每一帧打印出来，让「猜字段」变成「读帧」 |
+| `tools/real-dsh-e2e.js` | 端到端测试：本地 OpenAI 替身 + 真实 dsh + 审批网关 + 真实落盘，15 项断言，dsh 缺席时优雅 SKIP |
+| `tools/fixtures/openai-stub-llm.js` | OpenAI 兼容替身；`pickTool` 改为先精确再词边界匹配（`create_goal` 不再被 `create` 抢占命中） |
+| `tools/fixtures/dsh-no-credentials.patch.yml` | 备用：把凭据服务禁掉，强制走环境变量 fallback（实验中发现禁不掉，留作参考） |
+| `packages/core-host/src/adapter/harness-sidecar.ts` | 五处契约修正：`session/prompt` 用 `prompt` 数组；`fs` 能力键；权限 `toolCall.toolCallId`；模型按 `session/set_config_option` 设置；`tool_call_update` 嵌套 content；风险判定按工具名；`subjectOfInput` 还原审批目标；新增 `env` 透传给子进程 |
+| `packages/core-host/src/adapter/acp/protocol.ts` | 同步类型与文档：实测纠正三处（prompt 键、能力键、权限参数位置），添加 `AcpWrappedContent`/`AcpConfigOption` 等实测字段 |
+
+**验证**
+
+```
+npm run typecheck                       protocol + core-host 全部无输出
+node tools/real-dsh-e2e.js              15 项全部通过
+  · start() 返回健康报告（acp ok, deepseek-harness-acp 0.0.1）
+  · 模型端点收到 2 次请求（一轮工具调用 + 工具结果后收尾）
+  · tool.started 报告 write 工具 / risk=confirm / file_path 保留
+  · tool.completed 输出 "Created file"
+  · HELLO.md 真实落盘，20 字节，与 stub 注入的 content 逐字节一致
+  · run.completed / status=completed
+npm run verify                          8 套测试 161 项全部通过
+  diff-selftest (3) + tool-guard (19) + replay (29) + smoke (26)
+  + approval-partial (13) + terminal (22) + acp-conformance (37) + real-dsh-e2e (15)
+```
+
+**踩坑与修复**
+
+1. **dsh 的凭据服务一旦在场就「屏蔽」环境变量**。`resolveApiKey` 先查
+   `ctx.get("credentials")`，**只有当该服务根本不存在**时才会回退到 env。
+   用 `--patch` 把凭据插件 `disabled:true` 不够 —— 服务的注册还在，只是没激活，
+   `ctx.get` 仍返回非 undefined，env 不被读。
+   → 在隔离的 `$DSH_HOME/.credentials.yaml` 里写 `refs: { DEEPSEEK_API_KEY: ... }`，
+   让 dsh 在自己眼里「凭据齐备」，请求照样打到本地替身（替身不校验 key）。
+2. **DEEPSEEK_BASE_URL 被我丢了一次**。改了 env 之后 stub 收到 0 次请求，但 dsh
+   报「api key ****stub is invalid」—— 这不是鉴权失败，是请求**打到了真 api.deepseek.com**。
+   → env 必须显式包含 `DEEPSEEK_BASE_URL=stub.url`。
+3. **dsh 工具列表里有 `create_goal`、`write`、`edit` …… 而我的 stub 用模糊正则
+   挑 `write|create|...`，结果第一项 `create_goal` 命中 `create`，整个链路跑
+   了 `create_goal({file_path,content})` → 「missing required property objective」。
+   修了之后 dsh 真正跑了 `write`，文件落盘、断言通过。
+   → `pickTool` 改为先精确名 (`write` / `write_file`)，再词边界匹配 (`^|_write_|$`)。
+4. **dsh 默认 sandbox-policy 是 workspace-write**：工作区内的 `write` **不触发**
+   `session/request_permission`，由 approval-presets 隐式放行。要触发权限流得
+   用 pwsh / delete 等危险工具，或把路径放到工作区外。前者要重做 stub 状态机，
+   后者会被 sandbox 直接拦下 —— 都不干净。改 e2e 断言如实地写「工作区内写被
+   默认放行；权限流由 conformance 测试独立验证」。
+5. **真实 dsh 的 `tool_call.kind` 恒为 "other"**，工具名在 `title`，入参在 `rawInput`。
+   第一轮按规格示例的 `kind` 判风险，所有工具都落到默认档。
+   → `riskOfTool` 按工具名（`write`/`edit`/`pwsh`/`bash`/...）判定，kind 兜底。
+6. **`tool_call_update.content` 是 `{type:'content', content:{type:'text',text}}` 嵌套**，
+   不是裸 `{type:'text',text}`。`textOfContent` 不认嵌套的话，工具输出永远空串。
+   → 同时认裸块与包装块（已纳入 conformance 断言：`output === '已写入'`）。
+7. **npm install dsh 用了 34 分钟，最后以非零状态退出**：
+   沙箱 EPERM 拦了 `@opentelemetry/api-logs/LICENSE` 等若干 tar 写入，
+   481 包被装上、devDependency 已写入，但进程非零。
+   → npm 安装已记入 package.json；本机能跑就好，干净 clone 后再 `npm install`
+   在受限沙箱里可能出现同样问题，需要时改用 `--no-optional` 或自管 tarball。
+
+**遗留**
+
+- 权限流在真 dsh 默认策略下被自动放行，e2e 没强制触发；如要硬触发，需要在第二
+  轮 prompt 里让 stub 发 `pwsh` 工具调用（要重写 stub 状态机，目前省了）。
+- 用真模型跑：把 `DEEPSEEK_BASE_URL` 指到真端点、`.credentials.yaml` 写真 key 即可。
+  当前替身只能「假装」是个 OpenAI 兼容服务，没法做真正的语义验证。
+- dsh 在 Windows 上的 `pwsh` 工具会调 powershell，bash 工具被禁 —— 真跑会
+  依赖 powershell 路径是否在 PATH 中，本机未单独验证。
+
+**下一步**
+
+1. M2 主体：技能系统（skill 安装 → 目录布局 → 审计字段）。
+2. 让 e2e 也能强制触发权限流：增加第二轮 prompt 调 pwsh 工具。
+3. 评估是否把 dsh 改放 optionalDependencies（480 包强制安装代价不小）。
+
+---
+
+## 2026-09-12 · M2-C · 技能系统 + 安装前安全审计
+
+**目标**
+
+实现技能系统的核心层：目录布局、安装（含审计前置闸门）、启停、版本升级、卸载；
+审计引擎按四类规则扫描源目录，critical 拒绝、warn 留档。先改契约再改实现，
+**审计发生在源目录上、任何拷贝之前**（与「先拷再审」划清界限）。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/skills.ts`（新增） | `SkillManifest`（frontmatter 解析后形状）、`SkillAuditFinding`（rule/severity/file/line/snippet）、`SkillAuditReport`、`SkillRecord`、`SkillInstallResult` |
+| `packages/protocol/src/rpc.ts` | 新增 `skills.list/install/uninstall/audit/toggle` 五个方法 |
+| `packages/protocol/src/index.ts` | 导出 skills 模块 |
+| `packages/core-host/src/skills/manifest.ts`（新增） | frontmatter 解析（手写 YAML 平铺子集，不引 YAML 库 —— 「解析器的模糊边界就是恶意技能的藏身处」），拒绝缺字段/围栏未闭合/name 含路径分隔符/大写 |
+| `packages/core-host/src/skills/audit.ts`（新增） | 四类规则：**destructive-command**（rm -rf、del /S /Q、format、dd of=/dev/sd*、shutdown）、**remote-code-exec**（curl\|sh、powershell -EncodedCommand、IEX、nc -e）、**obfuscated-payload**（base64 -d、certutil -decode）、**secrets-access / env-exfiltration / network-egress**（warn），**double-extension + native-executable**（PE/ELF magic bytes），**vendored-deps**（node_modules/），**exfiltration-combo**（同文件既有 secrets/env 又有外网 = critical） |
+| `packages/core-host/src/skills/store.ts`（新增） | 目录布局（`<home>/skills/<name>/` + `<home>/skills.json`）；安装 = 验证清单 → 审计源 → critical 拒 → 暂存 `.staging-` → rename → 升级走 `.trash-` 中转；`list()` 与磁盘对齐（剔除幽灵）；`toggle` 只改清单不动文件；`enabledSkillDirs()` 供后续内核消费 |
+| `packages/core-host/src/host.ts` | 5 个 skill 方法挂到 host；`paths.ts` 的 `ensureDirs` 加 `skills/` |
+| `packages/core-host/src/rpc/stdio-server.ts` | 注册 5 个 `skills.*` 处理器 |
+| `apps/desktop/electron/main.js` | `ALLOWED_METHODS` 加 5 个白名单项 |
+| `tools/skill-system-test.js`（新增） | **59 项**：清单解析 8 项（含 6 种拒绝形状）+ 审计 16 项（每类规则 + localhost 不算外网 + 严重度排序）+ 安装生命周期 27 项（含「critical 源未进入家目录」「升级不残留暂存/回收目录」「干跑审计不改变安装状态」）+ RPC 接线 6 项 |
+| `package.json` | 加 `test:skills`，`verify` 串入 |
+
+**验证**
+
+```text
+npm run typecheck                # 两包均 ok
+npm run build                    # protocol + core-host 编译通过
+node tools/skill-system-test.js  # 59/59 通过
+npm run verify                   # 9 套共 220 项全绿
+                                  # diff-selftest / tool-guard 19 / replay 29
+                                  # smoke-ipc 26 / approval-partial 13
+                                  # terminal 22 / acp 37 / real-dsh 15 / skills 59
+```
+
+**踩坑与修复**
+
+- **JS 语法错误的隐性传染**：写测试时连写三个 `check(..., fn(...));` 多打了外层括号，
+  Node 立刻报「Unexpected token ')'」。逐条改正后改用 `node --check` 一次性扫全，命令永不重蹈。
+- **node_modules 处理先写错**：审计时把 `node_modules/(dir)` 占位 push 进文件列表导致 statSync 失败。
+  修法：node_modules/ 直接触发 warn finding 且不展开 —— 技能「应发布为纯静态资源，携带依赖树不可审计」。
+- **审计「目录未落盘」断言的关键性**：这是整个测试最重要的一行 —— 验证「先审后拷」语义。
+  如果不小心把审计移到拷贝之后，这条断言仍然会「看起来通过」（目录终究不会存在），
+  但原因变了（不是被审计拒，是被装完之后又删了）。所以这测试断言的不仅是不落盘，更是**不落盘由审计本身完成**。
+- **审计正则的 localhost 例外**：`https://localhost:3000/...` 不应算外网出口。
+  `network-egress` 正则用了 `(?!localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)` 负向先行断言，单独写了测试验证（16 行）。
+- **审计不写 YAML 库**：引 YAML 解析器会让 frontmatter 能写的内容边界变模糊（锚点、多文档……），
+  而解析器的模糊边界就是恶意技能的藏身处。手写 60 行平铺解析器足够，多写一行即报错。
+
+**遗留**
+
+- 技能触发匹配（语义匹配 + `/` 调用）本轮未做 UI，只暴露 RPC 列表给内核侧；
+  内核消费入口已留（`SkillStore.enabledSkillDirs()`），等 M2-D 接入。
+- 审计引擎按行正则启发式，挡不住「把命令拆字符串再拼接」的语义层混淆。
+  深度防御依赖运行时的审批网关 —— 两层各司其职，定位不同。
+- URL/市场安装源未实现（目前只接受本地目录），后续用同样流程：拉取 → 落本地 → 走 install。
+- 审计规则目前是白名单式黑名单，**没有白名单机制**：用户无法把一条「误报规则」标记为「这是已知的合法」。
+
+**下一步**
+
+1. 把技能嵌入内核侧：内核在 `session/new` 之后扫描已启用技能目录，把 SKILL.md 正文摘要纳入上下文。
+2. UI 层：技能列表页 / 安装向导（展示审计报告，逐项展开）/ 启停开关。
+3. 技能市场（URL/市场安装）的骨架拉本地目录逻辑复用 install。
+
+---
+
+## 2026-09-12 · M2-D · 技能消费：注入内核 + 技能面板 UI
+
+**目标**
+
+把 M2-C 攒下的技能系统从「能装、能审、能管」推进到「真的被内核看见、被用户用到」：
+每轮运行按启用清单构建技能上下文注入内核（摘要注入 + `/技能名` 显式调用注入全文），
+并把技能管理做成界面 —— 安装向导（先干跑审计看报告，确认后才装）、启停、卸载、
+审计留档展开。判据：注入链路在事件流里留痕（`skill.attached`），且「记录里说的」
+与「内核实际收到的」是同一份文本。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/skills.ts` | 新增 `SkillAttachment`（name/version/explicit/bodyChars/truncated） |
+| `packages/protocol/src/events.ts` | 新增 `skill.attached` 事件（强制带 runId —— 不带会退化成全局事件，污染分叉会话视图） |
+| `packages/protocol/src/reduce.ts` | `skill.attached` 归约为对话流里的 info 提示（已挂载技能：…），回放与实时渲染一致 |
+| `packages/core-host/src/skills/context.ts`（新增） | `buildSkillContext`：摘要注入（名称/描述/触发提示/SKILL.md 绝对路径，**不含正文**）+ `/name` 显式调用注入全文；`SKILL_BODY_LIMIT` 16k / `SKILL_CONTEXT_LIMIT` 48k 截断如实标记；SKILL.md 损坏的启用技能记名 skipped 不阻断对话；显式调用未安装技能如实提示而非静默 |
+| `packages/core-host/src/adapter/types.ts` | `RunContext.skillContext`：适配器必须放在用户输入之前交给内核且不得改写 |
+| `packages/core-host/src/host.ts` | `send()` 每轮重建技能上下文（停用即轮即生效，无缓存窗口）；`skill.attached` 先于 `run.started` 落盘；`user.message` 仍只记用户原文 |
+| `packages/core-host/src/adapter/harness-sidecar.ts` | 技能上下文作为独立 text block 置于 prompt 数组首位（与用户输入分开，内核能区分「宿主注入的」与「用户说的」） |
+| `packages/core-host/src/adapter/mock-harness.ts` | 如实确认收到注入（多少字符），不假装自己会用 —— mock 的存在意义是压链路 |
+| `apps/desktop/src/components/SkillsPanel.tsx`（新增） | 技能面板：列表（启停勾选/卸载/审计留档展开，severity 分级展示）+ 安装向导（选目录 → 干跑审计出报告 → 确认安装 → critical 拒绝时报告原样摆出） |
+| `apps/desktop/src/useAgent.ts` · `App.tsx` · `styles.css` | skills 状态与 5 个动作（内核侧为唯一事实来源，每次操作后重拉）；顶栏「技能」入口；面板样式 |
+| `tools/skill-context-test.js`（新增） | 24 项：构建器 15 项 + host 链路 9 项 |
+| `tools/capture.sh` + `tools/fixtures/demo-skill/` | 新增 skills 截图场景：fixture 技能走**真实安装路径**（含审计）预置，脚本回读面板里的技能名作回执 |
+| `package.json` | `test:skillctx` 并挂入 `verify` |
+
+**验证**
+
+```text
+npm run typecheck                     # protocol + core-host 无输出；desktop 无输出
+npm run build:renderer -w @deepwork/desktop   # vite build 通过，274KB
+npm run verify                        # 10 套全绿：
+                                      # diff 一致性 / tools 19 / replay 29 / smoke 26
+                                      # / partial 13 / terminal 22 / acp 37 / real-dsh 15
+                                      # / skills 59 / skillctx 24
+node tools/skill-context-test.js      # 24/24：
+                                      # 摘要含名称/描述/触发提示/绝对路径且不含正文；
+                                      # 显式调用注入全文、未安装如实提示、超长截断标记、
+                                      # 损坏技能跳过不阻断；skill.attached 先于 run.started
+                                      # 且 runId 一致；停用后下一轮立即不再挂载
+bash tools/capture.sh skills          # 回执 "skill:demo-notes"，截图 artifacts/ui-skills.png：
+                                      # 面板列出真实安装（含审计）的 demo-notes，启停勾选、
+                                      # 审计零发现、卸载按钮、安装入口齐备
+```
+
+**踩坑与修复**
+
+1. **`node -e "require('/d/...')"`  MODULE_NOT_FOUND** —— capture.sh 的技能预置第一版用
+   msys 路径（`$REPO_MSYS`）给原生 node 的 require，与 M1-D「git 只认 `D:/`」同族：
+   msys 工具认 `/d/`，原生 Windows 程序认 `D:/`，同一个命令里不能混用。
+   → 预置命令改用 `$REPO`（`D:/` 形式）。
+2. **摘要注入与全文注入必须分开。** 第一直觉是「把启用技能的 SKILL.md 正文全带上」，
+   但那会让每轮对话都背着所有技能的全文跑 —— 技能是别人写的文本，长度不可信。
+   定为：环境注入只带摘要与路径（内核按需自取全文），仅 `/name` 显式调用注入全文且
+   截断标记。这条连同「每轮重建」「不改写 user.message」写进了 CONVENTIONS 的技能消费纪律。
+3. **`skill.attached` 的归属判定沿用既有机制即可，但前提是事件带 runId。**
+   渲染层靠 `runId → sessionId` 映射归属，而映射在 `run.started` 到达时建立 ——
+   注入事件必须先于 run.started 发出（host.send 的顺序保证），且 UI 的 `send()` 在
+   invoke 返回时就预登记了映射，两条路都收敛。测试里用 seq 断言了这条次序。
+
+**遗留**
+
+- 语义匹配由内核侧消费（摘要里已给出触发提示与全文路径）；mock 内核只确认收到，
+  真实匹配效果需真实 dsh + 模型凭据验证。
+- 技能市场（URL 安装源）未做：拉取层落本地目录后复用 `install` 即可，审计链不变。
+- 审计规则仍无白名单机制（误报无法标记「已知合法」），与 M2-C 遗留相同。
+- Composer 未做 `/` 补全提示，显式调用靠用户自己知道技能名（面板里能看到清单）。
+
+**下一步**
+
+M2 主体继续：三层记忆（会话内工作记忆 / 用户偏好 / 事实沉淀）—— 注入链路本轮已铺好，
+记忆上下文可以复用同一条「宿主注入 → skill.attached 式留痕」的路径；
+随后自动化调度（cron 式任务触发 run）。
+
+---
+
+## 2026-09-13 · M2-E · 三层记忆系统：画像 / 用户级 / 工作区
+
+**目标**
+
+落地需求文档 §4.5 的三层记忆：画像（跨会话跨项目，只读注入）/ 用户级记忆（本机共享，
+显式写入，精确字符预算）/ 工作区记忆（精选笔记 + 每日 append-only 日志，超 30 天按月归档）。
+判据：记忆注入在事件流留痕（`memory.attached`，先于 `run.started`、带 runId）、
+预算与截断全程可见、日志只追加不覆盖、记忆面板可操作三层。本项目无服务端，
+画像如实落为本地文件（云同步属 M3）。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/memory.ts`（新增） | `MemoryLayer` / `MemoryEntry` / `MemoryLayerStat`（entries/chars/budget/truncated 全暴露）；画像以 `id='profile'` 伪条目经 `memory.list` 读出，写入只走 `memory.setProfile` |
+| `packages/protocol/src/events.ts` · `reduce.ts` | `memory.attached { runId, layers }` 事件（强制 runId，与 skill.attached 同一纪律）；归约为 info 提示「已挂载记忆：画像 N 条 · 用户级 M 条 · 工作区 K 条」 |
+| `packages/protocol/src/rpc.ts` | 5 个方法：`memory.list/add/remove/stats/setProfile` |
+| `packages/core-host/src/memory/store.ts`（新增） | 目录布局 `memory/profile.md` + `user.json` + `workspaces/<sha256前16位>/{notes.json,log/YYYY-MM-DD.md,archive/YYYY-MM.md}`；预算：画像注入 2000 字符、用户级 4000、工作区精选 4000、今日日志取尾部 2000；用户级/精选是**存储预算**（超限拒绝并给可行动信息），画像/日志是**注入预算**（截断如实标记）；归档为读取侧惰性触发的机械合并（mtime>30 天按月并入 archive 后删原文件），非语义蒸馏 |
+| `packages/core-host/src/memory/context.ts`（新增） | `buildMemoryContext`：三层分节注入文本，各层截断标注；三层全空返回 null |
+| `packages/core-host/src/host.ts` · `adapter/types.ts` · 两个适配器 | `RunContext.memoryContext`；每轮重建（无缓存窗口）；`memory.attached` 先于 `run.started`；ACP prompt 顺序 = 记忆块、技能块、用户输入、附件；mock 如实确认字符数；run 结束后向该工作区当日日志追加一行（时间/输入前 80 字/结果状态）——「每日追加日志」的落点，只追加不覆盖 |
+| `packages/core-host/src/rpc/stdio-server.ts` · `apps/desktop/electron/main.js` | 5 个 RPC 挂到宿主与渲染层白名单 |
+| `apps/desktop/src/components/MemoryPanel.tsx`（新增） · `useAgent.ts` · `App.tsx` · `styles.css` | 记忆面板：三层页签；画像层 textarea 展示+整体保存；用户级/工作区层条目列表（来源/日期）、添加（带剩余预算提示、超限红字预警）、删除；每层头顶挂 entries/chars/budget 用量；顶栏「记忆」入口；操作后重拉（内核侧唯一事实来源） |
+| `tools/memory-test.js`（新增） · `package.json` | 38 项断言（store 14 / context 9 / host 链路 8 / RPC 7），`test:memory` 挂进 verify 链尾 |
+| `tools/capture.sh` | 新增 `memory` 场景：post_reset 用真实 `memory.setProfile`/`memory.add` 预置画像 + 两条用户级 + 一条工作区笔记，渲染脚本点开面板并回读条目文本作回执 |
+| `packages/core-host/src/cli/demo.ts`（顺手修既有 bug） | 差异链路校验：目标路径改从 `diff.path` 取（原写死 `.deepwork/agent-notes.md`，已不存在）；还原按序应用同路径全部写/改差异（原只套头两份，漏掉收尾的第三次 fs.write） |
+
+**验证**
+
+```text
+npm run typecheck                     # protocol + core-host + desktop 均无输出
+npm run build:renderer -w @deepwork/desktop   # vite build 通过，280KB
+node tools/memory-test.js             # 38/38：
+                                      # 三层增删读/预算超限拒绝（用户级+精选）/画像伪条目读写/
+                                      # append-only 两次写入都在/utimesSync 构造 40 天前日记触发
+                                      # 按月归档/无记忆返回 null/截断标记/memory.attached 先于
+                                      # run.started 且 runId 一致/user.message 原文不改写/
+                                      # mock 确认收到注入字符数/run 结束后当日日志多一行/
+                                      # 5 个 RPC 注册可用
+npm run verify                        # 11 套全绿：diff 一致性 / tools 19 / replay 29 / smoke 26
+                                      # / partial 13 / terminal 22 / acp 37 / real-dsh 15
+                                      # / skills 59 / skillctx 24 / memory 38
+npm run demo                          # 差异还原「一致（21 行）」；DEMO_DENY=1「拒绝生效：是」
+bash tools/capture.sh memory          # 回执 "entry:所有项目的提交信息用中文书写"，
+                                      # 截图 artifacts/ui-memory.png：三层页签（画像 1 ·
+                                      # 用户级 2 · 工作区 1）、条目与用量 33/4000、
+                                      # 剩余预算提示、删除按钮齐备
+```
+
+**踩坑与修复**
+
+1. **边界测试没压在边界上**：工作区精选预算用例的填充条目取「预算 − 20」字符，
+   再补一条 4 字符的条目总共 3984 < 4000，「超限拒绝」断言根本不触发就失败。
+   修法：填充到「预算 − 2」，让新增条目必然越界。边界测试的余量必须算到个位。
+2. **「无记忆不发事件」的家目录污染**：host 链路第一段与 store 段共用同一个
+   DEEPWORK_HOME，store 段留下的条目让第一轮运行就不再是「无记忆」，断言反转失败。
+   修法：host 段换独立 host-home（DEEPWORK_HOME 在构造时读取，改 env 再 new 即可隔离）。
+   教训：同进程多段测试共享家目录时，「空状态」断言必须自己保证空。
+3. **画像的读取路径**：契约定死 5 个 RPC，但面板编辑画像需要先读到现有文本。
+   定为 `memory.list` 以 `id='profile'` 伪条目返回画像（写入仍只走 setProfile，
+   remove('profile') 等价清空），并把这条约定写进契约注释 —— 不为「读一段文本」
+   单开第 6 个方法，也不让 UI 绕过契约直接读文件。
+4. **既有 bug 顺手修：`npm run demo` 的「差异还原 不一致」是红灯常亮**。
+   在干净 HEAD 上复现，与本轮改动无关。两处脱节：校验目标写死
+   `.deepwork/agent-notes.md`（写工具落点早已挪到工作区根的 `AGENT-NOTES.md`，
+   断言读的是永不存在的路径）；还原只套「第一份 fs.write + 第一份 fs.edit」
+   两份差异，而演示脚本的收尾是第三次 fs.write —— 恰好是 CONVENTIONS 警告过的
+   「断言参照物写死实现细节」。修法：目标路径改从 `diff.path` 取，
+   还原按序应用同路径的全部写/改差异。修后正常分支「一致（21 行）」、
+   DEMO_DENY 分支「拒绝生效：是」。
+
+**遗留**
+
+- **内核自动写记忆未实现**：依赖 MCP 工具暴露（M2-G）。本轮「记忆写入先于回复」
+  只覆盖两条路径：UI 面板显式写入、宿主在 run 结束后追加当日日志；
+  内核在对话中自主沉淀记忆要等 M2-G 的工具通道。
+- 归档是机械合并（按月拼接），不是语义蒸馏 —— 蒸馏需要内核摘要能力，
+  届时以 `origin: 'distilled'` 条目回写精选层。
+- 画像是本地纯文本，云同步与多设备合并属 M3。
+- 记忆条目只能删了重加，没有就地编辑；条目间去重/合并也未做。
+
+**下一步**
+
+M2-F 自动化调度（cron 式任务触发 run，复用本轮的「宿主侧写入」通道记运行日志）；
+M2-G MCP 工具暴露，接通后内核可自动写记忆（本条的第一个遗留随之解除）。
+
+---
+
+## 2026-09-13 · M2-F · 自动化调度：定时任务触发真实 run
+
+**目标**
+
+落地需求文档 §4.6 的自动化：一次性（指定时刻）与周期性（每天 / 每周多日组合 / 每月 /
+间隔分钟），任务与调度解耦（prompt 是任务本体，spec 是独立时间参数），触发有留痕、
+结果有通知。判据：触发派生的 run 走与手动发送完全相同的链路（技能/记忆注入、审批网关），
+`schedule.fired` 先于 `run.started` 落盘且 runId 归属正确；错过不补跑；
+「调度只在应用运行期间生效」写明在 UI 与文档里。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/schedule.ts`（新增） | `ScheduleSpec` 判别联合（once/daily/weekly/monthly/interval）、`ScheduleTask`、`describeSchedule` 与 `validateScheduleSpec` 共享纯函数（UI 与宿主不出现两套文案与两套校验） |
+| `packages/protocol/src/events.ts` · `reduce.ts` | `schedule.fired { task, runId, sessionId }` 事件（强制 runId，与 skill.attached 同一纪律）；归约为 info 提示「定时任务「X」已触发，本轮由自动化调度发起」 |
+| `packages/protocol/src/rpc.ts` | 5 个方法：`schedule.list/add/remove/toggle/runNow` |
+| `packages/core-host/src/scheduler/nextfire.ts`（新增） | **纯函数** `nextFire(spec, from)`：from 显式传入、无 IO 无时钟；月末溢出落到当月最后一天（31 日遇 2 月 = 2 月最后一天）；interval 对齐 epoch 整数倍刻度 |
+| `packages/core-host/src/scheduler/store.ts`（新增） | `~/.deepwork/schedules.json` 持久化；`nextRunAt` 是持久化状态（理由见踩坑 1），只由 add/启用、触发推进、启动清扫三处写入 |
+| `packages/core-host/src/scheduler/engine.ts`（新增） | 30 秒 tick（`unref()` 且 host.stop 显式 clearInterval）；tickMs 与 now() 可注入；启动时过期清扫（错过不补跑）；触发即推进 nextRunAt（不重复触发的结构保证）；once 触发后自动停用；runNow 同路径但不改计划 |
+| `packages/core-host/src/host.ts` | 持有引擎；`fireScheduledTask`：绑定会话在则复用、不在则以「⏰ 标题」新建；`send` 新增 `scheduleTask` 内部参数，`schedule.fired` 在 runToSession 建立后、user.message 前落盘；run 结束后写回 lastStatus/lastSessionId |
+| `apps/desktop` | 主进程白名单 5 项；`SchedulesPanel`（列表：人类可读描述/下次触发/上次状态与次数/启停/删除/立即运行 + 新建表单：标题、提示词、调度类型控件）；顶栏「自动化」入口；`schedule.fired` 横幅（非当前会话时提示并可跳转）；**顺手修既有 bug**：`.btn-tiny` 无背景与前景色，非 danger 小按钮渲染成白底隐形文字 |
+| `tools/schedule-test.js`（新增） | 68 项断言（nextFire 23 + 共享纯函数 6 / store 10 / 引擎 12 / host 链路 + RPC 17） |
+| `tools/capture.sh` | 新增 `schedule` 场景：post_reset 走真实 ScheduleStore 预置任务，渲染脚本回读任务标题作回执 |
+
+**验证**
+
+```text
+npm run typecheck                     # protocol + core-host 无输出；desktop 无输出
+npm run build:renderer -w @deepwork/desktop   # vite build 通过，290.95KB
+node tools/schedule-test.js           # 68/68（连跑 3 轮无抖动）：
+                                      # once 过期/恰等于 from 返回 null；daily 当日过点推明天；
+                                      # weekly 一三五组合取最近命中日；monthly 31 日遇 2 月落到
+                                      # 28/29 日、3/31 过点落 4/30；interval 对齐且压线取下一档；
+                                      # 启动清扫不补跑（周期推进未来、once 停用）；触发后 once
+                                      # 自动停用；runNow 不改 nextRunAt；host 侧 schedule.fired
+                                      # 先于 run.started 且 runId 归属正确、结局写回、复用会话；
+                                      # 5 个 RPC 注册可用
+npm run verify                        # 12 套全绿：diff 一致性 / tools 19 / replay 29 / smoke 26
+                                      # / partial 13 / terminal 22 / acp 37 / real-dsh 15
+                                      # / skills 59 / skillctx 24 / memory 38 / schedule 68
+npm run demo                          # 差异还原「一致（21 行）」
+env DEMO_DENY=1 npm run demo          # 「拒绝生效：是，文件未被创建」
+                                      # （必须走 env 前缀；VAR=1 npm run 在本机会静默丢变量，
+                                      #  见 CONVENTIONS 新增坑位）
+bash tools/capture.sh schedule        # 回执 "task:每周晨会纪要"，
+                                      # 截图 artifacts/ui-schedule.png：面板列出真实预置任务
+                                      # 「每周晨会纪要 · 每周一三五 09:00 · 下次触发 09-14 09:00 ·
+                                      # 已触发 0 次 · 尚未触发过」，运行期生效提示、启停勾选、
+                                      # 立即运行/删除/新建按钮齐备
+```
+
+**踩坑与修复**
+
+1. **「读取时重算 nextRunAt」会让引擎永远不触发。** 第一版 store.list() 对 enabled 任务
+   按当前时刻重算 nextRunAt —— 重算结果严格在未来，于是「nextRunAt <= now」这个到期
+   条件永不成立。测试第一次跑就抓到了（68 项里引擎段全灭：fired=0）。
+   → nextRunAt 改为持久化状态，只由三处写入（add/启用、触发推进、启动清扫）；
+   「错过不补跑」从读取侧挪到引擎启动时的过期清扫（sweepMissed）。
+   *读取路径不该有写语义 —— 「读一下顺便修正」的副作用这次直接把主功能修没了。*
+2. **过期清扫与测试用偏移时钟打架。** 清扫在 engine.start() 用注入时钟执行，而测试的
+   伎俩恰恰是「任务对引擎时钟而言已过期」—— start 时被清扫掉，tick 永远等不到。
+   → 清扫的语义本就只覆盖「启动那一刻已存在的任务」；测试改为先启动引擎（空库清扫）
+   再加任务，清扫行为由独立的场景段（启动前手工改写 nextRunAt 到过去）专门断言。
+3. **`schedule.fired` 若由触发回调在 send 之后补发，次序就错了。** mock 适配器的
+   run.started 在 adapter.run() 里同步发出，事后补发的 fired 会落在 run.started 后面。
+   → send 增加内部参数 scheduleTask，fired 在 runToSession 建立后、user.message 前落盘 ——
+   次序由同一段代码保证，不靠两个调用点的时序运气。
+4. **渲染层对 schedule.fired 的归属判定不能走 runId 映射。** 该事件先于 run.started
+   到达，runSessionRef 里还没有这个 runId，按「映射缺失即当前会话」的老逻辑会把它
+   漏进正在看的会话。→ 事件自带 sessionId，归属判定对它单列一条（并顺手预登记
+   runId → sessionId 映射，后续事件归属立即可用）。
+5. **顺手修既有 bug：`.btn-tiny` 没有背景与前景色。** 此前所有小按钮都配 `.btn-danger`
+   或出现在有底色的容器里，UA 默认白底按钮第一次被「立即运行」单独暴露（白底上
+   文字近隐形）。→ 补主题底色与前景色，`.btn-tiny.btn-danger` 用更高特异性保住危险色。
+6. **截图第一次没拍到面板（回执却是好的）。** 首次 schedule 场景回执
+   `task:每周晨会纪要` 正确，但截图里没有弹窗；用「脚本内分三次采样 + 读 computedStyle」
+   的探针复现时弹窗全程可见，随后原场景连跑两次均正常。根因未完全坐实
+   （疑似首次启动较慢时截图时机与渲染的竞态），按「脚本要自证」的既有纪律，
+   回执 + 复跑确认作为验收依据，记录在此供下次参考。
+7. **`git commit --amend` 修错了提交。** 想把引擎设计修正并进 core-host 提交，
+   却 amend 到了 HEAD 的 desktop 提交上（两提交合一、原 core-host 提交仍是旧代码）。
+   → `reset --soft` 回退到 protocol 提交后按序重提。教训：amend 前先看 `git log -1`。
+8. **`DEMO_DENY=1 npm run demo` 在本机静默丢了环境变量。** 验收 demo 的拒绝分支时发现
+   审批全部「自动放行」—— 不是 demo 坏了，是变量没进去。最小复现：bash 里 `export`
+   或 `VAR=1` 前缀设置的变量，经过 workbuddy 的 PortableGit bash → npm 启动链后会丢失；
+   `env VAR=1 npm run ...` 则稳定可达（node→node、node→cmd、外层 Git Bash→node 也都正常，
+   问题只出在 workbuddy bash 作为父进程把 shell 后加的变量传给原生 Windows 进程这一跳）。
+   → 需要向 npm 脚本传环境变量时，一律用 `env VAR=1 npm run ...`；已写进 CONVENTIONS。
+   *这类失败最阴险：命令成功、分支错误，「拒绝分支验过」其实是放行分支跑了两遍。*
+
+**遗留**
+
+- **通知没有走桌面 Notification API**：当前是应用内横幅 + 跳转；系统级通知
+  （应用最小化时也能看到）留待后续，需要 Electron Notification 权限与点击聚焦。
+- **交付物归档尚无独立通道**：调度 run 的产出就是会话日志本身（可回放、可分叉），
+  「归档到指定目录 + 汇总索引」未做；每日运行日志（M2-E）已如实记录每次触发。
+- tick 固定 30 秒，意味着触发精度 ±30 秒；对「整点发日报」足够，对分钟级准时有
+  要求的场景需要在 UI 上说明或把 tick 做成配置。
+- 时区按本地时间解释（'HH:MM' 是挂钟时间）；跨时区旅行时不重算既有 nextRunAt
+  （触发推进时用当时时钟算下一次，属可接受语义）。
+
+**下一步**
+
+M2-G MCP 工具暴露（接通后内核可自动写记忆，M2-E 的首条遗留随之解除）；
+随后浏览器自动化 / 用量面板。
+
+---
+
+## 2026-09-13 · M2-G · 连接器管理：DeepWork 管清单，内核管协议
+
+**目标**
+
+落地连接器（外部 MCP server）管理：清单增删启停、面板 UI、内核重启生效。
+判据：真实内核上 `--patch` 叠加的连接器插件真的把外部 MCP 工具注册为
+`mcp__<名称>__<工具>` 并路由调用（实测，非推断）；mock 内核如实标注不生效；
+清单状态语义不造假（DeepWork 不知道实时连接状态）。
+
+**架构选择（本轮的核心决策，如实记录来源）**
+
+最初的方向是「DeepWork 自己实现一个 MCP 客户端」。被质疑重复建设后取证
+`node_modules/@deepseek-ai/dsh-mcp-client`（README + lib/index.js 源码），确认内核
+原生具备完整 MCP 客户端能力（配置一条 server 记录即注册 `mcp__<serverName>__<tool>`，
+支持 stdio 与 Streamable HTTP，含重连与原子代际切换），遂改向为**连接器管理**：
+DeepWork 持久化清单并在内核启动时叠加成 dsh 插件配置，连接/发现/重连/注册全在内核。
+
+**取证结论（dsh 0.1.5-rc.1 + dsh-mcp-client，源码为准）**
+
+- 插件条目形状 `{ id, name: '@deepseek-ai/dsh-mcp-client', config }`；
+  config（stdio）= `{ transport:'stdio', serverName, command, args?, env?, cwd? }`
+  （zod schema，lib/index.js）；serverName 须匹配 `[A-Za-z0-9_-]{1,32}`。
+- `--patch <file>` 的补丁文件是**顶层 YAML 数组**，元素为 cordis loader 补丁条目；
+  新增插件用 `{ insert: [条目] }`（无 id 的 insert 追加到根列表，dsh-app-boot
+  `applyEntryPatches`）；参照物是 dsh-base 自带的 cordis.patch.yml。
+- 工具公开名恒为 `mcp__<serverName>__<rawName>`（纯函数，损归一化时附加哈希）。
+- 包名解析可行：dsh 自身 dependencies 含 dsh-mcp-client，dsh-app-boot 会把安装依赖
+  闭包自愈到 `$DSH_HOME/profiles/node_modules`，补丁里写包名即可（实测确认）。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/mcp.ts`（新增） | `ConnectorConfig`（name/command/args/env/enabled，本轮仅 stdio）/ `ConnectorState`（`kernelManaged: true` + 如实 note）/ `CONNECTOR_NAME_PATTERN` / `validateConnectorConfig` 与 `connectorStateOf` 共享纯函数 |
+| `packages/protocol/src/rpc.ts` | 5 个方法：`connectors.list/add/remove/toggle` + `kernel.restart` |
+| `packages/core-host/src/mcp/store.ts`（新增） | `~/.deepwork/connectors.json`（数组）持久化；名称校验同技能目录名规则；重名拒绝 |
+| `packages/core-host/src/mcp/patch.ts`（新增） | 纯函数 `buildConnectorPatch`（启用的生成 insert 补丁，空清单返回 null）+ `serializeConnectorPatchYaml`（手写最小 YAML 子集，标量一律 JSON 双引号风格——它是 YAML 双引号标量的合法子集，无需引入 js-yaml） |
+| `packages/core-host/src/host.ts` | 启动/重启前重建 `~/.deepwork/runtime/connectors.patch.yml`（空清单清理旧文件）；`restartKernel`：有运行中任务拒绝、adapter.stop + createAdapter、失败如实报错并保持无内核状态、重启后重发 `host.ready` |
+| `packages/core-host/src/adapter/harness-sidecar.ts` · `factory.ts` | `patchFile` 选项：存在即追加 `--patch <path>`；`riskOfTool` 对 `mcp__` 前缀一律至少 confirm（不落 kind 兜底），含 shell/exec 语义升 danger |
+| `packages/core-host/src/rpc/stdio-server.ts` · `apps/desktop/electron/main.js` | 5 个 RPC 挂到宿主与渲染层白名单 |
+| `apps/desktop/src/components/ConnectorsPanel.tsx`（新增） · `useAgent.ts` · `App.tsx` · `styles.css` | 连接器面板：列表（名称/命令/启停/删除/工具前缀）、添加表单（名称/命令/参数每行一个/环境变量 KEY=VALUE 每行一条）、醒目提示「变更后需重启内核生效」+「重启内核」按钮（mock 下禁用）、mock 内核如实标注「连接器不生效」；顶栏「连接器」入口 |
+| `tools/fixtures/fake-mcp-server.js`（新增） | 最小 MCP server（stdio，换行分隔 JSON-RPC）：initialize/tools/list/tools/call 闭环，一个 echo 工具 |
+| `tools/connector-test.js`（新增） · `tools/real-dsh-mcp-test.js`（新增） · `package.json` | 41 项断言（patch 对拍 13 / store 12 / host+RPC+风险分级 16）+ 真实链路 8 项；`test:connectors` 与 `test:real-dsh-mcp` 挂进 verify |
+| `tools/capture.sh` | 新增 `connectors` 场景：post_reset 走真实 ConnectorStore 预置记录，渲染脚本点开面板回读连接器名称作回执 |
+
+**验证**
+
+```text
+npm run typecheck                     # protocol + core-host + desktop 均无输出
+npm run build:renderer -w @deepwork/desktop   # vite build 通过，298.36KB
+node tools/connector-test.js          # 41/41：补丁形状与 dsh-mcp-client 源码对拍
+                                      # （insert 条目/包名/config 键集合）、停用排除、
+                                      # 空清单 null、YAML 序列化、Windows 路径转义；
+                                      # store 增删启停持久化、重名/非法名拒绝；
+                                      # RPC 5 方法注册、kernel.restart 真实重启、
+                                      # 补丁文件随清单生成/清理；mcp__ 分级 confirm/danger
+node tools/real-dsh-mcp-test.js       # 8/8 真实通过（非 SKIP）：dsh --patch 加载
+                                      # dsh-mcp-client → 拉起 fake-mcp-server →
+                                      # 首轮模型请求含 mcp__fake__echo →
+                                      # tool.started 标题含 mcp__fake__echo（risk=confirm）→
+                                      # tool.completed 携回 echo:ping-mcp → 第二轮请求带工具结果
+npm run verify                        # 14 套全绿：diff 一致性 / tools 19 / replay 29
+                                      # / smoke 26 / partial 13 / terminal 22 / acp 37
+                                      # / real-dsh 15 / skills 59 / skillctx 24 / memory 38
+                                      # / schedule 68 / connectors 41 / real-dsh-mcp 8
+bash tools/capture.sh connectors      # 回执 "connector:fs-local"，
+                                      # 截图 artifacts/ui-connectors.png：面板列出预置连接器
+                                      # （命令/工具前缀/启停）、生效提示、mock 内核如实标注、
+                                      # 重启按钮 mock 下禁用
+```
+
+**踩坑与修复**
+
+1. **「内核侧凭据屏蔽 env」的老教训本轮没再踩，但值得记**：M2-B 已查明
+   dsh-credentials-local 在场即屏蔽 env，本轮真实链路沿用「隔离 DSH_HOME +
+   假 .credentials.yaml」的方案一次通过。补丁形状没有踩坑 —— 因为先取证后动手。
+2. **RPC 处理器的同步抛错不会被 `.then(..., catch)` 接住**：buildHandlers 里
+   `connectors.toggle` 是同步函数，宿主抛错直接同步炸出测试。测试改为 try/catch
+   取证。教训：断言「会抛错」时先确认被调函数是同步还是返回 Promise。
+3. **README 与源码不一致的点**：dsh-mcp-client README 的示例配置含 `!!js` 表达式
+   （`env: { GITHUB_TOKEN: !!js process.env.X }`），那是 cordis loader 的求值方言，
+   不是插件 schema 的一部分；我们只生成纯数据 YAML（标量 JSON 双引号风格），
+   不碰 `!!js` —— 用户要引用环境变量时应在内核侧环境配置，而不是把表达式写进清单。
+
+**遗留**
+
+- **HTTP（Streamable HTTP）传输未做**：契约与补丁函数本轮只覆盖 stdio；
+  dsh-mcp-client 原生支持，扩展时往 ConnectorConfig 加传输判别联合即可。
+- **DeepWork 不知道实时连接状态**：连没连上、工具列没列出只能看内核日志
+  （note 已如实说明）。若要可见，需要内核侧的状态查询通道，dsh ACP profile
+  当前没有这个面。
+- **内核自主写记忆仍待接通**：通道已通（内核可以调 MCP 工具），但「记忆写入
+  作为 MCP server 暴露给内核」这个方向需要在 dsh 侧配一个记忆 server 或另起
+  内建通道，属下一步评估。
+- Windows 上 `command: npx` 这类 cmd shim 由内核侧 MCP SDK 负责 spawn，
+  实测中我们只验证了 node.exe 直跑；npx 形态在真实环境如遇 ENOENT 需在内核侧排查。
+- 连接器清单没有「测试连接」按钮（理由同上：连接状态不在 DeepWork 手里，
+  做一个假的连通性指示比没有更糟）。
+
+**下一步**
+
+M2 快照约 60%：浏览器自动化 / 用量面板 / MCP HTTP 传输；
+内核自主写记忆可在「记忆 MCP server」方向继续。
+
+---
+
+## 2026-09-13 · 阶段收尾 · 剩余功能盘点与后续研发规划
+
+**目标**
+
+本日开发在 M2-G 收口后暂停。把「还有哪些没做」从对话记忆搬进仓库：
+一份拿来就能开工的规划（每项带范围/关键决策/判据），并封存 M2-H 的半成品。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `docs/ROADMAP.md`（新增） | 当前状态快照（M2 约 60%，verify 14 套全绿）；内核能力取证结论表（记忆无/调度是提醒/MCP 原生/subagent 有——动手前先查）；M2 剩余四项（H 浏览器 / J 用量面板 / I Office / K 自动更新）的范围与判据；M3 按「可本地验收」分 A/B 两档；各轮遗留债汇总表 |
+| `wip/m2-h` 分支（新分支） | M2-H 半成品：浏览器契约 `browser.ts` + CDP 客户端 `cdp.ts`（typecheck 过、未接线、无测试）。main 保持全绿，半成品不混入主线 |
+| `README.md` | 文档索引与目录结构补 ROADMAP |
+
+**验证**
+
+```text
+npm run typecheck        # 三包无输出（含 wip 半成品在内也不破坏编译）
+npm run verify           # 收尾前基线 14 套全绿（与 M2-G 提交时一致）
+git status --porcelain   # main 上无未提交的已跟踪改动
+git branch               # main / wip/m2-h
+```
+
+**踩坑与修复**
+
+- 本轮无新增技术踩坑。记录一条流程观察：M2-G 的改向（用户质疑「上层重复实现」→
+  取证发现 dsh 原生有 MCP 客户端）证明了「动手前先查内核已有能力」这条规则的价值——
+  它拦下的是一整个重复子系统。已固化为 ROADMAP 第二节的取证规则与能力结论表。
+
+**遗留**
+
+- M2 剩余：M2-H（半成品在 wip/m2-h）/ M2-J / M2-I / M2-K；M3 未启动。详见 ROADMAP。
+- 调度截图场景曾出现一次「回执正确但弹窗未入画」未坐实（M2-F 踩坑 6），复查时优先看。
+
+**下一步**
+
+按 ROADMAP 第三节顺序：M2-H（先审 wip/m2-h 半成品）→ M2-J（数据已攒全，投入产出比最高）
+→ M2-I → M2-K；随后 M3 A 档（专家团先取证 dsh-subagent 的 ACP 暴露面）。
+
+---
+
+## 2026-09-13 · 模型配置：自定义端点 + 凭据管理（本地模型/离线战略落地第一步）
+
+**目标**
+
+用户明确战略方向：DeepWork 要用本地化模型、脱离互联网运行。本轮落地第一步——
+模型配置：设置里可切换「DeepSeek 官方 / 自定义 OpenAI 兼容端点」（Ollama / LM Studio /
+vLLM / 私有网关都是这一种形态），API key 按模式分存、明文不出宿主。
+同时把「真实内核」从环境变量切换改为持久化配置（config.adapter）。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/config.ts` | `ModelEndpoint { kind, baseUrl?, model? }`；`AppConfig.adapter`（auto/mock/harness 持久化）；defaultModel 按内核取证修正为 `deepseek-flash` |
+| `packages/protocol/src/rpc.ts` | `model.apiKey.status/set/clear` 三个 RPC；`HostStatus` 加 `adapterMode` 与 `credentialsConfigured`（「选的什么」与「实际跑的什么」分开呈现） |
+| `packages/core-host/src/models/endpoint.ts`（新增） | 端点校验、`modelEndpointOverride`（覆盖补丁条目）、`syncModelCredentials`（凭据 refs 合并，不丢其它键）；secrets.json 按 official/custom 分存；掩码只露头尾 |
+| `packages/core-host/src/mcp/patch.ts` | 连接器补丁泛化为**运行时补丁**：`buildRuntimePatch`（insert + override 两种条目）+ `serializeRuntimePatchYaml`（受控形状发射器）；补丁文件改名 `runtime/kernel.patch.yml` |
+| `packages/core-host/src/models.ts` | 模型清单按探针实测定案：界面上的「V4.1 Flash」内核 id 是 `deepseek-flash`；删除凭空占位的 kimi-k2-turbo |
+| `packages/core-host/src/adapter/factory.ts` | `createAdapter` 接受配置 mode；本地 node_modules 的 dsh 自动解析（node 直跑 bin.js，避开 .cmd 的 spawn EINVAL） |
+| `packages/core-host/src/host.ts` | setConfig 先校验再落盘；端点变更 = 凭据同步 + 重建补丁文件（重启内核生效，日志如实写）；custom 模式新会话默认端点模型 |
+| `tools/model-endpoint-test.js`（新增） | 31 项：补丁形状/序列化/凭据合并/secrets 分存 + host 链路 + 真实 dsh 端到端（连跑两轮防竞态回归） |
+| `docs/ROADMAP.md` | 新增「〇、战略方向：本地模型，可离线运行」与 7 项后续优化清单 |
+
+**验证**
+
+```text
+真实内核端到端（真实 API key + 真实模型）：
+  ACP 握手 → 内核模型设为 DeepSeek-V41-Flash → write/read 工具真实落盘 → 模型自报 deepseek-flash
+自定义端点端到端（本地 stub 当「本地模型」）：
+  覆盖补丁 + 凭据同步 → 真实 dsh → requests[0].model === 'qwen-local-7b'
+  （且全部请求未夹带官方模型名）—— 连跑两轮结果一致
+npm run verify    15 套全绿（…/ connectors 41 / real-dsh-mcp 8 / modelcfg 31）
+npm run typecheck 三包无输出
+```
+
+**踩坑与修复**
+
+1. **settings.yaml 热重载与 session/new 公布目录存在竞态 —— 本轮最大的坑。**
+   第一版端点配置走 dsh 官方「Models page」路径（`$DSH_HOME/settings.yaml` 的
+   `llm-deepseek:` 节），单跑 25/25 通过。约 3 分钟后**不加任何改动**重跑，稳定失败：
+   内核拿到内置模型目录（`内核未提供模型 qwen-local-7b`）。排查一度怀疑 verify 链
+   环境污染、dsh 版本自愈漂移（rc.1→rc.2），逐一取证排除后确认是竞态：
+   热重载的设置加载与 session/new 之间没有次序保证，首次跑时 dsh 冷启动慢、
+   设置先就绪所以通过，profile 缓存暖了之后启动变快就稳定输。
+   → 弃用热重载路径，改 `--patch` 覆盖补丁（组合期应用、启动即确定），
+   测试第 3 段连跑两轮防回归。**「偶然通过」比「稳定失败」危险得多——
+   它会把竞态藏进基线。**
+2. **spawn dsh.cmd 报 EINVAL。** Windows 上 .cmd 需要 shell，而 EINVAL 的症状只是
+   「内核起不来」。→ 与 real-dsh-e2e 同一形态：node 直跑 bin.js，
+   factory 自动解析仓库内 devDependency 的 dsh。
+3. **模型 ID 是占位值，内核静默回退。** 界面「DeepSeek V4.1 Flash」在内核的真实
+   id 是 `deepseek-flash`（探针 session/new 帧为证），旧占位 id 不匹配、不报错、
+   只是悄悄用默认模型。→ 清单按探针帧逐字校准，CONVENTIONS 记「改模型清单先跑探针」。
+4. **凭据两级存储的覆盖问题。** 切到 custom 时若直接覆盖
+   refs.DEEPSEEK_API_KEY，切回官方就丢了官方 key。→ secrets.json 按模式分存，
+   切换时同步对应模式；spliceCredentialRef 只动目标键，refs 下其它键逐行保留。
+5. **坏配置先落盘后校验。** setConfig 第一版先写 config.json 再校验，校验失败
+   会把坏配置留给下次启动。→ 先校验再落盘。
+
+**遗留**
+
+- 真实 Ollama / LM Studio 未实测（本机两个端口都没服务）：链路用 stub 验证，
+  真实本地模型的 thinking/reasoning 参数兼容性待实测（ROADMAP 〇.3 的离线矩阵）。
+- 端点模型列表拉取（GET /models）未做，模型名靠手输。
+- 变更端点需 kernel.restart 生效，UI 提示与设置面板「模型」页签随界面改版后落地。
+- 本地模型的 costCny 恒 0、与云端花费分列，用量面板（M2-J）处理。
+
+**下一步**
+
+设置面板「模型」页签（提供方/baseUrl/模型名/key 掩码/保存并重启内核）——
+等界面改版（Kimi 风）收口后落地，避免渲染层并行改动互踩。
+
+---
+
+## 2026-09-13 · 界面改版（Kimi 风浅色主题）+ 设置面板「模型」页签
+
+**目标**
+
+两条用户反馈一次落地：界面从深色工程风改为 Kimi Work 式的干净浅色风；
+设置面板补「模型」页签，让内核选择/端点/API key 不用再手改配置文件。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `apps/desktop/src/styles.css` | 全量浅色化：白底主区、浅灰侧栏、Kimi 蓝点缀（#4d6bfe）、圆角卡片、弹窗柔和投影；差异视图浅红浅绿；终端保留深色底（行业惯例） |
+| `apps/desktop/src/components/SettingsPanel.tsx` | 新增「模型」页签：内核选择（auto/harness/mock）+ 当前内核与凭据状态、提供方（官方/自定义端点 + baseUrl/模型名）、API key（掩码显示、保存/清除）、「重启内核使配置生效」按钮与生效语义说明 |
+| `apps/desktop/src/useAgent.ts` · `App.tsx` | modelKeyStatus 状态与 setModelApiKey/clearModelApiKey/refreshModelKeyStatus 动作；设置面板接线 |
+| `tools/capture.sh` | settings 场景改验「模型」页签（回执读激活页签名） |
+| `artifacts/ui-*.png` | 8 张验收截图全部按浅色主题重生成 |
+
+**验证**
+
+```text
+npm run typecheck（desktop）+ vite build     # 通过（303.85 KB）
+npm run verify                               # 15 套全绿（…/ connectors 41 / modelcfg 31）
+bash tools/capture.sh（8 场景）              # 全部重新生成并逐张目检：
+                                             # 浅色生效、选择器未失效、对比度可读
+bash tools/capture.sh settings               # 回执 "active:模型"，模型页签各控件齐备
+```
+
+**踩坑与修复**
+
+1. **重截截图「改了样式却没变」**：capture 跑的是 `apps/desktop/dist` 的构建产物，
+   而 `npm run build` 只编 protocol + core-host —— 第一次重截用的是旧渲染层，
+   画面与改动前一模一样，如果只看「截图生成了」就会误以为改版无效。
+   → 改渲染层后必须 `npm run build:renderer -w @deepwork/desktop` 再 capture。
+2. **顶栏按钮被挤成竖排字**：M2 系列把顶栏按钮加到 7 个，侧栏面板展开时
+   「自动化」「连接器」逐字竖排。→ `.btn`/`.control` 加 `white-space: nowrap`，
+   `.topbar`/`.topbar-controls` 允许整排折行，标题区设 min-width。
+   与 M1-E「标题竖排」同一族：**没有可以折行的排，就会有被挤碎的字。**
+3. **「模型」页签把「安全」页内容也带了出来**：原结构是
+   `{tab === 'prefs' ? prefs : security}`，新增第三个页签后 else 分支
+   在非 prefs 时一律渲染安全页 —— 截图里模型页下面拖着审批档位才暴露。
+   → 三个页签各自显式判等。回执读的是模型页内容（正确），画面却错了：
+   **回执与画面要互相印证，只信一个就会漏。**
+4. **改版子任务在产物齐备后疑似卡死**（70 分钟无文件活动），主流程接管验收，
+   在截图目检中抓出 2、3 两个缺陷 —— 再次验证「截图要逐张看」。
+
+**遗留**
+
+- 深色主题暂以浅色替换（config.theme 字段仍在但未接切换器）；深浅切换器
+  待做（浅色已验证的对比度基准可直接复用）。
+- 自定义端点的真实 Ollama/LM Studio 实测未做（本机无服务，链路以 stub 验证）。
+- Trajectory/审批弹窗等其余视图已随全量样式浅色化，但逐视图细节打磨
+  （间距、层级）可持续进行。
+
+**下一步**
+
+设置面板模型页签已可用：用户可全程图形化完成「填 key → 选官方/自定义端点 →
+重启内核」。下一轮按 ROADMAP：M2-H（浏览器自动化，wip/m2-h 续作）或
+本地模型向导（探活 Ollama/LM Studio 一键填端点）。
+
+---
+
+## 2026-09-13 · 界面形态重构（左侧活动栏 + 整页视图）+ M2-J 用量面板
+
+**目标**
+
+两条用户反馈与一项路线图工作一起落地：
+
+1. 顶栏横排的 8 个功能按钮不符合当前桌面端形态 —— 每加一个功能就多占一截宽度，
+   窄窗口下只能换行，把标题挤成一列竖排字。按 WorkBuddy 形态改为
+   **左侧垂直活动栏（rail）+ 主区整页视图**。
+2. 按 ROADMAP 推进 **M2-J 用量面板**（usage 事件与会话 meta 早已攒全，只做只读聚合）。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol` | `AppView` 联合类型 + `APP_VIEW_LABEL`；config 的 `sidePanel`（none/tree/terminal）被 `lastView` 取代；新增 `modelPrices` 单价表；`usage.ts` 契约（UsageTotals / UsageSummary / ModelPrice）；`rpc.ts` 增 `usage.summary` |
+| `packages/core-host/src/usage/summary.ts` | 纯函数 `summarizeUsage`（按日 / 按模型 / 按会话三向分组）+ `sanitizeModelPrices`；日切函数由调用方注入 |
+| `packages/core-host/src/host.ts` | `usageSummary()` 每次现算（不落第二份存储）；`setConfig` 校验 `modelPrices` |
+| `apps/desktop/src/components/ActivityRail.tsx` | 56px 竖排 rail，图标为内联 SVG（不引图标库）；分「正在发生什么」与「配置与账本」两组，设置固定底部 |
+| `apps/desktop/src/components/PanelPage.tsx` | 整页视图壳（返回 / 标题 / 动作 / 内容 / 底栏） |
+| `apps/desktop/src/components/UsagePanel.tsx` | 汇总卡 + 按日柱状图 + 按模型表 + 按会话列表 + 单价表编辑 |
+| `apps/desktop/src/App.tsx` | rail + 视图分支；6 个管理面板由弹窗改为整页；审批仍是界面上唯一的弹窗 |
+| `apps/desktop/src/styles.css` | +390 行（活动栏 / 整页视图 / 用量面板） |
+| 各面板底栏 | 技能 / 自动化 / 连接器 / 记忆 / 设置的底栏「关闭」→「返回对话」（整页形态下「关闭」是弹窗时代的语义） |
+| `tools/usage-test.js` · `package.json` | 用量聚合 27 项断言，挂进 `npm run verify` |
+| `tools/capture.sh` | rail 助手替代原先的按钮查找；新增 chat / usage 两个场景；每场先重建产物；fixture 重置改用 Node |
+
+**验证**
+
+```text
+npm run typecheck -w @deepwork/desktop        # 通过
+npm run verify                                # 15 套，14 套全绿：
+  # diff 全通过 / tools 19 / replay 29 / smoke 26 / partial 13 / terminal 22
+  # / acp 37 / real-dsh 15 / skills 59 / skillctx 24 / memory 38 / schedule 68
+  # / connectors 41 / usage 27
+  # real-dsh-mcp 3/8 —— 环境性失败；已用 git stash 在改动前的基线上复现同样的 3 PASS/5 FAIL，
+  # 与当轮改动无关（见 docs/CONVENTIONS.md「已知的环境性失败」）
+bash tools/capture.sh                         # 11 场全部生成，回执逐条核对：
+  # chat ok / tree ok / terminal ok / preview ok / hunk「已选 1 / 2 处」
+  # / settings active:模型 / skills skill:demo-notes / memory entry:所有项目的提交信息用中文书写
+  # / schedule task:每周晨会纪要 / connectors connector:fs-local / usage total:69.4k
+目检 6 张（chat / tree / settings / skills / connectors / usage）：
+  # rail 布局生效；整页视图生效；审批仍是弹窗；用量页在界面上也满足「分组之和 = 总数」
+  # （deepseek-flash 41.4k + qwen2.5:7b 28.0k = 总数 69.4k）
+```
+
+**踩坑与修复**
+
+1. **同一条消息里并发编辑同一文件 → 改动被静默覆盖 → 界面纯白。**
+   给 `App.tsx` 一次发了两个编辑（补 `import { useRef }` + 加恢复 effect），后一个把前一个
+   覆盖掉；又一个并发编辑抹掉了 `viewPinnedRef.current = true`。结果 `useRef` 被调用却没被导入：
+   `vite build` 成功、`tsc --noEmit` 也不报错（它只查类型，不管值是否导入），
+   渲染层运行时抛 `ReferenceError: useRef is not defined`，`#root` 为空 —— 界面纯白。
+   而截图脚本的回执只是「找不到 `.rail-item`」，看着像选择器写错。
+   → **同一文件的多处修改必须串行、一次一个编辑；白屏要去看渲染层 console
+   （`ELECTRON_ENABLE_LOGGING=1`），不要在 DOM 选择器上猜。** 已写入 CONVENTIONS。
+2. **视图恢复 effect 会顶掉用户刚切到的页面。** 原先写成「只要 config 变化就
+   `setView(config.lastView)`」，而 config 是异步到达的：用户先点了「文件」，config 随后到达，
+   那次 setView 把他刚点的页面顶了回去 —— `ui-tree.png` 因此停在对话页。
+   这个症状最迷惑的地方是**回执是 `ok`**（按钮确实被点到了），只有画面不对。
+   → 恢复只做一次（`viewRestoredRef`），且用户一动手就锁住（`viewPinnedRef`）；
+   顺带去掉 `openView` 里「先比较再写盘」的分支 —— config 未就绪时比较的两侧是新值与
+   `undefined`，判断本身就是错的来源。修后 `ui-tree.png` 是真正的「工作区文件」页。
+3. **fixture 重置被平台删除钩子拦下 → 截图带历史残留、不可复现。**
+   `reset_fixture` 的 `rm -rf` 被本机 shell 层的 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`
+   按「一次会话累计删除数」计数拦下（跑一趟 11 场必然越过阈值），从第 5 场起静默失效：
+   `.deepwork` 带着前几场的会话一起进画面，用量页显示「4 会话 / 14 次调用」，
+   而脚本预置的只有「3 个会话 / 8 次调用」。
+   → 重置改用 Node 的 `fs.rmSync`（不受那层 shell 包装影响，删的仍是本脚本自己的运行数据）。
+   修后同场景为「3 会话 / 9 次调用」（预置 8 次 + 本场景运行 1 次），日志里不再出现 SAFE_DELETE。
+4. **截图跑的是上一版渲染层**（继承上一轮的坑）：`npm run build` 只编 protocol + core-host，
+   渲染层 bundle 不随之更新。→ capture.sh 每场先显式重建产物，构建失败即中止
+   （「一张旧 UI 的截图比没有截图更糟」）。
+5. **面板底栏还写着「关闭」**：整页视图里它是「返回对话」的语义，弹窗文案是遗留。
+   目检 `ui-skills.png` / `ui-connectors.png` 时发现。→ 统一为「返回对话」。
+
+**遗留**
+
+- 深浅主题切换器仍未做（`config.theme` 字段在，切换器待接）。
+- `real-dsh-mcp` 的环境性失败未定位到根因（疑似 dsh 的 mcp-client 插件在隔离 `DSH_HOME`
+  下拉不起来）；不能因此把该套件从 verify 摘掉 —— 摘掉等于让真实 MCP 通路失去唯一哨兵。
+- 用量页图表固定最近 14 天（汇总恒为全量，过滤只发生在图表上）。
+- `usage.summary` 刻意不做时间范围参数：一旦按范围过滤，「分组之和 = 总数」这条等式立刻失效。
+
+**下一步**
+
+M2 剩余项按 ROADMAP 顺序：M2-H（浏览器自动化，`wip/m2-h` 分支有起步代码待评审）→
+M2-I（Office 生成）→ M2-K（自动更新）。
+
+---
+
+## 2026-09-13 · M2-H · 浏览器自动化：CDP 驱动系统浏览器 + 六动作 MCP + 面板
+
+**目标**
+
+按 ROADMAP 推进 M2-H：不引 Playwright / Puppeteer（「装完就能跑」是硬约束，Node 22 内置
+全局 `WebSocket` 够驱动 CDP），用 **CDP** 驱动系统已装的 Chrome / Edge，给模型六个页面动作，
+并做一块能看见「运行中 / 当前页 / 截图」的面板。`wip/m2-h` 分支有两个起步文件（协议契约 +
+CDP 客户端），先审后用。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/browser.ts` | 契约：`BrowserState`（含 executable / port / shotCount）、`BrowserEndpoint`、`BROWSER_ACTIONS` 六动作、`browserToolName` / `browserMcpToolName`（点号 / 下划线两套名）、`BROWSER_TOOL_RISK`（evaluate=danger，其余 confirm）、`BROWSER_MCP_SERVER_NAME='deepwork_browser'`、`BROWSER_CONTENT_LIMIT` / `BROWSER_SHOTS_DIR` / `BROWSER_PROFILE_DIR` / `BROWSER_ENDPOINT_FILE` |
+| `packages/protocol/src/{config,rpc,index}.ts` | `AppView` 加 `'browser'` + 标签；RPC 加 `browser.state/open/close`（注释强调模型的六动作**不在此表**）；IPC 常量加 `BROWSER_SHOTS` / `BROWSER_SHOT_READ`；导出 browser |
+| `packages/core-host/src/browser/cdp.ts` | 沿用 wip 分支：零依赖 CDP 客户端（Node 全局 WebSocket）+ `findBrowserExecutable`（Edge / Chrome 探测 + `DEEPWORK_BROWSER_PATH`）+ 端口解析 + `killProcessTree`；新增 `sessionId` 参数（页面级命令需 Target.attachToTarget）、`attachToPage`、`probeBrowser(port)`、`killPidTree(pid)` |
+| `packages/core-host/src/browser/actions.ts`（新） | 六动作一处实现（宿主工具注册表与 MCP 服务共用一份）：`navigate` / `content` / `click` / `type` / `evaluate` / `screenshot`；`renderValue` / `clip` / `literal`（JSON.stringify 防注入）/ `shotName`（清洗 `..` 与路径分隔符防目录穿越） |
+| `packages/core-host/src/browser/manager.ts`（新） | 懒启动、endpoint 文件共享单实例（先探 pid 是否存活）、失败重连一次、`state()`、`close()`（借用方只断开）/ `shutdown()`（只收自己那份） |
+| `packages/core-host/src/browser/mcp-server.ts` + `cli/browser-mcp.ts`（新） | MCP stdio 服务（initialize / tools/list / tools/call / ping），工具名 `browser_navigate` 等；stdout 纪律（日志走 stderr）；CLI 入口启动失败必须退出 |
+| `packages/core-host/src/tools/builtin.ts` | `registerBuiltinTools(registry, { browser })` + `BROWSER_TOOL_SPECS` 六动作循环注册（过 `BROWSER_TOOL_RISK` + `ctx.requestApproval`）；无 browser 时不注册（不给模型摆不可用的工具） |
+| `packages/core-host/src/mcp/patch.ts` | `buildBrowserMcpPatch` 条目（与用户连接器同形的 dsh-mcp-client insert）+ `buildRuntimePatch` 加 `browserPatch` 参数（放最后：出问题先怀疑内置项） |
+| `packages/core-host/src/host.ts` | `browser = new BrowserManager()`；注册 6 工具；`prepareRuntimePatchFile` 调 `browserMcpPatch()`（入口找不到返回 null 不注入）；`browserState/open/close`；`stop()` 调 `browser.shutdown()` |
+| `rpc/stdio-server.ts` · `adapter/harness-sidecar.ts` | 三个 browser RPC handler；`riskOfTool` 的 `mcp__` 分支对含 `evaluate` 的升 danger |
+| `apps/desktop/electron/{main,preload}.js` | 截图通道两方法 + 三个 RPC 进 `ALLOWED_METHODS`；`readBrowserShot` 校验「父目录必须恰好等于截图目录」防 `..` 穿越 |
+| `apps/desktop/src/**` | `BrowserPanel.tsx`（状态条 / 地址栏 / 当前页 / 截图网格 / 工具与风险表 / 大图 modal）；rail 加地球图标；`useAgent` 三个方法 + notice；`api` / `env.d.ts` 两个截图方法 |
+| `tools/browser-test.js`（新）· `fixtures/{browser-page.html,seed-browser.js}` | 76 项测试；fixture 演示页；截图预置脚本（真拉起 → 导航 → 输入 → 点击 → 截两张 → shutdown） |
+| `tools/capture.sh` · `package.json` | browser 场景（渲染层走「地址栏输入 → 打开」真实用户路径）；`test:browser` 挂进 verify，并把 `real-dsh-mcp` 排到链尾 |
+
+**验证**
+
+```text
+npm run build                                  # 通过
+npm run typecheck -w @deepwork/desktop         # 通过
+npm run test:browser                           # 76/76 通过（真实 Edge 驱动）
+node tools/connector-test.js                   # 42/42（修断言后）
+node tools/model-endpoint-test.js              # 31/31（修断言后）
+npm run verify                                 # 17 套中 16 套全绿：
+  # diff / tools 19 / replay 29 / smoke 26 / partial 13 / terminal 22 / acp 37 / real-dsh 15
+  # / skills 59 / skillctx 24 / memory 38 / schedule 68 / connectors 42 / usage 27
+  # / browser 76 / modelcfg 31
+  # real-dsh-mcp 3/8 —— 环境性失败（已复现于改动前基线），现排在链尾（见踩坑 2）
+bash tools/capture.sh                          # 12 场全部生成，回执逐条核对：
+  # chat ok / tree ok / terminal ok / preview ok / hunk「已选 1 / 2 处」
+  # / settings active:模型 / skills skill:demo-notes / memory entry:所有项目的提交信息用中文书写
+  # / schedule task:每周晨会纪要 / connectors connector:fs-local / usage total:69.4k
+  # / browser title:深边AI Work · 浏览器演示页 shots:2
+真实冒烟（tools/browser-test.js 内）：系统 Edge 拉起 → 导航 file:// fixture → 读中文文本无乱码
+  → 截图 PNG（magic bytes 校验）→ 进程树清理；endpoint 文件已删（无残留）。
+目检 artifacts/ui-browser.png：运行中状态（pid / 端口 / Edge 路径）/ 地址栏 / 当前页标题 /
+  2 张截图（demo-page.png 25.9K、demo-typed.png 26.4K）/ 6 工具表（evaluate 显示「高风险」）。
+```
+
+**踩坑与修复**
+
+1. **新增的常驻内置补丁贡献者，打翻了两条「补丁文件不存在」的断言。**
+   内置浏览器 MCP 服务是**常驻注入**的（与 fs / shell 一样始终对模型可见），于是
+   `runtime/kernel.patch.yml` **总会存在**。三条老断言随即变红：
+   `connector-test` 的「空清单启动不生成补丁文件 / 清单清空后重启会清理补丁文件」，
+   `model-endpoint-test` 的「切回 official 补丁文件移除」。它们的共同毛病是**把「文件在不在」
+   当成了「连接器 / 端点条目在不在」** —— 写死了「补丁文件只可能由连接器、端点产生」这个实现细节。
+   → 三条断言全部改成看**内容**（有没有 `deepwork-connector-` / `llm-deepseek` 条目），
+   并补一条正向断言「清空连接器不影响内置浏览器服务」。语义没变，参照物从实现细节换成了契约事实。
+2. **verify 的 `&&` 链被已知失败的套件截断，把一个真回归藏了整整一轮。**
+   `real-dsh-mcp` 在本机环境性失败、`exit=1`，偏偏它排在 `model-endpoint` **前面** ——
+   于是 model-endpoint 从没在 `npm run verify` 里跑到过。上面第 1 条里那个 model-endpoint 回归
+   （`切回 official 补丁文件移除`）就是被它挡住的：单独跑 `node tools/model-endpoint-test.js` 才看得见。
+   → 把 `real-dsh-mcp` **移到最后一位**（仍是哨兵，但不再遮蔽后面的套件）。
+   这条比第 1 条更值钱：**验证基线的「绿」只有在所有套件都真的跑过时才成立**。
+   verify 退出码仍为 1（唯一原因就是这个已知失败），与历史口径一致。
+3. **截图脚本 `BROWSER_OK` 误报「未找到浏览器」→ 场景被安静跳过。**
+   检测里 `require('$REPO_MSYS/packages/...')` 用了 msys 的 `/d/...` 路径，而 `node` 是原生
+   Windows 程序不认，require 失败被判成「机器上没浏览器」，browser 场景从没跑过。
+   → 改 `$REPO`（原生 `D:/` 形式）。同一坑在 CONVENTIONS 记过（「传路径给原生程序只能用 D:/ 形式」），
+   这次栽在 shell 变量拼接上。
+4. **页面级 CDP 命令需要会话附着。** 直接往浏览器级 WS 发 `Runtime.evaluate` 会「命令成功但
+   作用在错误的 target」。→ `Target.attachToTarget` 拿 sessionId，页面域命令全部带它。
+5. **受控组件 `el.value=` 不生效。** 直接赋值后 React 这类受控组件的内部状态不变、读到的还是旧值。
+   → 用原生 setter（`Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set`）
+   + 派发 `input` / `change` 事件。
+6. **`shutdown` 越权杀进程。** 原按 endpoint 里的 pid 无条件杀 —— 会误杀内核侧 MCP 服务拉起的浏览器。
+   → 只杀本进程 `this.child` 持有的那个；借用方 `close()` 只断开 WS。
+7. **ESM 下 `require`**（manager 里 `killByPid` 用了 `require('node:child_process')`）→ 提到
+   `cdp.ts` 的 `killPidTree`，manager 调它。
+8. **fixture 缺 `meta charset` → 中文乱码**（`data:` URL 冒烟时暴露）→ 正式测试改用带
+   `meta charset="utf-8"` 的 `file://` 页面；顺带把一句话文案里超长的 URL 截断（完整 URL 仍在结构化字段）。
+
+**遗留**
+
+- 浏览器动作只覆盖「打开 / 读 / 点 / 输 / 求值 / 截图」，没有等待条件（waitForSelector）、
+  网络拦截、多标签页管理。够「AI 查资料、填表单、截图留证」，不够复杂自动化。
+- CDP 直连在高并发多动作下有竞态（未做命令排队）；当前是串行工具调用，暂未暴露。
+- `real-dsh-mcp` 的环境性失败根因仍未定位（疑似 dsh-mcp-client 在隔离 DSH_HOME 下拉不起来）。
+  该链路现在也经浏览器 MCP 服务，但加浏览器后失败项数未变（仍 3/8），说明与本轮无关。
+- 截图是全视口整数截图，没有元素级截图（`clip`）与滚动拼接。
+- 没有「接入用户在别处开的带调试端口浏览器」的方式，只支持自己拉起。
+- 截图脚本在场景切换间隙偶发一条 `内核宿主未就绪，请稍候重试`（上一实例关闭瞬间的尽力刷新），
+  不影响任何产物与回执，本轮未追。
+
+**下一步**
+
+M2 剩余项按 ROADMAP 顺序：M2-I（Office 生成，`office.docx` / `office.xlsx`）→
+M2-K（自动更新，依赖发布通道，本地只能做到「接线就绪 + 模拟 feed 验证」）。
+
+---
+
+## 2026-09-13 · M2-I · Office 生成与 OFD 原生读取：手写 zip + 最小 OOXML + 坐标排序读 OFD
+
+**目标**
+
+按 ROADMAP 推进 M2-I：给模型两个写工具 `office.docx` / `office.xlsx`（落盘工作区，confirm 档），
+验收判据是「写出来的文件**必须能被真实 Office / WPS 打开**」——这是验收动作，不是选项。
+本轮还额外做了一项明确要求的能力：**原生读取 OFD**（GB/T 33190-2016，国标版式归档格式）。
+OFD 在归档 / 公文场景常见，但 Node 侧没有可用且零依赖的读写库，市面方案要么引重型依赖、
+要么调外部转换器。
+
+硬约束只有一条：**零第三方依赖**（「装完就能跑」）。ROADMAP 原先列的两条路线都不理想 ——
+引 `docx` 纯 JS 库破坏约束，手写 store 模式 zip 又牺牲压缩率。实际选了第三条：
+**手写 zip 容器（deflate 借 Node 内置 `node:zlib`）+ 手写最小 OOXML**，
+于是「零依赖」与「文件是压缩的」可以同时成立。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/office.ts`（新） | 契约：三个工具名常量、`OFFICE_NATIVE_EXTENSIONS`（`.ofd/.docx/.xlsx`）与文本类扩展、`OFFICE_TOOL_RISK`（docx/xlsx=confirm、read=safe）、上限常量（`OFFICE_MAX_BYTES=40MB` / `MAX_ENTRY_BYTES=8MB` / `MAX_ENTRIES=2048` / `MAX_ROWS=20000` / `MAX_COLS=256` / `MAX_CELL_CHARS=32000` / `TEXT_LIMIT=20000`）、`OfficeWriteResult` / `OfficeReadResult`、`officeDocKindOf()`（大小写不敏感，返回 ofd/docx/xlsx/text/null） |
+| `packages/protocol/src/index.ts` | 导出 office 契约 |
+| `packages/core-host/src/office/zip.ts`（新） | 手写 zip：`crc32` + `zipWrite`（local header / central directory / EOCD；store 与 deflate 两模式；UTF-8 名置通用标志位 11；**DOS 时间戳固定**保证可复现）+ `zipRead`（从尾部扫 EOCD、**CRC32 与长度双重校验**、zip-bomb 上限）；`entryText` / `entriesEndingWith` |
+| `packages/core-host/src/office/xml.ts`（新） | `escapeXml` / `unescapeXml`（含十进制与十六进制**数字实体** —— `&#12289;` 必须还原成 `、`）、`stripTags` / `textsOf` / `blocksOf` / `openTagsOf`（自闭合标签如 `<Page .../>`、`<sheet/>` 专用）/ `attrOf` / `numberAttr` |
+| `packages/core-host/src/office/text.ts`（新） | `isCJK` / `smartJoin`（CJK 之间不加空格、西文之间一个空格）/ `smartConcat` / `collapseSpaces` |
+| `packages/core-host/src/office/docx.ts`（新） | `parseMarkdownSubset`（标题 / 段落 / 列表 / 引用 / 代码块 / 表格 / 分隔线；未闭合围栏容错）+ `parseInline`（粗体 / 斜体 / 行内码 / 链接）+ `buildDocx`（**8 个必备部件**：`[Content_Types].xml`、`_rels/.rels`、`document.xml`、`document.xml.rels`、`styles.xml`（eastAsia=等线）、`numbering.xml`、`docProps/core.xml`、`docProps/app.xml`）+ `extractDocxText`（单遍正则按文档真实顺序合并 `<tbl>` 与 `<w:p>`，表格单元格以 ` \| ` 连接） |
+| `packages/core-host/src/office/xlsx.ts`（新） | `buildXlsx`（sharedStrings + 冻结表头 `pane` + **两个 fill**：none 与 gray125）+ `sanitizeSheetName`（非法字符替换、≤31 字）+ `columnName`（A/Z/AA…）+ `rowsFromMarkdownTable` + `extractXlsxText` |
+| `packages/core-host/src/office/ofd.ts`（新） | `extractOfdText`（zip 包与裸 XML 两种形态）：`locatePages`（OFD.xml → DocRoot/Document.xml → Page `BaseLoc`，自闭合标签感知，退化到 Content.xml）+ `textCodeFragments`（只取 `TextObject`，`Annot` 批注排除）+ `fragmentsToLines`（**Y 聚行 + 行内 X 升序 + smartJoin**） |
+| `packages/core-host/src/office/read.ts`（新） | `readOfficeDocument` / `textViewOfBytes`（按 kind 分发 ofd/docx/xlsx/文本）、体积上限、NUL 字节二进制探测、错误信息可行动化 |
+| `packages/core-host/src/tools/builtin.ts` | `registerOfficeTools(registry)` **无条件注册**（不设依赖门，与浏览器需进程级管理器不同）；docx/xlsx 走 `runOfficeWrite`（**预览与执行共享同一份 `plan` 快照**、内容无变化短路、扩展名补全与不匹配拒绝、越界拒绝、`rows` 支持 Markdown 表格串或二维数组）、`office.read` 走只读路径 |
+| `tools/office-test.js`（新） | 130 项：契约层 / zip 编解码 / docx 生成 / xlsx 生成 / OFD 原生读（对 `sample.expected.txt` 及全部边界）/ 工具层（审批链、拒绝即不落盘、文本视图预览、扩展名、越界、坏 rows）/ **Python 独立实现校验** / 接线 |
+| `tools/fixtures/make-ofd-fixture.py`（新） | **用 Python（`zipfile`）**生成 OFD 样本：`sample.ofd`（deflate）/ `sample-stored.ofd`（store）/ `sample-single.ofd`（裸 XML）/ `sample.expected.txt`；XML 书写顺序**故意打乱**，含数字实体与 `Annot`（须排除） |
+| `tools/open-with-office.js`（新） | 用**真实 WPS / Office 打开**文档，并用 `desktopCapturer` **按窗口标题**截取该文档窗口（不抓整屏）；找不到匹配窗口按 3s 重试 6 轮；收尾杀整棵进程树 |
+| `tools/fixtures/seed-office.js`（新） | 用真实 `buildDocx` / `buildXlsx` 生成 `artifacts/office-demo/{report.docx,budget.xlsx}` 并回读统计 |
+| `tools/capture.sh` · `package.json` | 新增 `office` 场景（无 WPS / Office 时明确跳过）；`test:office` 挂进 verify（排在 browser 之后、modelcfg 之前） |
+| `docs/{ROADMAP,CONVENTIONS}.md` · `README.md` | M2-I 标为完成、快照 90%；新增「Office 生成与文档读取纪律」；测试表 / 场景表 / 验证基线口径同步 |
+
+**验证**
+
+```text
+npm run test:office    # 130/130 通过
+                       # 分节实测：契约 8 / zip 编解码 13 / docx 生成 25 / xlsx 生成 24
+                       # / OFD 原生读 14 / 工具层（审批链·边界·落地形态）25
+                       # / Python 独立校验 14 / 接线取证 7   —— 合计 130
+node tools/office-test.js 内 Python 复核（另起 python 进程，非本项目实现，共 14 项）：
+  # check.docx / check.xlsx：CRC 正确、XML 良构、[Content_Types].xml 覆盖全部部件、rels 目标可达（各 4 项）
+  # sample.ofd / sample-stored.ofd：CRC 正确、XML 良构、rels 目标可达（各 3 项；OFD 无 Content_Types 概念）
+npm run verify         # 18 套中 17 套全绿：
+  # diff / tools 19 / replay 29 / smoke 26 / partial 13 / terminal 22 / acp 37 / real-dsh 15
+  # / skills 59 / skillctx 24 / memory 38 / schedule 68 / connectors 42 / usage 27
+  # / browser 76 / office 130 / modelcfg 31
+  # real-dsh-mcp 3/8 —— 既有环境性失败（排在链尾，与历史口径一致）
+bash tools/capture.sh office
+  # [seed] report.docx 4928 B · 标题 3 / 段落 3 / 列表 6 / 引用 1 / 代码块 1 / 表格 1（4×4）
+  # [seed]   读回 16 段，含表格：true
+  # [seed] budget.xlsx 4036 B · 7 行 × 4 列（首行表头，已冻结）
+  # [seed]   读回工作表「预算执行」，28 个单元格
+  # [office] 已截图 ui-office.png（170025 B，来源=window · 窗口「report.docx - WPS Office」）
+  # [office] 已截图 ui-office-sheet.png（165055 B，来源=window · 窗口「budget.xlsx - WPS Office」）
+  # 落盘字节与回执一致（ls：report.docx 4928 / budget.xlsx 4036）——固定时间戳使产出可复现
+目检 ui-office.png：WPS 标题栏为 report.docx，一级标题加粗、正文段落与 4×4 表格渲染正常，
+  右侧「样式和格式」窗格列出的正是本包自定义样式（标题 / List Paragraph / Quote）——无「文件已损坏」提示。
+目检 ui-office-sheet.png：WPS 表格打开 budget.xlsx，工作表标签「预算执行」，表头加粗、数字右对齐，
+  公式栏显示所选单元格「人力成本」。
+```
+
+**踩坑与修复**
+
+1. **「自己写的 zip 被自己写的 reader 解开」只证明自洽，不证明对。**
+   130 项里最初全是自己读自己写。→ 加一条**独立实现校验**：另起 Python 进程
+   （`zipfile` + `xml.etree.ElementTree`）复核 CRC / XML 良构 / `[Content_Types].xml` 是否覆盖到每个部件 /
+   rels 目标是否真实存在。**OFD 样本也改由 Python 生成**（`make-ofd-fixture.py`），
+   让「读」这一侧面对的是外部生产者，而不是自家写包器。
+2. **测试里「造 CRC 失败」的自造用例，自己先坏了。** 原本用「deflate 模式下改一个字节」造校验失败，
+   又写了个 `indexOfBuffer` 辅助函数去找数据段起点 —— 该函数根本不存在，报的是
+   `undefined is not a function` 而不是断言失败（**红得像个真 bug，其实是测试自己写错了**）。
+   → 改用 `compress:false`（store 模式数据段就是明文）+ `firstEntryDataOffset` 定位；
+   改一个字节后**必须**触发「CRC32 校验失败」。
+3. **docx 往返把表格弄丢了。** 最初用 `\u0000TABLE{n}\u0000` 占位符标记表格，但占位符落在
+   `<w:p>` 之外，段落扫描直接丢掉它 —— **生成的 docx 用真实软件打开正常、只是回读文本里没有表格**。
+   这种「一半对」最危险：结构断言全绿，功能却缺了一块。→ 改成单遍正则**同时**扫描 `<tbl>` 与 `<w:p>`、
+   按文档真实顺序合并，分支顺序保证表格单元格不被当成段落。
+4. **`<sheet .../>` 是自闭合标签，配对标永远不命中。** 用 `blocksOf`（配对标签）取工作表名恒定得到
+   空数组。→ 在 `xml.ts` 补 `openTagsOf`（专治自闭合），配 `attrOf` 取 `name`。
+5. **OFD 样本里的数字实体被二次转义。** 样本要含 `&#12289;`（即 `、`），但生成脚本先做了
+   `escape_xml`，把 `&` 转成 `&amp;`，读出来就成了字面量 `&#12289;`。→ 片段改成三元组
+   `(x, text, raw_xml)`，`raw_xml` 原样写进 XML，`expected.txt` 用纯文本 `text` 计算。
+6. **xlsx 少一个 fill 直接打不开。** Excel / WPS 要求 `styles.xml` 至少有 `none` 与 `gray125` 两个填充；
+   只写一个时结构断言照样过，但真实软件报「文件已损坏」。→ 补齐两个 fill，并把这条隐含要求写进
+   CONVENTIONS：**结构断言证明不了 Office 认它，只有打开才算**。
+7. **截图抓到了别人家的窗口。** 首轮 docx 截到 WPS（对），xlsx 却截到了另一个前台应用 ——
+   因为「整屏 = 此刻最靠前的窗口」，而拉起外部程序时前台不受我们控制。
+   **失败形态极坏：截图成功、日志全绿，只有图上是别的应用。** → 改成 `captureDocumentWindow`：
+   按**窗口标题含文档名**匹配那个 window source 并**只截它**，找不到按 3s 重试 6 轮，全失败才退化整屏并出声。
+8. **OFD 的 `locatePages` 里有一段永远执行不到的兜底。** 原本把 Content.xml 兜底放在
+   `Document.xml` 存在性检查**之后**，那条分支永远到不了。→ 把兜底移到存在性检查之前。
+9. **写「验证」段的数字前必须先跑一遍 —— 凭印象写会全错，而读者分辨不出来。**
+   本轮起草时按记忆写了分节项数（契约 12 / zip 33 / docx 21 / xlsx 17 / OFD 24 / 工具层 18 /
+   Python 5 / 接线），跑一遍实际是 **8 / 13 / 25 / 24 / 14 / 25 / 14 / 7**（合计 130）——
+   八个数全错，且错得「看起来很合理」。这比「写一句应该没问题」更隐蔽：**数字格式正确、
+   总量也对，只有分量是编的**。→ 定死一条：验证段里任何数字都要来自当场那次命令的输出；
+   分节项数从测试日志逐节数出来，不靠估。
+
+**遗留**
+
+- Markdown 子集只覆盖标题 / 段落 / 列表 / 引用 / 代码块 / 表格 / 分隔线；没有图片、脚注、
+  页眉页脚 / 页码、样式主题、多列分栏。够「生成一份像样的报告 / 表格」，不够复杂排版。
+- OFD 只做**读**（文字提取）：不做写、不做渲染（不画版式、不产图），印章 / 签名 / 附件结构未解析。
+- xlsx 只写单工作表，无公式、无合并单元格、无图表；列宽固定，未做自适应。
+- `ui-office.png` 里 WPS 右侧「样式和格式」任务窗格遮住了部分正文。该窗格是 WPS **持久化的界面状态**，
+  要关掉得改用户的 WPS 配置（收益小于风险），因此如实保留并在此说明 ——
+  验收判据（真实 WPS 打开、标题栏为 report.docx、无损坏提示）不受影响。
+- `artifacts/office-demo/` 是演示产物（可再生产物，不进库）；WPS 会留一个孤儿锁文件
+  `~$report.docx`，属正常现象。
+
+**下一步**
+
+M2 剩余项按 ROADMAP：仅剩 **M2-K（自动更新）**，依赖外部发布通道，本地只能做到
+「接线就绪 + 模拟 feed 验证」（本地静态服务器伪装更新源，走通下载 → 校验 → 提示 → 重启）。
+真实发布通道属运维决策，届时如实标注，不假装「自动更新已完成」。

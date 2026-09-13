@@ -1,0 +1,76 @@
+# 深边AI Work —— 打包配置
+#
+# 这份配置的形状由三条既有约束决定，不是随手写的默认值：
+#
+#  1. 内核跑在**独立 node 子进程**里（Electron 内置 Node 版本不受我们控制，而真实
+#     Harness 要求 22.19+）。asar 是 Electron 私有的归档格式，只有 Electron 自带的
+#     fs 补丁读得了它 —— 外部 node 读不了。所以内核必须落在 asar 之外，
+#     否则「优先用外部 node」这条路会被打包方式直接堵死。
+#
+#  2. 内核唯一的外部依赖是 @deepwork/protocol。它不是从 npm 装的，而是 workspace 包，
+#     打包后没有 node_modules 可解析，因此要手工摆出 core-host/node_modules/@deepwork/protocol
+#     这个结构，让 require('@deepwork/protocol') 能找到。
+#
+#  3. 渲染层已被 vite 打成静态资源，壳层只依赖 electron 与 node 内建模块 ——
+#     所以不需要把 node_modules 打进去，产物里也没有原生模块需要 rebuild。
+#
+# 注：devDependencies 里 electron 的版本被钉成精确值（不带 ^）。electron-builder 必须知道
+# 一个确定版本才能去下载对应平台的二进制 —— 版本范围它无法解析，会直接失败。
+# 版本号只留在 apps/desktop/package.json，这里不重复，避免两处不同步。
+
+appId: cn.deepwork.work
+productName: 深边AI Work
+copyright: Copyright © 2026 深边AI
+
+directories:
+  output: ../../release
+  buildResources: build
+
+# 进 asar 的内容。appDir 是 apps/desktop。
+files:
+  - electron/**/*
+  - dist/**/*
+  - package.json
+
+# 内核产物：放在 asar 之外，并摆出可被 require 解析的依赖结构
+extraResources:
+  - from: ../../packages/core-host/dist
+    to: core-host/dist
+    filter:
+      - "**/*.js"
+  # protocol 是 workspace 包，打包后没有 node_modules 软链，需要手工落位。
+  # 只取 .js：.d.ts 与 sourcemap 在运行时用不到。
+  - from: ../../packages/protocol/dist
+    to: core-host/node_modules/@deepwork/protocol/dist
+    filter:
+      - "**/*.js"
+  - from: ../../packages/protocol/package.json
+    to: core-host/node_modules/@deepwork/protocol/package.json
+
+# 没有原生模块，跳过 rebuild —— 省掉一次本机 toolchain 依赖
+npmRebuild: false
+
+win:
+  icon: build/icon.png
+  # 可执行文件名用 ASCII：命令行、脚本与日志里引用它时，中文路径在某些终端下会被吞。
+  # 用户看到的名字仍是 productName（深边AI Work），二者可以不同。
+  executableName: DeepWork
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: zip
+      arch: [x64]
+
+# zip 免安装包
+artifactName: DeepWork-${version}-win-x64.${ext}
+
+nsis:
+  # 不做一键安装：装到哪、要不要快捷方式，交给用户决定
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 深边AI Work
+  # 产物名保持 ASCII，理由同 executableName
+  artifactName: DeepWork-${version}-setup.${ext}
