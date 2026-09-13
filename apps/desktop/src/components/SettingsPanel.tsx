@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AppConfig, AppView, GuardPolicy, HostStatus, ModelDescriptor } from '@deepwork/protocol';
+import type { AppConfig, AppView, GuardPolicy, HostStatus, ModelDescriptor, ModelEndpoint } from '@deepwork/protocol';
 import { AGENT_MODE_LABEL, APP_VIEW_LABEL, type AgentMode } from '@deepwork/protocol';
 
 interface SettingsPanelProps {
@@ -321,6 +321,11 @@ function ModelSettings({
   onRestartKernel,
 }: ModelSettingsProps) {
   const endpoint = config.modelEndpoint;
+  // 提供方选择是本地状态：切到「自定义」时模型名往往还没填，此刻就落盘会被
+  // 宿主 validateEndpoint 拒绝（报错的还是顶部全局横幅，字段都还没显示出来）。
+  // 所以切 custom 只在本地展开输入框，点「保存端点配置」才持久化；
+  // 切回 official 永远合法，立即落盘。
+  const [kind, setKind] = useState(endpoint.kind);
   const [baseUrl, setBaseUrl] = useState(endpoint.baseUrl ?? '');
   const [modelName, setModelName] = useState(endpoint.model ?? '');
   const [keyInput, setKeyInput] = useState('');
@@ -346,12 +351,12 @@ function ModelSettings({
     run(
       'endpoint',
       async () => {
-        if (endpoint.kind === 'custom' && (!baseUrl.trim() || !modelName.trim())) {
+        if (kind === 'custom' && (!baseUrl.trim() || !modelName.trim())) {
           throw new Error('自定义端点需要 baseUrl 与模型名');
         }
         onUpdateConfig({
           modelEndpoint:
-            endpoint.kind === 'custom'
+            kind === 'custom'
               ? { kind: 'custom', baseUrl: baseUrl.trim(), model: modelName.trim() }
               : { kind: 'official' },
         });
@@ -385,21 +390,18 @@ function ModelSettings({
       <div className="modal-label">模型提供方</div>
       <select
         className="settings-input"
-        value={endpoint.kind}
-        onChange={(event) =>
-          onUpdateConfig({
-            modelEndpoint:
-              event.target.value === 'custom'
-                ? { kind: 'custom', baseUrl: baseUrl.trim() || 'http://localhost:11434/v1', model: modelName.trim() }
-                : { kind: 'official' },
-          })
-        }
+        value={kind}
+        onChange={(event) => {
+          const next = event.target.value as ModelEndpoint['kind'];
+          setKind(next);
+          if (next === 'official') onUpdateConfig({ modelEndpoint: { kind: 'official' } });
+        }}
       >
         <option value="official">DeepSeek 官方（api.deepseek.com）</option>
         <option value="custom">自定义 OpenAI 兼容端点（本地 / 私有）</option>
       </select>
 
-      {endpoint.kind === 'custom' ? (
+      {kind === 'custom' ? (
         <>
           <div className="modal-label">端点地址（baseUrl）</div>
           <input
