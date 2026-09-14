@@ -5,6 +5,7 @@ import {
   type AgentMode,
   type AppView,
   type AttachmentPreview,
+  type ModelDescriptor,
 } from '@deepwork/protocol';
 import { formatBytes } from './api';
 import { ActivityRail } from './components/ActivityRail';
@@ -27,6 +28,25 @@ import { AttachmentBar } from './components/AttachmentBar';
 import { useAgent } from './useAgent';
 
 const MODES: AgentMode[] = ['ptc', 'standard', 'minimal', 'creative'];
+
+/**
+ * 模型条目的来源提示（挂在下拉的 title 上）。
+ *
+ * 为什么不塞进选项文字里：下拉只有一行宽，「DeepSeek-V4-Flash（内核 session/new 公布）」
+ * 会把真正的模型名挤掉。但来源必须能查到 —— 「这个条目的显示名是内核说的，还是我们编的」
+ * 是判断界面可信度的关键信息，上一版正是编的，而且没留任何痕迹。
+ */
+function modelSourceHint(item: ModelDescriptor): string {
+  const window = item.contextWindow ? `${item.contextWindow} token` : '未提供';
+  switch (item.source) {
+    case 'kernel':
+      return `${item.id} · 内核 session/new 公布（provider: ${item.provider || '未知'}）· 上下文窗口 ${window}`;
+    case 'endpoint':
+      return `${item.id} · 自定义端点 ${item.endpoint ?? '(未填地址)'} · 上下文窗口 ${window}`;
+    default:
+      return `${item.id} · ${item.label}`;
+  }
+}
 
 /** 打开某个视图前要拉的数据：面板的唯一事实来源在内核侧，不缓存第二份 */
 const VIEW_REFRESH: Partial<
@@ -242,13 +262,23 @@ export default function App() {
                   </select>
                 </label>
 
+                {/*
+                  模型清单的条目来源不止一种（内核真帧 / 自定义端点 / mock），
+                  标记跟着条目走而不是跟着页面走：同一次里用户可能正在看一份
+                  「内核公布的官方模型 + 自己配的端点模型」混在一起的清单。
+                */}
                 <label className="control">
                   <span>模型</span>
                   <select value={model} onChange={(event) => setModel(event.target.value)}>
-                    {agent.models.length === 0 ? <option value={model}>{model || '默认'}</option> : null}
-                    {agent.models.map((item) => (
-                      <option value={item.id} key={item.id}>
+                    {/* 清单为空时也要能显示当前会话正在用的模型：否则用户面对一个空下拉，
+                        看到的结论是「没有模型可用」，而实际上会话正跑在某个模型上 */}
+                    {(agent.catalog?.models.length ?? 0) === 0 ? (
+                      <option value={model}>{model || '默认'}</option>
+                    ) : null}
+                    {(agent.catalog?.models ?? []).map((item) => (
+                      <option value={item.id} key={`${item.source}:${item.id}`} title={modelSourceHint(item)}>
                         {item.label}
+                        {item.source === 'endpoint' ? '（自定义端点）' : ''}
                       </option>
                     ))}
                   </select>
@@ -403,7 +433,7 @@ export default function App() {
           <SettingsPanel
             config={agent.config}
             guard={agent.guard}
-            models={agent.models}
+            catalog={agent.catalog}
             status={agent.status}
             modelKeyStatus={agent.modelKeyStatus}
             onUpdateConfig={(patch) => void agent.updateConfig(patch)}
@@ -411,6 +441,7 @@ export default function App() {
             onSetApiKey={agent.setModelApiKey}
             onClearApiKey={agent.clearModelApiKey}
             onRefreshKeyStatus={agent.refreshModelKeyStatus}
+            onRefreshModels={agent.refreshModels}
             onRestartKernel={agent.restartKernel}
             onClose={backToChat}
           />

@@ -16,7 +16,7 @@ import type {
   MemoryEntry,
   MemoryLayer,
   MemoryLayerStat,
-  ModelDescriptor,
+  ModelCatalog,
   ModelPrice,
   ScheduleSpec,
   ScheduleTask,
@@ -69,7 +69,16 @@ export interface UseAgentResult {
   timeline: TimelineItem[];
   events: AgentEvent[];
   approvals: ApprovalRequest[];
-  models: ModelDescriptor[];
+  /**
+   * 模型目录（含「这份清单从哪来」）。
+   *
+   * 权威来源是内核 session/new 真帧，渲染层不缓存第二份，也不自己拼一份 ——
+   * 它与「设置页显示的模型」必须是同一份数据，否则用户会看到两个答案。
+   * null = 还没拉过。
+   */
+  catalog: ModelCatalog | null;
+  /** 强制重新向内核核对模型目录（会新建一个探针会话，用完即关） */
+  refreshModels: () => Promise<void>;
   activeRunId: string | null;
   usage: { promptTokens: number; completionTokens: number; costCny: number };
 
@@ -204,7 +213,7 @@ export function useAgent(): UseAgentResult {
   const [timeline, setTimeline] = useState<TimelineItem[]>(EMPTY_TIMELINE);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
-  const [models, setModels] = useState<ModelDescriptor[]>([]);
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [tree, setTree] = useState<WorkspaceTree | null>(null);
   const [treeLoading, setTreeLoading] = useState(false);
@@ -297,7 +306,7 @@ export function useAgent(): UseAgentResult {
 
     void (async () => {
       try {
-        const [hostStatus, modelList, list, appConfig, guardPolicy] = await Promise.all([
+        const [hostStatus, modelCatalog, list, appConfig, guardPolicy] = await Promise.all([
           invoke('host.status'),
           invoke('models.list'),
           invoke('session.list'),
@@ -307,7 +316,7 @@ export function useAgent(): UseAgentResult {
         if (cancelled) return;
 
         setStatus(hostStatus);
-        setModels(modelList);
+        setCatalog(modelCatalog);
         setSessions(list);
         setConfig(appConfig);
         setGuard(guardPolicy);
@@ -995,6 +1004,21 @@ export function useAgent(): UseAgentResult {
     setModelKeyStatus(await invoke('model.apiKey.clear'));
   }, []);
 
+  /**
+   * 重新向内核核对模型目录。
+   *
+   * 走的是 models.refresh 而不是 models.list：前者才允许新建探针会话真的去问一次内核。
+   * 区别很重要 —— 用户点这个按钮的场景正是「我在端点上换完模型了」，
+   * 若复用缓存就会回同一份旧清单，看起来像功能没生效。
+   */
+  const refreshModels = useCallback(async () => {
+    try {
+      setCatalog(await invoke('models.refresh'));
+    } catch (cause) {
+      setError(describeError(cause));
+    }
+  }, []);
+
   const current = useMemo(
     () => sessions.find((session) => session.id === currentId) ?? null,
     [sessions, currentId],
@@ -1037,7 +1061,8 @@ export function useAgent(): UseAgentResult {
     timeline,
     events,
     approvals,
-    models,
+    catalog,
+    refreshModels,
     activeRunId,
     usage,
     changedPaths,
