@@ -31,6 +31,7 @@ export type AgentEventType =
   | 'approval.requested'
   | 'approval.resolved'
   | 'usage'
+  | 'context.usage'
   | 'run.completed'
   | 'run.failed';
 
@@ -196,6 +197,34 @@ export interface UsageEvent extends EventBase {
   usage: Usage;
 }
 
+/**
+ * 上下文占用 —— 内核上报的「现在装了多少、最多能装多少」。
+ *
+ * ── 它和 `usage` 不是一件事，不能合并 ──
+ *  - `usage`        本轮花了多少 token、多少钱。**只有 mock 内核报**；真实内核的
+ *                   ACP 通道不上报 token 与费用（规格明确把 provider 原始增量与
+ *                   呈现数据留在链路外，2026-09-14 实测确认）。
+ *  - `context.usage` 当前上下文占了多少、容量多大。**真实内核报**（ACP 的
+ *                   `usage_update`，每提交一条助手消息后各报一次）。
+ *
+ * 两者恰好互补：真实模式下能答的只有后者。把前者显示成 `0 / ¥0.0000` 是拿
+ * 「没上报」冒充「没花钱」——那正是这个事件存在的理由。
+ *
+ * ── size 为什么不必标「估计」──
+ * 它是**内核认定的容量**，不是我们算的：官方模型由内核目录给出，自定义端点模型
+ * 取的是我们在运行时补丁里填的 `contextWindow`（2026-09-14 实测：补丁填 123456，
+ * 帧里 `size` 就是 123456）。所以「用户填的 contextWindow」这条链路
+ * 由此变成可验证的，而不是"填了应该有用"。
+ */
+export interface ContextUsageEvent extends EventBase {
+  type: 'context.usage';
+  runId: string;
+  /** 已占用 token（内核 token meter 的测量值） */
+  used: number;
+  /** 容量 token（内核认定的上下文窗口） */
+  size: number;
+}
+
 export interface RunCompletedEvent extends EventBase {
   type: 'run.completed';
   runId: string;
@@ -229,6 +258,7 @@ export type AgentEvent =
   | ApprovalRequestedEvent
   | ApprovalResolvedEvent
   | UsageEvent
+  | ContextUsageEvent
   | RunCompletedEvent
   | RunFailedEvent;
 

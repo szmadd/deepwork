@@ -54,8 +54,29 @@ export interface Session {
   updatedAt: number;
   /** 累计用量，用于成本面板 */
   usage: Usage;
+  /**
+   * 最近一次内核上报的上下文占用；内核一次都没报过时为空。
+   *
+   * 落进会话 meta 而不是只留在事件流里，是为了让「切走再切回来 / 重启应用」
+   * 之后仍然看得到 —— 上下文占用是用户判断「这轮还能不能塞下」的即时依据，
+   * 只在当次事件流里有效的话，它的可用窗口会短得没有意义。
+   */
+  context?: SessionContextUsage;
   /** 由分叉产生时记录来源；普通会话为空 */
   fork?: SessionFork;
+}
+
+/**
+ * 上下文占用快照。
+ *
+ * `size` 是**内核认定的容量**（官方模型来自内核目录，自定义端点模型来自
+ * 我们在运行时补丁里填的 contextWindow），所以界面上不必标注"估计"。
+ */
+export interface SessionContextUsage {
+  used: number;
+  size: number;
+  /** 该快照的采集时刻 */
+  ts: number;
 }
 
 export interface Usage {

@@ -17,6 +17,12 @@
  * 用配置里的单价表**按 token 重算**的估算。两者都对，但回答的问题不同 ——
  * 混成一个数就会在「换模型之后」这段窗口里给出自相矛盾的结论。
  * 模型没有配置单价时估算返回 `null` 而不是 0：**0 会被读成「免费」**。
+ *
+ * ── 第三个口径：根本没上报 ──
+ * 真实内核的 ACP 通道不上报 token 与费用（见 `UsageCoverage`）。此时
+ * `costCny = 0` 与「免费」无关，`estimatedCostCny = null`（无样本 ⇒ 无单价问题）
+ * 也读不出原因。所以汇总必须带上 `coverage`，让界面能说「这几轮的用量内核没报」
+ * 而不是替内核宣称用户没花钱。三件事——上报的、估算的、没上报的——必须能分开看。
  */
 
 import type { Usage } from './session';
@@ -70,8 +76,28 @@ export interface UsageSummary {
    * 界面必须如实标出它们 —— 否则「估算」会静默漏掉一部分用量。
    */
   unpricedModels: string[];
+  /**
+   * 数据完整性：有几轮跑了、其中几轮有用量数据。
+   *
+   * ── 为什么必须有它 ──
+   * 真实内核（ACP）**不上报 token 与费用**，只上报上下文占用。所以真实模式下
+   * `totals` 会是三个 0 —— 那是「内核没上报」，不是「没花钱也没用 token」。
+   * 少了这个字段，界面只能把 0 显示成 0，用户在真实内核下花了钱却看到 ¥0.0000，
+   * 而这恰恰是"看起来一切正常"的错。
+   *
+   * 口径：`runs` 来自日志里的 `run.started`，`runsWithUsage` 来自有 `usage` 事件的
+   * run。两者不等时，界面必须说明差额而不是把它混进总数里。
+   */
+  coverage: UsageCoverage;
   /** 本次汇总的生成时刻 */
   generatedAt: number;
+}
+
+export interface UsageCoverage {
+  /** 日志里出现过 run.started 的 run 数 */
+  runs: number;
+  /** 其中有 usage 数据的 run 数 */
+  runsWithUsage: number;
 }
 
 export function emptyUsageTotals(): UsageTotals {
