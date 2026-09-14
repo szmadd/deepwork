@@ -174,6 +174,15 @@ for scene in $SCENES; do
         "$RAIL_HELPER await openRail('设置'); const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('模型')); if(t){ t.click(); await new Promise(r=>setTimeout(r,2000)); } const on=document.querySelector('.settings-tab-on'); return 'active:'+(on?on.textContent:'none');" \
         "0"
       ;;
+    settings-prefs)
+      # 偏好页是「默认模型由用户自选」这条改动的落点：候选来自模型目录、
+      # 首项是「跟随内核默认」、推理档位同样从目录里出。
+      # 末尾回读两个下拉的当前值作为回执 —— 只截图不回读的话，
+      # 「下拉是空白的」与「下拉里只有一项」在图上不容易区分。
+      run_scene "ui-settings-prefs" ".settings-tabs" \
+        "$RAIL_HELPER await openRail('设置'); const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('偏好')); if(!t) return 'no-prefs-tab'; t.click(); await new Promise(r=>setTimeout(r,1200)); const sels=[...document.querySelectorAll('.page-body select')]; const labels=[...document.querySelectorAll('.page-body .modal-label')].map(x=>x.textContent); const mi=labels.indexOf('新建会话的默认模型'); const ei=labels.indexOf('默认推理档位'); const m=mi>=0?sels[mi]:null; const e=ei>=0?sels[ei]:null; return 'model:'+(m?m.value||'(跟随)':'none')+' options:'+(m?m.options.length:0)+' effort:'+(e?e.options.length:'none');" \
+        "0"
+      ;;
     skills)
       # 技能必须走真实安装路径预置（含审计），而不是手工摆文件 ——
       # 否则画面证明的只是「面板会渲染我塞的 JSON」，而不是「装好的技能真的会出现在这里」。

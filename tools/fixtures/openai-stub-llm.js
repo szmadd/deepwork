@@ -82,6 +82,16 @@ function startStubLlm(options = {}) {
         tools: (body.tools ?? []).map((t) => t?.function?.name ?? t?.name).filter(Boolean),
         messages: (body.messages ?? []).map((m) => ({ role: m.role, kind: typeof m.content === 'string' ? 'text' : 'blocks' })),
         hasToolResult: (body.messages ?? []).some((m) => m.role === 'tool'),
+        /**
+         * 除大件（messages / tools）以外的请求字段。
+         *
+         * 存在的理由：内核到底把「推理档位」编成哪个请求字段，规格里没写、
+         * 只能看真请求。留下它，测试就能把这件事记录下来而不是猜 ——
+         * 断言「我们设了档位」和断言「档位真的到了请求里」是两件事。
+         */
+        extra: Object.fromEntries(
+          Object.entries(body).filter(([key]) => !['messages', 'tools', 'model', 'stream', 'stream_options'].includes(key)),
+        ),
       };
       requests.push(entry);
       options.onRequest?.(entry);

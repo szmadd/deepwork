@@ -64,8 +64,24 @@ async function main() {
   check('host.status 返回合法结构', typeof status?.adapter === 'string', `adapter=${status?.adapter}`);
   check('默认工作区已透传', status.workspace === workspace, status.workspace);
 
-  const models = await client.invoke('models.list');
-  check('models.list 非空', Array.isArray(models) && models.length > 0, `${models.length} 个模型`);
+  // 模型目录返回的是 catalog 而不是裸数组：条目本身要说清「从哪来」。
+  // 这里断言的是「有清单，且清单说明了来历」—— 只断言非空的话，
+  // 一份来源不明的清单同样能通过，那正是上一版的问题。
+  const catalog = await client.invoke('models.list');
+  check(
+    'models.list 返回带来源说明的模型目录',
+    Array.isArray(catalog?.models)
+      && catalog.models.length > 0
+      && typeof catalog.source === 'string'
+      && typeof catalog.note === 'string'
+      && catalog.note.length > 0,
+    `${catalog?.models?.length} 个模型 / source=${catalog?.source} / note=${String(catalog?.note).slice(0, 24)}…`,
+  );
+  check(
+    'mock 内核的目录条目如实标注来源',
+    catalog.models.every((item) => item.source === 'mock'),
+    catalog.models.map((item) => `${item.id}:${item.source}`).join(','),
+  );
 
   const guard = await client.invoke('guard.get');
   check('guard.get 返回策略', typeof guard?.mode === 'string', `mode=${guard?.mode}`);
