@@ -18,6 +18,7 @@
 | M0 POC | 壳 + 内核子进程 + 单会话 + 流式输出 + 读写工具可见 | ✅ 完成 | 100% |
 | M1 MVP | 多会话/工作区/Diff 审阅/终端/审批三档/模型管理/设置持久化/Trajectory/打包 | ✅ 完成 | 100%（自动更新移入 M2） |
 | M2 V1 | 技能系统+审计/三层记忆/自动化/MCP/浏览器/Office/用量面板/自动更新 | ✅ 收口 | 100%（技能系统全链路 · 三层记忆 · 自动化调度 · 连接器管理(MCP) · 用量面板(M2-J) · 浏览器自动化(M2-H) · Office 生成与 OFD 原生读取(M2-I)；界面改为左侧活动栏 + 整页视图。**M2-K 自动更新显式挂起**，不计入未完成） |
+| **M2+ 收口后补强** | 模型目录以内核真帧为准 · 默认模型由用户自选 · 推理档位接出 | ✅ 完成 | 100%（2026-09-14 第二轮，见文末记录） |
 | M3 生态期 | 专家团/插件市场/发布分享/多模态/团队协作 | ⏸ 暂缓 | 0%（2026-09-14 决策：暂不启动） |
 
 **唯一的硬阻塞**：真实 Harness 的 headless 契约未校准（`harness-sidecar.ts` 的 `ENDPOINTS` /
@@ -1844,3 +1845,141 @@ git -C <clone> ls-files | wc -l     # 150
 这是 FR-10.2「快模型 / 推理模型分工」的**现成落点**，不必自建路由。
 契约先行：先改 `packages/protocol/src/`，再改实现；`test:modelcfg` 与 `test:acp` 同步扩断言，
 断言的参照物落在**实际发出的请求用了哪个模型与哪一档思考**，不是配置文本。
+
+---
+
+## 2026-09-14（第二轮）模型来源以内核真帧为准；默认模型由用户自选
+
+**目标**
+
+把「有哪些模型可选、默认用哪个、思考多想」这三件事从**本机写死的清单**改成**以内核为准 + 用户选定**：
+
+1. 模型目录的权威来源是真实内核 `session/new` 公布的 `configOptions` 真帧 —— 显示名、可选值、
+   默认值全部照抄内核；拿不到真帧就如实说拿不到，**不回退到一份自编的官方清单**。
+2. 默认模型（`config.defaultModel`）由用户自行选定，**官方内核公布的模型与自定义端点上的模型不做区别对待**；
+   留空 = 跟随内核当前默认（以前写死 `deepseek-flash`，与内核默认 `deepseek-v4-flash` 是两个答案且都不报错）。
+3. 接出内核已有的 `reasoning_effort`（off/low/high/max），作为 FR-10.2「快模型 / 推理模型分工」的现成落点。
+
+**改动**
+
+- `packages/protocol/src/session.ts`：`ModelDescriptor` 增 `source`（kernel / endpoint / mock）与
+  **可选** `contextWindow`（删掉写死的 `256_000`）；新增 `ModelCatalog`（含来源、核对时间、如实说明）
+  与 `ReasoningEffortOption`。
+- `packages/protocol/src/config.ts`：新增 `defaultReasoningEffort`（空 = 不干预）、
+  `ModelEndpoint.contextWindow`、`DEFAULT_ENDPOINT_CONTEXT_WINDOW`；`DEFAULT_CONFIG.defaultModel` 改为 `''`
+  （= 跟随内核默认，见第 2 条目标）。
+- `packages/protocol/src/rpc.ts`：`models.list` 返回 `ModelCatalog`；新增 `models.refresh`（强制取帧）。
+- `packages/core-host/src/models/catalog.ts`（新）：**纯函数**解析层 —— 模型值（JSON 元组 `["provider","model"]`）
+  解析、分组/扁平两种 options 展平、模型与档位的匹配（按裸模型名比，不用子串技巧）、真帧 → catalog。
+- `packages/core-host/src/models.ts`：删掉写死的官方四条，只留 mock 条目与最后的兜底常量。
+- `packages/core-host/src/models/endpoint.ts`：`contextWindow` 由用户配置传入（缺省才用估计值）。
+- `packages/core-host/src/adapter/harness-sidecar.ts`：新增 `modelCatalog(probe)`（**真帧唯一来源是
+  `session/new`**，探针会话用完即 `session/close` 且不进会话映射）；`applyModel` 改为
+  `applyConfigOptions`，**每轮开跑前比对指纹、不一致才补发**（修掉一个静默失效，见踩坑 1）。
+- `packages/core-host/src/host.ts`：`models()` → 异步 `modelCatalog(probe)`；新增 `resolveDefaultModel()`
+  明确优先级（用户选定 > 内核默认 > 端点模型 > 兜底）；端点变更时清掉目录缓存。
+- `apps/desktop`：`useAgent` 持 `catalog` + `refreshModels`；顶栏模型下拉标注来源；
+  设置页「偏好」新增 **默认模型（含「跟随内核默认」）/ 默认推理档位** 两个自选项与「重新向内核核对」，
+  「模型」页给出当前目录明细与端点 `contextWindow` 输入。
+- 测试：`tools/model-endpoint-test.js` 由 3 段扩为 4 段（新增纯函数段，用**真帧逐字副本**做参照物）；
+  `tools/smoke-ipc.js` 的 `models.list` 断言升级为「目录带来源说明」；
+  `tools/fixtures/openai-stub-llm.js` 记录请求里的非大件字段（`extra`）。
+
+**验证**
+
+```
+npm run verify     # 18 套：17 套全绿；末位 real-dsh-mcp 3/8 为已知环境性失败（exit=1）
+npm run demo       # exit=0
+npm run typecheck                       # exit=0（protocol + core-host）
+npm run typecheck -w @deepwork/desktop  # exit=0
+bash tools/capture.sh settings settings-prefs   # exit=0，两张图见 artifacts/
+```
+
+各套件通过项数：tools 19 / replay 29 / smoke **27** / partial 13 / terminal 22 / acp 37 / real-dsh 15 /
+skills 59 / skillctx 24 / memory 38 / schedule 68 / connectors 42 / usage 27 / browser 76 / office 130 /
+**modelcfg 80**（上一轮 32，本轮 +48）；diff 段为「还原一致性 全部通过」（无项数）。
+合计 **706 项通过**。`smoke 26→27` 与 `modelcfg 32→80` 是本次断言数变化，已同步核对，
+其余各套件项数与 ROADMAP 记录一致（上一轮的 stale 教训，见 2026-09-14 第一轮踩坑 5）。
+
+`modelcfg` 第 4 段（真实 dsh × 本地 stub 端点）连跑两轮结论一致。关键新断言与实测输出：
+
+```
+[PASS] 内核目录（真帧解析）: 3 个模型 deepseek-v4-flash/qwen-local-7b/qwen-local-14b + 4 档推理
+[PASS] 自定义模型名真的到达端点 — requests=2 model=qwen-local-7b
+[PASS] 同一会话中途换模型真的生效（端点收到新模型名） — 第二轮 1 次请求 model=qwen-local-14b
+[PASS] 推理档位真的传到了端点（reasoning_effort=max） — 第三轮 1 次请求 reasoning_effort=max
+端点收到的请求字段（除 messages/tools）:
+  {"thinking":{"type":"enabled"},"reasoning_effort":"high","max_tokens":256000,"dsh_plugin_packages":"(共 79 项，已折叠)"}
+```
+
+截图回执（截图脚本自报，避免「图是旧 UI」）：
+
+```
+[capture] 脚本执行结果: "active:模型"
+[capture] 脚本执行结果: "model:(跟随) options:2 effort:1"
+```
+
+`options:2` = 「跟随内核默认（当前：mock-echo）」+ mock-echo；`effort:1` = 只有「不干预」——
+截图是在 **mock 内核**下拍的，内核不公布推理档位，界面于是显示
+「内核未公布推理档位（mock 内核不提供，或尚未核对）」。**这是如实呈现的空状态，不是功能缺失的证据**；
+推理档位真的生效由上面的 `reasoning_effort=max` 断言证明。
+
+**踩坑与修复**
+
+1. **会话复用 + 只在建会话时设一次配置项 = 中途换模型静默失效。**
+   症状：在顶栏换模型后，事件流里记的是新模型名，端点收到的请求里还是旧模型名，两边都不报错。
+   根因：`ensureSession` 命中缓存就直接返回，`applyModel` 只在建会话那一拍调用。
+   修法：记 `appliedOptions`（内核会话 → "model|effort" 指纹），**每轮开跑前比对一次**，不一致才补发；
+   设失败时把指纹删掉，下一轮会重试（记成期望值会让它再也不重试）。
+   证据：`同一会话中途换模型真的生效` 与 `reasoning_effort=max` 两条断言 —— 它们断言的是**端点收到的请求**，
+   不是「我们调用过 set_config_option」。
+2. **默认模型被端点配置静默覆盖。** 上一版 `createSession` 的取值顺序是
+   `input.model ?? endpointModel ?? config.defaultModel`：切到自定义端点后，用户在设置页选的默认模型被顶掉，
+   界面显示他选的、实际跑另一个。修法：把 `config.defaultModel` 提到端点之前，并抽成 `resolveDefaultModel()`
+   把优先级写在一处（端点决定「往哪发」，不该顺手决定「用哪个模型」）。
+3. **`contextWindow: undefined` 也会让 `'contextWindow' in obj` 为 true。**
+   宿主侧写成 `contextWindow: endpoint.contextWindow`，于是「用户没填」被表达成「字段存在且是 undefined」，
+   测试 `端点未填 contextWindow 时条目不带该字段` 直接挂了。**是测试抓出来的**（第一次跑 73/74）。
+   修法：只有真的填了才赋值 —— 「未知」与「值是 undefined」在界面判断与断言里是两回事。
+4. **真帧新事实：自定义端点补丁不会拿掉内核的默认模型条目。** 补丁把 `llm-deepseek` 的 models 换成
+   `[qwen-local-7b, qwen-local-14b]` 之后，内核公布的目录是 `deepseek-v4-flash / qwen-local-7b / qwen-local-14b`
+   —— 多出来的 `deepseek-v4-flash`（来自 `dsh-agent-default-model`）**仍是 `currentValue`，也就是内核默认**。
+   含义：自定义端点下若选「跟随内核默认」，发出的模型名是 `deepseek-v4-flash`（打在用户的端点上）。
+   这不是 bug，但**必须让用户看得见**——所以设置页那一条写的是
+   「跟随内核默认（当前：<内核说的那个 id>）」，而不是一个光秃秃的「自动」。
+5. **真帧新事实：推理档位是请求体顶层字段，而 `max_tokens` 恒为 256000。**
+   端点收到 `{"thinking":{"type":"enabled"},"reasoning_effort":"high","max_tokens":256000}`。
+   前者让「档位生效」变成可观察的（第 4 段据此断言）；后者**推翻了一个刚写下的因果**：
+   补丁里 `contextWindow` 填 131072，请求里 `max_tokens` 仍是 256000 ——
+   所以「contextWindow 控制压缩时机」这句话没有证据。已把 `config.ts` / `endpoint.ts` / 设置页三处
+   的相关说法降级为「实际影响本轮未证实」，不留一句听起来很懂的错话。
+6. **自编清单为什么能活这么久：它就是测试的「期望值」本身。**
+   `models.ts` 写死四条 + 自编显示名 + 自编 contextWindow，而 `test:modelcfg` 当时断言的是端点补丁里
+   有没有那个 id、`contextWindow > 0` —— 断言与实现对同一份假设互相作证，谁也验不出谁。
+   修法（本轮的测试口径）：**解析层的参照物用探针落盘的真帧逐字副本**（`REAL_CONFIG_OPTIONS`，
+   注释里写明「不要手改它」），断言「显示名等于内核给的 `DeepSeek-V41-Flash`」而不是「等于我们写的名字」。
+7. **探针会话是「取真帧」的唯一途径，但必须用完即关且不进会话映射。**
+   `initialize` 不公布 `configOptions`，只有 `session/new` 公布。探针会话若进 `this.sessions`，
+   会让 `abort`/`stop` 去关一个不是用户会话的会话。它的失败也**不能让 `models.list` 变成错误**：
+   「没有清单」是「不知道」，不是「出错了」。
+
+**遗留**
+
+- 目录缓存目前是**进程内**的：内核重启后自然重建，但「端点上换了模型、内核没动」需要用户点一次
+  「重新向内核核对」（`models.refresh`）。没有做定时轮询 —— 只在需要时问一次是刻意的。
+- 推理档位是**宿主级配置**（`config.defaultReasoningEffort`），不随会话存：改了下一轮生效，不需要新建会话
+  （因为 `applyConfigOptions` 每轮比对）。反过来，因此**看不出「这个会话当时用的是哪一档」** ——
+  只有 `run.started` 上有 model，没有 effort。要追溯就得往事件里加字段，属另一轮。
+- `supportsPtc` 一律 false：内核帧里没有这个字段，不猜。真帧里也**没有 contextWindow** ——
+  目录里那个数只有用户填端点时才存在。
+- `max_tokens` 恒 256000 的来源未知（疑似来自默认模型条目，未取证）。**不要据此改 contextWindow 默认值。**
+- FR-10.2 只落地了「模型 × 思考档」这一半；**多模型自动路由与端点不可达时的如实降级**仍未做。
+
+**下一步**
+
+1. FR-10.2 的另一半：端点不可达时如实提示（不静默失败），以及「云端 / 内网」用量口径区分。
+2. FR-3.5 沙箱：**复用内核 `dsh-sandbox*`**，先翻那七个包的 README 再动手。
+3. FR-3.8 图表可视化（需求矩阵里最后一个无归属且不依赖后端的 P1）。
+4. §五 遗留债插空：桌面通知、Composer `/` 补全、Trajectory 逐事件分叉、主题切换器、
+   内核自动写记忆（MCP 通道已通）、连接器 HTTP 传输（真帧已证 `mcpCapabilities.http = true`）。
+5. 运维：接 CI、把落后的提交推到 `origin`、给 M1 打 tag。
