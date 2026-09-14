@@ -188,6 +188,28 @@ async function main() {
   const deltas = allow.events.filter((e) => e.type === 'message.delta');
   check('两段 message chunk 都映射为 message.delta', deltas.length === 2, `${deltas.length} 段`);
 
+  /*
+   * 上下文占用。真帧给两条：一条完整（used + size）、一条只有 used。
+   * 断言同时钉住「完整的那条原样透传」与「半条的不许补位」——
+   * 后者是这条纪律的现场：缺字段时说不知道，不要说 0。
+   */
+  const contextEvents = allow.events.filter((e) => e.type === 'context.usage');
+  check(
+    'usage_update → context.usage（used/size 逐字透传）',
+    contextEvents.length === 1 && contextEvents[0].used === 7847 && contextEvents[0].size === 1_000_000,
+    JSON.stringify(contextEvents),
+  );
+  check(
+    'usage_update 缺 size 时不发事件（不用 0 补位）',
+    contextEvents.length === 1,
+    `${contextEvents.length} 条`,
+  );
+  check(
+    '上下文占用带 runId（否则会变成污染其他会话的全局事件）',
+    contextEvents.every((e) => typeof e.runId === 'string' && e.runId.length > 0),
+    contextEvents[0]?.runId,
+  );
+
   const completed = allow.events.find((e) => e.type === 'message.completed');
   check(
     '轮次结束时汇总完整文本',

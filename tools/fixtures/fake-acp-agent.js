@@ -175,6 +175,27 @@ async function runTurn(params) {
     },
   });
 
+  /*
+   * 上下文占用（真实内核的形状，2026-09-14 实测）。
+   *
+   * 内核在每条提交的助手消息之后各报一次。它是真实内核**唯一**会上报的用量事实
+   * （token 与费用不走 ACP），所以这里的形状必须照抄真帧而不是"差不多"。
+   */
+  notify('session/update', {
+    sessionId,
+    update: { sessionUpdate: 'usage_update', used: 7847, size: 1_000_000 },
+  });
+
+  /*
+   * 只有一半的那种：内核若只给 used 不给 size，客户端必须什么都不发。
+   * 用 0 补 size 会让界面显示「0% 占用」——那是一个编出来的结论，
+   * 比什么都不显示更坏（用户会以为上下文是空的）。
+   */
+  notify('session/update', {
+    sessionId,
+    update: { sessionUpdate: 'usage_update', used: 900 },
+  });
+
   // 第二个工具调用刻意用 **dsh 的形状**：kind 恒为 other、工具名在 title、
   // 入参在 rawInput。客户端若只会按 kind 判风险，这里就会落到默认档。
   const target =

@@ -8,10 +8,12 @@
  * 走真实存储路径写入（SessionStore + append-only 事件日志），理由与其它 fixture 一致：
  * 画面要证明的是「数字真的从会话存储里算出来」，而不是「面板会渲染我塞的 JSON」。
  *
- * 数据刻意包含了三种情况，因为它们在界面上的长相完全不同：
+ * 数据刻意包含了四种情况，因为它们在界面上的长相完全不同：
  *  1. 跨 7 天、多个会话 → 柱状图与分组表都有内容；
  *  2. 一个会话中途换过模型 → 按 run 归属模型的那条规则会被显示出来；
- *  3. 一个模型**故意不配单价** → 「未定价」这条语义（不是 0）在画面上可见。
+ *  3. 一个模型**故意不配单价** → 「未定价」这条语义（不是 0）在画面上可见；
+ *  4. 一个会话**跑了但没有任何用量数据**（内核不上报）→ 「N 轮未上报」的
+ *     如实说明可见 —— 这是真实内核下的常态，不是边角情况。
  */
 
 const path = require('node:path');
@@ -50,10 +52,26 @@ const PLANS = [
     title: '审批链路回归',
     runs: [{ daysAgo: 1, model: 'deepseek-flash', prompt: 6100, completion: 1800 }],
   },
+  {
+    /*
+     * 跑了但内核不上报用量 —— 真实内核（ACP 通道）的常态。
+     *
+     * 这里刻意**只写 run.started / run.completed，不写 usage 事件**：
+     * 于是汇总里这个会话贡献 2 轮分母、0 轮分子，面板必须如实说出差额。
+     * 少了这一条，画面上永远看不到「未上报」的状态，而它恰恰是最需要被看见的那个。
+     */
+    title: '真实内核会话（内核未上报用量）',
+    silent: true,
+    runs: [
+      { daysAgo: 0, model: 'deepseek-v4-flash' },
+      { daysAgo: 0, model: 'deepseek-v4-flash' },
+    ],
+  },
 ];
 
 const store = new SessionStore();
 let runs = 0;
+let silentRuns = 0;
 
 for (const plan of PLANS) {
   const session = store.create({ workspace: path.resolve(workspace), title: plan.title });
@@ -62,15 +80,18 @@ for (const plan of PLANS) {
     const ts = now - run.daysAgo * DAY - seq * 60_000;
     const runId = `seed-${session.id}-${seq}`;
     store.append(session.id, { type: 'run.started', seq: seq++, ts, runId, sessionId: session.id, mode: 'ptc', model: run.model });
-    store.append(session.id, {
-      type: 'usage',
-      seq: seq++,
-      ts,
-      runId,
-      usage: { promptTokens: run.prompt, completionTokens: run.completion, costCny: 0 },
-    });
+    if (!plan.silent) {
+      store.append(session.id, {
+        type: 'usage',
+        seq: seq++,
+        ts,
+        runId,
+        usage: { promptTokens: run.prompt, completionTokens: run.completion, costCny: 0 },
+      });
+    }
     store.append(session.id, { type: 'run.completed', seq: seq++, ts, runId, status: 'completed', durationMs: 1200 });
-    runs += 1;
+    if (plan.silent) silentRuns += 1;
+    else runs += 1;
   }
 }
 
@@ -79,4 +100,6 @@ const config = readJson(configPath(), {});
 config.modelPrices = { 'deepseek-flash': { promptPer1k: 0.001, completionPer1k: 0.002 } };
 writeJson(configPath(), config);
 
-console.log(`预置完成：${PLANS.length} 个会话 / ${runs} 次调用；未定价模型 qwen2.5:7b`);
+console.log(
+  `预置完成：${PLANS.length} 个会话 / ${runs} 次有用量的调用 + ${silentRuns} 次未上报；未定价模型 qwen2.5:7b`,
+);

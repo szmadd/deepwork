@@ -91,7 +91,15 @@ const SESSIONS = [
 ];
 
 {
-  const summary = summarizeUsage({ sessions: SESSIONS, samples: SAMPLES, prices: PRICES, now: 999, dayOf: DAY_OF });
+  const summary = summarizeUsage({
+    sessions: SESSIONS,
+    samples: SAMPLES,
+    // 日志里的 run 清单与样本同源：这一组全部轮次都有上报
+    runIds: SAMPLES.map((s) => s.runId),
+    prices: PRICES,
+    now: 999,
+    dayOf: DAY_OF,
+  });
 
   check(
     '总数与手算一致（prompt/completion/调用数）',
@@ -127,17 +135,82 @@ const SESSIONS = [
   check('未受影响的会话估算仍然是数字', typeof summary.bySession.find((s) => s.sessionId === 's1').estimatedCostCny === 'number');
   check('会话元数据带上标题与工作区', summary.bySession.find((s) => s.sessionId === 's1').title === '会话一');
   check('汇总时刻来自注入的 now', summary.generatedAt === 999);
+  check(
+    '覆盖率：5 轮全有数据（分子分母同源）',
+    summary.coverage.runs === 5 && summary.coverage.runsWithUsage === 5,
+    JSON.stringify(summary.coverage),
+  );
+}
+
+{
+  /*
+   * 覆盖率的核心用例：**跑了但没上报**。
+   *
+   * 这不是假想：真实内核（ACP 通道）不上报 token 与费用，只上报上下文占用，
+   * 所以真实模式下差额等于全部轮数。少了这条，界面只能把 totals 的 0 当成结论，
+   * 于是用户在花钱、界面显示 ¥0.0000 —— 「看起来一切正常」的错。
+   */
+  const summary = summarizeUsage({
+    sessions: SESSIONS,
+    samples: SAMPLES, // 5 轮有数据
+    runIds: [...SAMPLES.map((s) => s.runId), 'r6', 'r7', 'r8'], // 日志里其实跑了 8 轮
+    prices: PRICES,
+    now: 1,
+    dayOf: DAY_OF,
+  });
+  check(
+    '覆盖率：跑了 8 轮、5 轮有数据 ⇒ 差额可算出',
+    summary.coverage.runs === 8 &&
+      summary.coverage.runsWithUsage === 5 &&
+      summary.coverage.runs - summary.coverage.runsWithUsage === 3,
+    JSON.stringify(summary.coverage),
+  );
+  check('没上报的轮次不改变 token 合计（它没有数据可加）', summary.totals.totalTokens === 20_400, String(summary.totals.totalTokens));
+}
+
+{
+  /*
+   * 一轮都没上报 —— 真实内核下的常态。
+   *
+   * totals 全 0，但 coverage.runs > 0，所以界面必须说「内核没上报」，
+   * 不能落到「还没有用量数据」那个空状态：那等于把「内核不说话」写成
+   * 「你没干过活」。这条断言就是那个界面纪律在数据层的锚点。
+   */
+  const silent = summarizeUsage({
+    sessions: SESSIONS,
+    samples: [],
+    runIds: ['r1', 'r2'],
+    prices: PRICES,
+    now: 1,
+    dayOf: DAY_OF,
+  });
+  check(
+    '全部没上报：totals 全 0 但 coverage.runs > 0',
+    silent.totals.runs === 0 &&
+      silent.totals.totalTokens === 0 &&
+      silent.coverage.runs === 2 &&
+      silent.coverage.runsWithUsage === 0,
+    `totals.runs=${silent.totals.runs} coverage=${JSON.stringify(silent.coverage)}`,
+  );
+  check('没有样本时估算为 0（此时 0 是正确答案：确实没有可估算的量）', silent.estimatedCostCny === 0);
 }
 
 {
   // 全部模型都有单价时，全局估算必须能算出来（否则「有价却算不出」会被误读成功能坏了）
   const priced = SAMPLES.filter((s) => s.model !== 'model-local');
-  const summary = summarizeUsage({ sessions: SESSIONS, samples: priced, prices: PRICES, now: 1, dayOf: DAY_OF });
+  const summary = summarizeUsage({
+    sessions: SESSIONS,
+    samples: priced,
+    runIds: priced.map((s) => s.runId),
+    prices: PRICES,
+    now: 1,
+    dayOf: DAY_OF,
+  });
   check('全部有单价时全局估算为数字', typeof summary.estimatedCostCny === 'number' && summary.estimatedCostCny > 0);
 }
 
 {
-  const empty = summarizeUsage({ sessions: [], samples: [], prices: {}, now: 5, dayOf: DAY_OF });
+  const empty = summarizeUsage({ sessions: [], samples: [], runIds: [], prices: {}, now: 5, dayOf: DAY_OF });
   check(
     '无样本时全 0 且分组为空',
     empty.totals.runs === 0 && empty.totals.totalTokens === 0 && empty.byDay.length === 0 && empty.byModel.length === 0 && empty.bySession.length === 0,
@@ -221,6 +294,35 @@ async function hostLayer() {
     summary.byModel.map((m) => `${m.model}:${m.totals.promptTokens}`).join(' '),
   );
   check('分组之和 = 总数（宿主层同样成立）', totalsEqual(sumRows(summary.byDay), summary.totals) && totalsEqual(sumRows(summary.byModel), summary.totals));
+  check(
+    '覆盖率：日志里 3 轮、3 轮都有数据',
+    summary.coverage.runs === 3 && summary.coverage.runsWithUsage === 3,
+    JSON.stringify(summary.coverage),
+  );
+
+  /*
+   * 真实内核的常态：跑了，但一条 usage 都没有。
+   *
+   * 用「手工往日志里补一条 run.started」来构造，而不是去起真内核 ——
+   * 这里要验的是聚合口径对差额的反应，不是内核的行为（后者由 modelcfg 第 4 段
+   * 用真实内核验）。两者的参照物不同，不能互相顶替。
+   */
+  const silentSession = host.createSession({ workspace, title: '内核没上报的会话' });
+  append(silentSession.id, [
+    { type: 'run.started', runId: 'r9', sessionId: silentSession.id, mode: 'standard', model: 'deepseek-v4-flash' },
+    { type: 'run.completed', runId: 'r9', status: 'completed', durationMs: 10 },
+  ]);
+  const withSilent = host.usageSummary();
+  check(
+    '跑过但没上报的轮次进分母不进分子',
+    withSilent.coverage.runs === 4 && withSilent.coverage.runsWithUsage === 3,
+    JSON.stringify(withSilent.coverage),
+  );
+  check(
+    '没上报的轮次不会凭空贡献 token 或轮数',
+    withSilent.totals.promptTokens === 11_000 && withSilent.totals.runs === 3,
+    `${withSilent.totals.promptTokens}/${withSilent.totals.runs}`,
+  );
   check('会话标题来自 meta', summary.bySession.find((s) => s.sessionId === first.id).title === '换过模型的会话');
   check('未定价模型如实列出', summary.unpricedModels.includes('model-b') && summary.unpricedModels.includes('model-local'));
 

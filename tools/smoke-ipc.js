@@ -191,6 +191,28 @@ async function main() {
   const seqOk = received.every((event, index) => index === 0 || event.seq > received[index - 1].seq);
   check('事件序号单调递增', seqOk);
 
+  /*
+   * 上下文占用：内核上报 → 事件流 → 会话 meta，三段都要能看到。
+   *
+   * 只验事件流是不够的：界面读的是会话 meta（切走再切回来、重启应用之后靠它），
+   * 只验 meta 也是不够的：那样就无法区分「内核报了」与「我们编了一个数」。
+   * 容量 size 在这里不做等值断言 —— 它由内核给，写死一个数等于把内核版本钉进测试。
+   */
+  const contextEvents = ofType('context.usage');
+  check('内核上报的上下文占用进入事件流', contextEvents.length > 0, `${contextEvents.length} 条`);
+  check(
+    '占用为正且不超过容量',
+    contextEvents.every((event) => event.used > 0 && event.used <= event.size),
+    JSON.stringify(contextEvents.at(-1)),
+  );
+  const withContext = (await client.invoke('session.list')).find((item) => item.id === session.id);
+  check(
+    '同一份占用落进会话 meta（切走再回来仍在）',
+    withContext?.context?.used === contextEvents.at(-1)?.used &&
+      withContext?.context?.size === contextEvents.at(-1)?.size,
+    `meta=${JSON.stringify(withContext?.context)} 末条事件=${JSON.stringify(contextEvents.at(-1))}`,
+  );
+
   const persisted = await client.invoke('session.events', { sessionId: session.id });
   const sessionScoped = received.filter(
     (event) => 'runId' in event || event.type === 'session.created' || event.type === 'session.updated',

@@ -12,8 +12,14 @@
  *   3. host 链路（mock 内核）：配置写入即出补丁文件、**用户选定的默认模型不被端点覆盖**、
  *      apiKey RPC 只回掩码；
  *   4. 真实 dsh 端到端：自定义端点 = 本地 stub，断言**自定义模型名真的发到了端点**
- *      （requests[0].model === 'qwen-local-7b'），并把内核真帧解析出的目录打出来 ——
- *      「配置写了但内核还在用旧模型」只能靠它抓出来。dsh 缺席时优雅 SKIP。
+ *      （requests[0].model === 'qwen-local-7b'）、推理档位真的进了请求体，以及
+ *      **内核上报的上下文容量 = 我们在补丁里给该模型填的 contextWindow**
+ *      —— 「配置写了但内核还在用旧值」只能靠这类端到端观察抓出来。dsh 缺席时优雅 SKIP。
+ *
+ * 前置条件（很关键）：替身端点必须回 `usage` 帧。dsh 的 llm 适配器会带
+ * `stream_options.include_usage=true` 去请求它，而内核**只在拿到 usage 时才产生
+ * `usage_update`**。替身不回 usage 时，「内核不上报上下文占用」这个结论是假的：
+ * 2026-09-14 就是这么被误导过一次（先修替身，真帧才出现）。
  *
  * 历史教训（2026-09-13）：端点配置曾走 settings.yaml 热重载，与 session/new 公布
  * 目录存在竞态（同一配置间歇性失效）。现在走 --patch 覆盖补丁，组合期应用、
@@ -409,7 +415,21 @@ async function realDshSection() {
   // 走产品真实路径：覆盖补丁 + 凭据同步（补丁是确定性路径，不再是 settings.yaml）
   const realHome = fs.mkdtempSync(path.join(os.tmpdir(), 'deepwork-modelcfg-dsh-'));
   process.env.DSH_HOME = realHome;
-  const override = modelEndpointOverride({ kind: 'custom', baseUrl: stub.url, model: 'qwen-local-7b' });
+  /**
+   * 两个 contextWindow 刻意取两个**互不相同、且都不是默认值**的数。
+   *
+   * 理由：本段要靠「内核报的 size」反证「用户填的 contextWindow 真的到了内核」。
+   * 若两个模型填同一个值，或填成默认值 131072，那么「换模型后 size 跟着变」
+   * 与「size 一直是我们填的那个常量」无法区分 —— 断言会在错的实现上通过。
+   */
+  const ctx7b = 111_111;
+  const ctx14b = 222_222;
+  const override = modelEndpointOverride({
+    kind: 'custom',
+    baseUrl: stub.url,
+    model: 'qwen-local-7b',
+    contextWindow: ctx7b,
+  });
   /**
    * 再塞一个模型进补丁。
    *
@@ -418,7 +438,7 @@ async function realDshSection() {
    * 测试会退化成「什么都没验还全绿」。两个模型都指向同一个 stub，
    * 所以「请求里的 model 变了」只可能来自我们真的换成功了。
    */
-  override.config.models.push({ id: 'qwen-local-14b', name: 'qwen-local-14b', contextWindow: 131_072 });
+  override.config.models.push({ id: 'qwen-local-14b', name: 'qwen-local-14b', contextWindow: ctx14b });
   syncModelCredentials({ kind: 'custom', baseUrl: stub.url, model: 'qwen-local-7b' });
   const patchPath = path.join(realHome, 'kernel.patch.yml');
   fs.writeFileSync(patchPath, serializeRuntimePatchYaml(buildRuntimePatch([], override)), 'utf8');
@@ -527,6 +547,44 @@ async function realDshSection() {
       '推理档位真的传到了端点（reasoning_effort=max）',
       effortReqs.length > 0 && effortReqs.every((r) => r.extra?.reasoning_effort === 'max'),
       `第三轮 ${effortReqs.length} 次请求 reasoning_effort=${[...new Set(effortReqs.map((r) => r.extra?.reasoning_effort))].join(',')}`,
+    );
+
+    // ── 上下文占用：内核报的容量，来源就是我们填的 contextWindow ──
+    //
+    // 这条链此前是断的，而且断得看不见：内核一直在报（ACP `usage_update`），
+    // 我们的适配器没有对应分支，于是「上下文占用」这项能力在界面上从来不存在。
+    // 发现它靠的是先修替身端点（原先不回 usage 帧 ⇒ 内核压根没用量可报 ⇒ 报不出来）。
+    const ctxEvents = events.filter((e) => e.type === 'context.usage');
+    const sizesOfRun = (runId) => [...new Set(ctxEvents.filter((e) => e.runId === runId).map((e) => e.size))];
+    check(
+      '真实内核上报了上下文占用（usage_update 已接线）',
+      ctxEvents.length > 0,
+      `${ctxEvents.length} 条，size=${[...new Set(ctxEvents.map((e) => e.size))].join('/')}`,
+    );
+    check(
+      '占用为正且不超过容量',
+      ctxEvents.every((e) => e.used > 0 && e.used <= e.size),
+      JSON.stringify(ctxEvents.at(-1)),
+    );
+    check(
+      'run-1（qwen-local-7b）：容量 = 补丁里给它填的 contextWindow',
+      sizesOfRun('run-1').length === 1 && sizesOfRun('run-1')[0] === ctx7b,
+      `size=${sizesOfRun('run-1').join('/')} 期望=${ctx7b}`,
+    );
+    check(
+      'run-2（换到 qwen-local-14b）：容量跟着变成它自己的 contextWindow',
+      sizesOfRun('run-2').length === 1 && sizesOfRun('run-2')[0] === ctx14b,
+      `size=${sizesOfRun('run-2').join('/')} 期望=${ctx14b}`,
+    );
+    check(
+      '容量不是常量：两轮的 size 确实不同（否则上面两条等于没验）',
+      sizesOfRun('run-1')[0] !== sizesOfRun('run-2')[0],
+    );
+    check(
+      '同一个 run 内 size 恒定（容量不随对话变化）',
+      ctxEvents
+        .filter((e) => e.runId === 'run-2')
+        .every((e) => e.size === ctx14b),
     );
   } finally {
     await adapter.stop().catch(() => undefined);

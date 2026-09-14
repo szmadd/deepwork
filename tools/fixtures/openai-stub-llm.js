@@ -37,6 +37,29 @@ function base(id, model) {
 }
 
 /**
+ * 粗估一段内容的 token 数（≈4 字符 1 token）。
+ *
+ * 替身端点报的用量必须是**可复算的**，不能是一个「看起来像样」的常量：
+ * 常量会让「端点自报的用量真的进了链路」与「链路上某个写死的数」无法区分，
+ * 而那正是需要被验的那件事。
+ */
+function roughTokens(value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  return Math.max(1, Math.round(text.length / 4));
+}
+
+/** 请求侧 prompt 的 token 粗估：逐条消息的内容长度之和，外加每条的角色/分隔开销。 */
+function estimatePromptTokens(body) {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const chars = messages.reduce((sum, m) => {
+    const c = m?.content;
+    const text = typeof c === 'string' ? c : JSON.stringify(c ?? '');
+    return sum + text.length + 4;
+  }, 0);
+  return Math.max(1, Math.round(chars / 4));
+}
+
+/**
  * 启动替身端点。
  * @param {object} options
  * @param {Array<object>} options.script 逐轮回复剧本
@@ -77,11 +100,20 @@ function startStubLlm(options = {}) {
         body = {};
       }
 
+      const hasToolResult = (body.messages ?? []).some((m) => m.role === 'tool');
+      /**
+       * dsh 是否显式要求用量（`stream_options.include_usage`）。
+       *
+       * 真 OpenAI 只在被要求时才回那帧 usage，替身也必须这样 —— 无条件回 usage 的话，
+       * 「内核确实要了用量」这件事就永远验不到，而它正是链路里最关键的一环。
+       */
+      const askedUsage = body.stream_options?.include_usage === true;
+
       const entry = {
         model: body.model,
         tools: (body.tools ?? []).map((t) => t?.function?.name ?? t?.name).filter(Boolean),
         messages: (body.messages ?? []).map((m) => ({ role: m.role, kind: typeof m.content === 'string' ? 'text' : 'blocks' })),
-        hasToolResult: (body.messages ?? []).some((m) => m.role === 'tool'),
+        hasToolResult,
         /**
          * 除大件（messages / tools）以外的请求字段。
          *
@@ -92,13 +124,17 @@ function startStubLlm(options = {}) {
         extra: Object.fromEntries(
           Object.entries(body).filter(([key]) => !['messages', 'tools', 'model', 'stream', 'stream_options'].includes(key)),
         ),
+        /** dsh 是否要求用量；false 时本替身不会回 usage 帧（与真端点一致） */
+        askedUsage,
+        /** 本次自报的用量，测试据此复算 —— null 表示这一轮没回 usage */
+        reportedUsage: null,
       };
       requests.push(entry);
       options.onRequest?.(entry);
       if (bodyLog) bodyLog.write(`${JSON.stringify({ tools: body.tools, firstUserContent: body.messages?.find?.((m) => m.role === 'user') ?? null })}\n`);
 
       // 剧本推进：请求里出现 tool 结果就说明上一轮的工具已经跑完，进入下一项
-      const turn = Math.min(entry.hasToolResult ? 1 : 0, script.length - 1);
+      const turn = Math.min(hasToolResult ? 1 : 0, script.length - 1);
       const step = script[turn] ?? { text: '' };
       const id = `stub-${++seq}`;
 
@@ -108,24 +144,30 @@ function startStubLlm(options = {}) {
         connection: 'keep-alive',
       });
 
+      /** 本轮实际发出的助手内容，用量按它复算 */
+      let completionText = '';
+
       if (step.text !== undefined) {
+        completionText = step.text;
         sse(res, { ...base(id, model), choices: [{ index: 0, delta: { role: 'assistant', content: step.text }, finish_reason: null }] });
         sse(res, { ...base(id, model), choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
       } else if (step.tool) {
         const name = pickTool(body.tools, step.tool.pick);
         if (!name) {
           // 挑不到就退化成纯文本，并留下可诊断的痕迹，而不是静默什么都不做
-          sse(res, { ...base(id, model), choices: [{ index: 0, delta: { role: 'assistant', content: 'stub: 未找到匹配的工具' }, finish_reason: null }] });
+          completionText = 'stub: 未找到匹配的工具';
+          sse(res, { ...base(id, model), choices: [{ index: 0, delta: { role: 'assistant', content: completionText }, finish_reason: null }] });
           sse(res, { ...base(id, model), choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
         } else {
           const callId = `call_stub_${seq}`;
+          completionText = JSON.stringify(step.tool.args ?? {});
           sse(res, {
             ...base(id, model),
             choices: [{
               index: 0,
               delta: {
                 role: 'assistant',
-                tool_calls: [{ index: 0, id: callId, type: 'function', function: { name, arguments: JSON.stringify(step.tool.args ?? {}) } }],
+                tool_calls: [{ index: 0, id: callId, type: 'function', function: { name, arguments: completionText } }],
               },
               finish_reason: null,
             }],
@@ -133,6 +175,20 @@ function startStubLlm(options = {}) {
           sse(res, { ...base(id, model), choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
         }
       }
+
+      if (askedUsage) {
+        const promptTokens = estimatePromptTokens(body);
+        const completionTokens = roughTokens(completionText);
+        // 收尾用量帧的形状与 OpenAI 一致：choices 为空数组、usage 在顶层。
+        // dsh 同时认「附在 finish 帧上」和「独立尾帧」两种形状，这里给后者。
+        entry.reportedUsage = {
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          total_tokens: promptTokens + completionTokens,
+        };
+        sse(res, { ...base(id, model), choices: [], usage: entry.reportedUsage });
+      }
+
       res.write('data: [DONE]\n\n');
       res.end();
     });

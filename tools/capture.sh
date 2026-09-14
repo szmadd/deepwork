@@ -145,8 +145,12 @@ for scene in $SCENES; do
   case "$scene" in
     chat)
       # 主布局本身也要有截图：活动栏 + 会话列表 + 对话三者同框，
-      # 这是「布局改了什么」最直接的证据，别的场景都聚焦在各自的页面上
-      run_scene "ui-chat" ".stream" "$RAIL_HELPER return await openRail('对话');" "0"
+      # 这是「布局改了什么」最直接的证据，别的场景都聚焦在各自的页面上。
+      # 回读顶栏两处用量入口的文字作为回执 —— 「上下文占用」与「用量未上报」
+      # 都是这一轮新增的文案，图上分不清「没渲染」与「渲染成空」的区别。
+      run_scene "ui-chat" ".stream" \
+        "$RAIL_HELPER await openRail('对话'); const m=document.querySelector('.context-meter'); const u=document.querySelector('.usage-btn'); return 'ctx:'+(m?m.textContent:'none')+' | usage:'+(u?u.textContent:'none');" \
+        "0"
       ;;
     tree)
       run_scene "ui-tree" ".tree-changed" "$RAIL_HELPER return await openRail('文件');" "0"
@@ -222,9 +226,11 @@ for scene in $SCENES; do
     usage)
       # 用量数据必须走真实存储路径预置（会话日志 + 事件），而不是手工摆 JSON ——
       # 否则画面证明的只是「面板会渲染我塞的数字」，而不是「聚合真的从会话日志里算出来」。
-      # 末尾回读总量作为回执：数字全是 0 时日志里看得见，不会以「一张空图」的形式蒙混过去。
+      # 预置里刻意含一个「跑了但内核没上报」的会话（真实内核的常态），
+      # 所以回执同时读出如实说明那条横幅 —— 它是本轮最该被看见的一句话，
+      # 图上分不清「没显示」与「显示了但被裁掉」，回执能分。
       run_scene "ui-usage" ".usage-chart" \
-        "$RAIL_HELPER await openRail('用量'); const c=document.querySelector('.usage-card-value'); return c ? 'total:'+c.textContent : 'no-usage-card';" \
+        "$RAIL_HELPER await openRail('用量'); const c=document.querySelector('.usage-card-value'); const w=document.querySelector('.modal-hint-warn'); return 'total:'+(c?c.textContent:'no-usage-card')+' | warn:'+(w?w.textContent.replace(/\\s+/g,' ').slice(0,40):'none');" \
         "0" \
         "DEEPWORK_HOME='$HOME_WIN' node '$REPO/tools/fixtures/seed-usage.js' '$WORKSPACE_WIN'"
       ;;
