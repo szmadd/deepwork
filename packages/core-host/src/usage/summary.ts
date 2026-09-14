@@ -30,6 +30,11 @@ import {
  * `usage` 事件本身不带模型名，所以按**该 run 的 `run.started.model`** 归属，
  * 而不是按「会话当前的 model」—— 一个会话可以在中途换模型，
  * 用后者会把换模型之前的用量算到新模型头上，那正是用量面板最该答对的题。
+ *
+ * ── 覆盖率为什么也算在这里 ──
+ * 「几轮有数据」和「一共几轮」必须出自同一次扫描、同一份样本集，
+ * 否则它会变成一个可以用两套口径各自解释的数字：合计说 3 轮、覆盖率说 5 轮时，
+ * 没人能判断哪个错。放进这个纯函数，两者就必然自洽。
  */
 
 export interface UsageSample {
@@ -51,6 +56,14 @@ export interface UsageSessionMeta {
 export interface SummarizeInput {
   sessions: UsageSessionMeta[];
   samples: UsageSample[];
+  /**
+   * 日志里出现过的全部 run id（来自 run.started）。
+   *
+   * 它与 samples 的差集就是「跑了但没用量数据」的那些轮 —— 真实内核下**全部**
+   * 轮次都在这个差集里，因为 ACP 通道不上报 token 与费用。没有它，
+   * 汇总只能给出三个 0，而 0 在界面上读作「没花钱」。
+   */
+  runIds: string[];
   prices: Record<string, ModelPrice>;
   /** 汇总时刻（注入点） */
   now: number;
@@ -168,6 +181,16 @@ export function summarizeUsage(input: SummarizeInput): UsageSummary {
       (a, b) => b.totals.totalTokens - a.totals.totalTokens || a.sessionId.localeCompare(b.sessionId),
     );
 
+  // 取并集而不是只用 runIds：一条 usage 事件本身也是「这里跑过一轮」的证据，
+  // 日志被截断（run.started 丢了但 usage 还在）时，只用 runIds 会让覆盖率的
+  // 分母比分子还小，差额算出来是负数 —— 那种数在界面上没法解释。
+  const withUsage = new Set(input.samples.map((sample) => sample.runId));
+  const allRuns = new Set([...input.runIds, ...withUsage]);
+  const coverage = {
+    runs: allRuns.size,
+    runsWithUsage: withUsage.size,
+  };
+
   return {
     totals: totals.totals,
     estimatedCostCny: bucketCost(totals),
@@ -175,6 +198,7 @@ export function summarizeUsage(input: SummarizeInput): UsageSummary {
     byModel: modelRows,
     bySession: sessionRows,
     unpricedModels: [...totals.unpriced].sort(),
+    coverage,
     generatedAt: input.now,
   };
 }

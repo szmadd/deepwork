@@ -672,9 +672,25 @@ export class DeepworkHost {
         tools: this.tools,
         signal: controller.signal,
         emit: (event) => {
-          this.emit(event);
+          const stamped = this.emit(event);
           if (event.type === 'usage') {
             this.store.accumulateUsage(session.id, event.usage);
+          } else if (event.type === 'context.usage') {
+            /*
+             * 上下文占用写进会话 meta，而不只留在事件流里。
+             *
+             * 它是「这轮还能塞下多少」的即时依据，而用户看它的时机恰恰是
+             * 切换会话回来、或重启应用之后 —— 只在当次事件流里有效的话，
+             * 它的可用窗口短得几乎没有意义。
+             *
+             * 同时发 session.updated：界面据此刷新，不必自己再解析事件流。
+             * 一轮里内核会报多次（每条助手消息一次），每次都更新 meta 是刻意的：
+             * 保留的是**最近一次**占用，而中间那些快照没有留存价值。
+             */
+            const updated = this.store.update(session.id, {
+              context: { used: event.used, size: event.size, ts: stamped.ts },
+            });
+            this.emit({ type: 'session.updated', session: updated });
           }
         },
         requestApproval: (req) => this.requestApproval(runId, session.id, req),
@@ -871,6 +887,7 @@ export class DeepworkHost {
     }));
 
     const samples: UsageSample[] = [];
+    const runIds: string[] = [];
     for (const session of sessions) {
       const events = this.store.readEvents(session.id);
 
@@ -879,7 +896,12 @@ export class DeepworkHost {
       // 之前的用量算到新模型头上，而那正是用量面板最该答对的题。
       const modelOfRun = new Map<string, string>();
       for (const event of events) {
-        if (event.type === 'run.started') modelOfRun.set(event.runId, event.model);
+        if (event.type === 'run.started') {
+          modelOfRun.set(event.runId, event.model);
+          // 顺带收全量 run 清单：覆盖率的分母。它必须在**同一次扫描**里取，
+          // 否则「跑了 3 轮」与「3 轮都有数据」可能出自两套口径。
+          runIds.push(event.runId);
+        }
       }
 
       for (const event of events) {
@@ -899,6 +921,7 @@ export class DeepworkHost {
     return summarizeUsage({
       sessions: meta,
       samples,
+      runIds,
       // 读取侧同样清洗：config.json 可能被手工改过，而一个坏单价会让整张估算表变成 NaN。
       // 清洗把坏条目变成「未定价」，那是一个能被理解的界面状态。
       prices: sanitizeModelPrices(this.getConfig().modelPrices),

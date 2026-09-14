@@ -628,9 +628,32 @@ export function mapUpdateToEvent(update: AcpSessionUpdate, runId: string): Agent
       };
     }
 
+    /*
+     * 上下文占用。内核在每条提交的助手消息之后各报一次，实测形态：
+     *   {"sessionUpdate":"usage_update","used":7847,"size":1000000}
+     *
+     * 它是**真实内核唯一会上报的用量事实** —— token 花费不走 ACP（见 events.ts 的
+     * ContextUsageEvent 注释）。此前这个分支不存在，于是这根线一直悬着：
+     * 内核报了，我们丢了，界面显示 0。
+     *
+     * 两个数必须**各自都在且合法**才认：缺一个就说不出「装了多少 / 能装多少」，
+     * 用 0 补位会让界面显示「0% 占用」——那是一个编出来的结论，比空着更坏。
+     * size 必须为正，否则占比无意义（除以 0）。
+     */
+    case 'usage_update': {
+      const { used, size } = record as { used?: unknown; size?: unknown };
+      if (!isTokenCount(used) || !isTokenCount(size) || size <= 0) return null;
+      return { type: 'context.usage', runId, used, size };
+    }
+
     default:
       return null;
   }
+}
+
+/** token 计数：必须是非负有限数。`NaN` / `"123"` / 缺失都不算 —— 不替内核猜。 */
+function isTokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 /**

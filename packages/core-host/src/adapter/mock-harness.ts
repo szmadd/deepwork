@@ -7,6 +7,15 @@ import { assertNotAborted, type HarnessAdapter, type HealthReport, type RunConte
 const log = createLogger('adapter:mock');
 
 /**
+ * mock 自报的上下文容量。
+ *
+ * 它必须是一个**此处显式声明**的数，而不是从别处抄一个"看起来对"的值：
+ * 真实容量由内核给（ACP usage_update 的 size），mock 没有内核，所以它只能自报。
+ * 自报就得写在能被看见的地方，并且和它扮演的角色一起说出来。
+ */
+const MOCK_CONTEXT_WINDOW = 32_768;
+
+/**
  * Mock 内核。
  *
  * 存在的意义有两个，都很重要：
@@ -24,6 +33,8 @@ export class MockHarnessAdapter implements HarnessAdapter {
 
   private aborted = new Set<string>();
   private ready = false;
+  /** 模拟的上下文占用：只增不减地累积，让「占用随对话增长」这个现象真的出现 */
+  private contextUsed = 1_200;
 
   capabilities(): string[] {
     return ['fs', 'shell', 'search', 'approval', 'streaming', 'usage'];
@@ -231,6 +242,22 @@ export class MockHarnessAdapter implements HarnessAdapter {
         type: 'usage',
         runId: ctx.runId,
         usage: { promptTokens: 0, completionTokens, costCny: 0 },
+      });
+
+      /*
+       * 上下文占用。mock 是**模拟器**，所以它连内核这条上报也一并模拟 ——
+       * 理由不是"补全功能"，而是：只有真实内核会报的话，界面这条渲染路径
+       * 在任何自动化测试与截图里都跑不到，「显示了什么」就只能靠人去开真内核看。
+       *
+       * 数字随对话累积而不是取常量：常量会让「占用增长」这个唯一能看出它对不对的
+       * 现象消失，渲染错了也看不出来。
+       */
+      this.contextUsed += completionTokens;
+      ctx.emit({
+        type: 'context.usage',
+        runId: ctx.runId,
+        used: this.contextUsed,
+        size: MOCK_CONTEXT_WINDOW,
       });
 
       const status: RunStatus = ctx.signal.aborted ? 'aborted' : 'completed';
