@@ -18,7 +18,7 @@
 | M0 POC | 壳 + 内核子进程 + 单会话 + 流式输出 + 读写工具可见 | ✅ 完成 | 100% |
 | M1 MVP | 多会话/工作区/Diff 审阅/终端/审批三档/模型管理/设置持久化/Trajectory/打包 | ✅ 完成 | 100%（自动更新移入 M2） |
 | M2 V1 | 技能系统+审计/三层记忆/自动化/MCP/浏览器/Office/用量面板/自动更新 | ✅ 收口 | 100%（技能系统全链路 · 三层记忆 · 自动化调度 · 连接器管理(MCP) · 用量面板(M2-J) · 浏览器自动化(M2-H) · Office 生成与 OFD 原生读取(M2-I)；界面改为左侧活动栏 + 整页视图。**M2-K 自动更新显式挂起**，不计入未完成） |
-| **M2+ 收口后补强** | 模型目录以内核真帧为准 · 默认模型由用户自选 · 推理档位接出 | ✅ 完成 | 100%（2026-09-14 第二轮，见文末记录） |
+| **M2+ 收口后补强** | 模型目录以内核真帧为准 · 默认模型由用户自选 · 推理档位接出 · 上下文占用接出 · 用量口径如实化 | ✅ 完成 | 100%（2026-09-14 第二 / 第三轮，见文末记录） |
 | M3 生态期 | 专家团/插件市场/发布分享/多模态/团队协作 | ⏸ 暂缓 | 0%（2026-09-14 决策：暂不启动） |
 
 **唯一的硬阻塞**：真实 Harness 的 headless 契约未校准（`harness-sidecar.ts` 的 `ENDPOINTS` /
@@ -1982,4 +1982,133 @@ skills 59 / skillctx 24 / memory 38 / schedule 68 / connectors 42 / usage 27 / b
 3. FR-3.8 图表可视化（需求矩阵里最后一个无归属且不依赖后端的 P1）。
 4. §五 遗留债插空：桌面通知、Composer `/` 补全、Trajectory 逐事件分叉、主题切换器、
    内核自动写记忆（MCP 通道已通）、连接器 HTTP 传输（真帧已证 `mcpCapabilities.http = true`）。
+5. 运维：接 CI、把落后的提交推到 `origin`、给 M1 打 tag。
+
+---
+
+## 2026-09-14（第三轮）接出内核上报的上下文占用；用量面板不再把「没上报」显示成 0
+
+**目标**
+
+上一轮结束时留下的判断是「真实内核下用量面板拿不到 token 与费用」，本轮要做的是让界面**如实**，
+而不是继续显示一串看起来正常的 0。开头的取证把范围改了：
+
+1. 先确认内核到底报了什么 —— 结果发现 ACP 一直在报**上下文占用**（`usage_update`），
+   而我们的适配器连分支都没有，这条线从来没接上。
+2. 接出来的同时把它当作**容量事实**：`size` 是内核认定的上下文窗口，自定义端点模型取的是
+   我们在补丁里填的 `contextWindow` —— 于是上一轮那个"用户填了到底有没有用"的悬案有了答案。
+3. 用量面板与顶栏：内核没上报的部分不再显示成 0，而是说清「几轮没数据、为什么」。
+4. 顺带把上一轮遗留的「`max_tokens` 恒 256000 来源未知」查清（内核包 README：`maxTokens` 默认 256,000）。
+
+**改动**
+
+- `packages/protocol/src/events.ts`：新增 `context.usage` 事件（`used` / `size` / `runId`），
+  并在注释里写清它与 `usage` 的分工：前者真实内核报、后者只有 mock 报。
+- `packages/protocol/src/session.ts`：`Session.context`（最近一次上报，含采集时刻）。
+- `packages/protocol/src/usage.ts`：新增 `UsageCoverage`（`runs` / `runsWithUsage`）并进 `UsageSummary`；
+  文件头补「第三个口径：根本没上报」。
+- `packages/core-host/src/usage/summary.ts`：`summarizeUsage` 入参增 `runIds`，在同一次扫描里算覆盖率
+  （分子分母同源，否则差额会变成两个数各自解释）；`runIds` 与样本 runId 取**并集**，避免日志被截断时算出负数差额。
+- `packages/core-host/src/adapter/harness-sidecar.ts`：`mapUpdateToEvent` 增 `usage_update` 分支
+  （两个数都必须合法才认，`size` 必须为正；缺字段就返回 null，不用 0 补位）。
+- `packages/core-host/src/adapter/mock-harness.ts`：mock 同样上报 `context.usage`（它是模拟器），
+  占用随对话累积而不是常量，容量显式声明为 `MOCK_CONTEXT_WINDOW = 32_768`。
+- `packages/core-host/src/host.ts`：收到 `context.usage` 写进会话 meta 并发 `session.updated`；
+  `usageSummary()` 收集全量 runId 交给聚合。
+- `apps/desktop`：顶栏新增上下文占用 chip（`used / size · 百分比`，**没有数据时什么都不显示**，
+  不显示 0%）；用量按钮改为三分支 —— 没跑过「尚无用量」/ 有轮次没上报「用量未上报（N 轮）」/ 正常显示数字；
+  用量面板空状态改由 `coverage.runs` 判定，并在差额存在时置顶如实说明；「规模」卡副标题改成 `N/M 轮有用量数据`。
+- 测试：`tools/fixtures/openai-stub-llm.js` **开始回 usage 帧**（真 OpenAI 只在被要求时回，
+  所以只在 `stream_options.include_usage` 为真时回，并记录 `askedUsage` / `reportedUsage` 供复算）；
+  `tools/fixtures/fake-acp-agent.js` 增两条 `usage_update`（一完整、一缺 `size`）；
+  `acp-conformance` 增 3 条映射断言；`usage-test` 增 8 条（含两个覆盖率专用用例）；
+  `smoke-ipc` 增 3 条（事件流 → 会话 meta）；`model-endpoint-test` 第 4 段增 6 条真内核断言。
+- `tools/fixtures/seed-usage.js` + `tools/capture.sh`：预置数据里加一个「跑了但内核没上报」的会话，
+  用量场景的回执改为同时读出那条如实说明。
+
+**验证**
+
+```
+npm run verify     # 18 套：17 套全绿；末位 real-dsh-mcp 3/8 为已知环境性失败（exit=1）
+npm run demo       # exit=0
+npm run typecheck                       # exit=0
+npm run typecheck -w @deepwork/desktop  # exit=0
+bash tools/capture.sh chat usage        # exit=0
+```
+
+各套件通过项数：tools 19 / replay 29 / smoke **30** / partial 13 / terminal 22 / acp **40** /
+real-dsh 15 / skills 59 / skillctx 24 / memory 38 / schedule 68 / connectors 42 / usage **35** /
+browser 76 / office 130 / **modelcfg 92**；diff 段为「还原一致性 全部通过」。合计 **732 项通过**
+（上一轮 706；本轮的 +26 = smoke +3 / acp +3 / usage +8 / modelcfg +12）。逐个核对了其余套件的项数，
+未发现偏差。
+
+真内核断言（`test:modelcfg` 第 4 段，连跑两轮结论一致）：
+
+```
+[PASS] 真实内核上报了上下文占用（usage_update 已接线） — 4 条，size=111111/222222
+[PASS] run-1（qwen-local-7b）：容量 = 补丁里给它填的 contextWindow — size=111111 期望=111111
+[PASS] run-2（换到 qwen-local-14b）：容量跟着变成它自己的 contextWindow — size=222222 期望=222222
+[PASS] 容量不是常量：两轮的 size 确实不同（否则上面两条等于没验）
+[PASS] 同一个 run 内 size 恒定（容量不随对话变化）
+[PASS] 占用为正且不超过容量 — {"type":"context.usage","runId":"run-3","used":8001,"size":222222}
+```
+
+截图脚本回执（脚本自报，避免「图是旧 UI」）：
+
+```
+[capture] 脚本执行结果: "ctx:上下文 1.27k / 32.8k · 4% | usage:0.0k / 0.1k · ¥0.0000"
+[capture] 脚本执行结果: "total:69.4k | warn:共 11 轮里有 2 轮没有任何用量数据。 真实内核（ACP 通道）不上报 to"
+```
+
+**踩坑与修复**
+
+1. **测试替身缺一个字段，差点让我们得出反向的结论。** 第一次取证（自写的 ACP 帧抓取脚本）看到的是
+   "内核不上报上下文占用" —— 只有 tool_call / tool_call_update / agent_message_chunk 三种 update。
+   根因不在内核：`tools/fixtures/openai-stub-llm.js` **从不回 usage 帧**，而内核只在拿到 provider
+   上报的 usage 时才产生 `usage_update`（源码里是 `if (event.data.usage === void 0) return;`）。
+   修法：让替身按真端点的方式回 usage（`stream_options.include_usage` 为真时回一帧 `usage`，
+   并记录本次自报的用量供复算）。修完立刻出现 `{"used":7847,"size":1000000}`。
+   **教训：替身的行为也是"事实来源"，它会伪造出不存在的事实。** 断言"某能力不存在"之前，
+   先确认提供方在测试环境里真的具备产生它的条件。
+2. **`capabilities()` 里没有 `context`，但这不能用来门控界面。** 真实内核的 `agentCapabilities`
+   只有 `mcpCapabilities` / `promptCapabilities` / `sessionCapabilities` 三组，`usage_update` 并不写在里面；
+   照能力清单门控的话，真实模式永远不显示上下文占用（而它明明会报）。改为**按数据在不在**判断：
+   `session.context` 有值就显示，没有就不显示 —— 数据本身就是能力证据。
+3. **容量不是常量，两个模型必须填不同的 `contextWindow` 才能验。** 最初第 4 段给两个模型都填了
+   131_072（正好等于 `DEFAULT_ENDPOINT_CONTEXT_WINDOW`），于是「换模型后 size 跟着变」与
+   「size 一直是我们填的那个常量」无法区分，断言会在错的实现上通过。改成 111_111 / 222_222
+   两个互不相同的任意值（任意是为了不可能被巧合命中），并补一条「两轮的 size 确实不同」兜底。
+4. **缺字段与值为 undefined 是两件事。** `usage_update` 只给 `used` 不给 `size` 时，补 0 会让界面
+   显示「0% 占用」——一个编出来的结论。适配器因此要求两个数**各自合法**（`isTokenCount`）且
+   `size > 0`，否则整条丢弃。`fake-acp-agent` 里专门留了半条帧守这个洞。
+5. **覆盖率必须在同一次扫描里算。** 分子分母若分别从两处取（例如分母用 `totals.runs`），
+   就会出现"合计说 3 轮、覆盖率说 5 轮"的场面，而两句话各自都能自圆其说。
+   这也是把 `runIds` 塞进纯函数、而不是在宿主里另算一遍的原因；取并集则避免日志被截断时差额为负。
+6. **`max_tokens` 的来源查到了 —— 上一轮记的"来源未知"可以结案。**
+   `@deepseek-ai/dsh-llm-deepseek` 的配置项 `maxTokens` 默认 `256,000`（该包 README 配置表）。
+   它和模型条目的 `contextWindow` 是两个独立字段：一个是**输出上限**，一个是**上下文容量**。
+   → 上一轮把「contextWindow 控制压缩时机」降级为"未证实"是对的；本轮补上的是它的另一半事实：
+   `contextWindow` 确实被内核用作**容量**（`usage_update.size` 就是它）。**压缩时机是否也看它，仍无证据。**
+
+**遗留**
+
+- 上下文占用只有「最近一次」：同一轮里内核会报多次，宿主每次覆盖 meta（中间快照不留存）。
+  想看"这一轮占用怎么涨的"目前没有数据源 —— 事件流里倒是有（每次上报都是一条事件），
+  但没有任何界面在读它。
+- 覆盖率的差额只说「几轮没有数据」，说不出**是哪几轮**。要做"点开看是哪几轮"就得在事件里带
+  适配器标识或在内核侧取 usage，属另一轮。
+- token 与费用在真实模式下的缺口**无法在本地补齐**：ACP 规格明确不把 provider 原始增量放上线。
+  真要做只能在宿主侧自己估算 token（需要分词器）—— 那是"另造一个事实来源"，与用量面板
+  「不新建存储」的纪律冲突，暂不做。
+- mock 的容量 `MOCK_CONTEXT_WINDOW = 32_768` 是自报值，界面上不带任何"估计"标注 ——
+  因为它确实是 mock 自报的（与 mock 的模型清单同一条纪律）。
+
+**下一步**
+
+1. FR-10.2 只剩**自动路由**与**端点不可达时的如实降级提示**：后者需要先取证「端点挂掉时内核回什么帧」
+   （本轮已建立抓帧脚本的写法与 stub 关停手法，可直接复用）。
+2. FR-3.5 沙箱：**复用内核 `dsh-sandbox*`**（真帧的插件清单里已有 `dsh-fs-sandbox` /
+   `dsh-pwsh-sandbox` / `dsh-sandbox-local` / `dsh-sandbox-policy`），先翻这些包的 README。
+3. FR-3.8 图表可视化（需求矩阵里最后一个无归属且不依赖后端的 P1）。
+4. §五 遗留债插空。
 5. 运维：接 CI、把落后的提交推到 `origin`、给 M1 打 tag。
