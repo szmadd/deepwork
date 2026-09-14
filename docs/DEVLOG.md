@@ -17,14 +17,29 @@
 |---|---|---|---|
 | M0 POC | 壳 + 内核子进程 + 单会话 + 流式输出 + 读写工具可见 | ✅ 完成 | 100% |
 | M1 MVP | 多会话/工作区/Diff 审阅/终端/审批三档/模型管理/设置持久化/Trajectory/打包 | ✅ 完成 | 100%（自动更新移入 M2） |
-| M2 V1 | 技能系统+审计/三层记忆/自动化/MCP/浏览器/Office/用量面板/自动更新 | 🔄 进行中 | 约 90%（技能系统全链路 · 三层记忆 · 自动化调度 · 连接器管理(MCP) · 用量面板(M2-J) · 浏览器自动化(M2-H) · Office 生成与 OFD 原生读取(M2-I)；界面改为左侧活动栏 + 整页视图） |
-| M3 生态期 | 专家团/插件市场/发布分享/多模态/团队协作 | ⬜ 未开始 | 0% |
+| M2 V1 | 技能系统+审计/三层记忆/自动化/MCP/浏览器/Office/用量面板/自动更新 | ✅ 收口 | 100%（技能系统全链路 · 三层记忆 · 自动化调度 · 连接器管理(MCP) · 用量面板(M2-J) · 浏览器自动化(M2-H) · Office 生成与 OFD 原生读取(M2-I)；界面改为左侧活动栏 + 整页视图。**M2-K 自动更新显式挂起**，不计入未完成） |
+| M3 生态期 | 专家团/插件市场/发布分享/多模态/团队协作 | ⏸ 暂缓 | 0%（2026-09-14 决策：暂不启动） |
 
 **唯一的硬阻塞**：真实 Harness 的 headless 契约未校准（`harness-sidecar.ts` 的 `ENDPOINTS` /
 `EVENT_TYPE_MAP` 仍是占位约定）。其余事项随时可推进。
 
 **修正（M2-B）**：上述硬阻塞已在 M2-B 解除 —— 真实 dsh（ACP）端到端跑通，5 处真帧差异已修。
 「唯一硬阻塞」从此作废。
+
+### 挂起项（2026-09-14 决策，不计入完成度）
+
+以下各项**不是"还没做"，而是"已决策暂不做"**，共同原因是**都需要一个后端平台**：
+
+| 项 | 需要什么 |
+|---|---|
+| M3 全部 | 服务端（专家团托管 / 市场服务 / 在线分享链接 / 团队协作与云同步） |
+| M2-K 自动更新 | 发布通道 + 版本清单服务 |
+| 崩溃上报 / 遥测 / 计费 | 接收端服务 |
+| 多模态**生成**（图像/视频） | 外部生成服务 |
+
+**开发主线口径（同日确立）**：开发与验证**以 DeepSeek 官方端点为优先**；局域网自建
+OpenAI 兼容端点（GPUStack 一类）作为**可选路径**，只在官方端点不可用时才排期验证。
+远端仓库、CI、版本 tag 三项运维债仍待补（见 ROADMAP §五）。
 
 ---
 
@@ -1698,3 +1713,125 @@ bash tools/capture.sh office
 M2 剩余项按 ROADMAP：仅剩 **M2-K（自动更新）**，依赖外部发布通道，本地只能做到
 「接线就绪 + 模拟 feed 验证」（本地静态服务器伪装更新源，走通下载 → 校验 → 提示 → 重启）。
 真实发布通道属运维决策，届时如实标注，不假装「自动更新已完成」。
+
+---
+
+## 2026-09-14 · 规划收口 · 需要后端的项显式挂起 + 需求矩阵漏项补录 + 官方模式内核取证
+
+**目标**
+
+三件事，按顺序：
+
+1. 把"还有什么没做"从对话搬进仓库，并且**区分「还没做」与「已决策不做」** —— 后者必须显式挂起，
+   否则进度表会永远停在 90%，每轮开工都要重新考古"差的 10% 到底是什么"。
+2. 补录需求矩阵里 4 条从未被任何里程碑收录的漏项：这是**规划缺口**，不是实现缺口。
+3. 按 ROADMAP §二的取证规则，先拿官方模式下内核的真帧，再谈模型接入相关代码该怎么改。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `docs/DEVLOG.md` | 快照表：M2 由「🔄 约 90%（剩 M2-K）」改为「✅ 收口 100%」；M3 由「⬜ 0%」改为「⏸ 暂缓」；新增「挂起项」小节（逐项写明**需要什么**）与「开发主线口径」（开发/验证以 DeepSeek 官方端点为优先） |
+| `docs/ROADMAP.md` §〇 | 战略方向重写：原「本地模型优先（Ollama/LM Studio）」→ **主线 = DeepSeek 官方端点，局域网 OpenAI 兼容端点为可选路径**。删掉「本地模型向导」与「运行时自包含」两项（前提已不成立，留着只会误导）；补三条仍然成立的接入不变式 |
+| `docs/ROADMAP.md` §一 | 状态表同步为 M2 收口 / M3 暂缓；新增「挂起项」与「需求矩阵漏项」的指路 |
+| `docs/ROADMAP.md` §二 | 取证结论表新增 沙箱 / 模型选择与思考档 / 会话导出 / 任务与计划 四行；**修正「图片附件已通」**这一既有结论；追加两条必须修正的既有表述（显示名与 contextWindow 是自编、产品默认模型与内核默认不一致） |
+| `docs/ROADMAP.md` §三 | M2-K 标 ⏸ 挂起，写明理由与**重启条件** |
+| `docs/ROADMAP.md` §四 | M3 整节标 ⏸ 暂缓，降级为存档（保留规划与判据，重启时先读它 + §七） |
+| `docs/ROADMAP.md` §五 | 遗留债表扩充：补 M2-H / M2-I / 界面 / 测试 / 仓库 / 运维 六行，并注明**本表都不依赖后端** |
+| `docs/ROADMAP.md` §七（新增） | 需求矩阵漏项 4 条 + 跨平台 NFR，逐条给现状与判据建议；附本轮建议动手顺序 |
+
+**验证**
+
+取证（真帧，不是猜）：
+
+```bash
+node tools/real-dsh-probe.js    # exit=0
+# dsh bin ok: node_modules/@deepseek-ai/dsh/lib/bin.js
+#
+# session/new 的 configOptions 公布两个 select：
+#   model            —— 组 deepseek-official，四条 value/name：
+#     ["deepseek-official","deepseek-flash"]                → DeepSeek-V41-Flash
+#     ["deepseek-official","deepseek-v4-flash"]             → DeepSeek-V4-Flash
+#     ["deepseek-official","deepseek-v4-pro"]               → DeepSeek-V4-Pro
+#     ["deepseek-official","deepseek-v4-flash-vision-exp"]  → DeepSeek-V4-Flash-Vision-Exp
+#     currentValue = ["deepseek-official","deepseek-v4-flash"]
+#   reasoning_effort —— off / low / high / max，currentValue = high
+#
+# 模型端点实际收到的请求：model = "deepseek-v4-flash"（未显式指定时用内核默认）
+# 工具表 25 个：create_goal edit exit_plan_mode get_goal glob grep interrupt_agent job_kill
+#   job_list job_output list_agents pwsh ralph read read_image send_message skill subagent
+#   subagent_fork todo_write update_goal web_fetch web_search workflow write
+# initialize.agentCapabilities：mcpCapabilities.http = true；
+#   sessionCapabilities = { close, list, resume }；
+#   promptCapabilities = { image: false, audio: false, embeddedContext: false }
+```
+
+文档类改动的可核验检查：
+
+```bash
+wc -l docs/DEVLOG.md docs/ROADMAP.md               # 1715 / 289
+# README 里指向 docs 的链接逐个 test -e：OK × 4（CONVENTIONS / DEVLOG / ROADMAP / SESSIONS/）
+git ls-files --eol docs/DEVLOG.md docs/ROADMAP.md  # 两条均 i/lf w/lf（未引入 CRLF）
+grep -c 挂起 docs/ROADMAP.md docs/DEVLOG.md        # 11 / 2
+```
+
+基线（文档改动不碰代码，但按纪律复跑一遍，顺便核对基线数字是否还准）：
+
+```bash
+npm run verify   # 18 套中 17 套全绿：
+                 #   差异还原一致性 全部通过 / tools 19 / replay 29 / smoke 26 / partial 13 /
+                 #   terminal 22 / acp 37（37/37，0 失败）/ real-dsh 15（15/15，0 失败）/
+                 #   skills 59 / skillctx 24 / memory 38 / schedule 68 / connectors 42 /
+                 #   usage 27 / browser 76 / office 130 / modelcfg 32（32/32）
+                 # real-dsh-mcp 通过 3 失败 5 —— 已知环境性失败（链尾），exit=1
+npm run demo     # exit=0
+```
+
+**基线数字核对结果**：ROADMAP §一 记的 `modelcfg 31` 是**stale** —— 实测 **32/32**
+（`8b7c487` 那轮新增了一项断言）。已就地修正并加注。**其余各套件项数与记录一致。**
+
+**踩坑与修复**
+
+1. **规划项会随约束变化而"失去依托"，但进度表上看不出来。** 「本地模型优先」是 2026-09-13 的战略，
+   M2-K 与 M3 在这套口径下才成立；当"本机没有后端平台、也不用 Ollama / LM Studio"这条约束摆上来，
+   它们从"待做"变成了"不该做"。**症状是同一张表既显示 90%、又永远涨不上去。**
+   → 修法：把这类项从完成度里**摘出来单列「挂起项」，逐项写明需要什么条件**，
+   而不是让它们继续以"未完成"的样子留在表里。**「没做」和「不做」在规划上是两种状态**，
+   混在一起会让下一位开发者反复评估同一批已经拍过板的事。
+2. **既有文档里的"事实"必须能被真帧推翻，且推翻后要在原地标注。** 本轮推翻两处：
+   `附件/多模态输入：dsh-attachment*，ACP resource_link 已通 → 图片附件可直接走既有通道`
+   —— 真帧是 `promptCapabilities.image = false`，协议侧**根本没开图像输入**；
+   `models.ts` 的显示名与 `contextWindow: 256_000` —— 内核帧里**没有 contextWindow 字段**，
+   显示名也不是内核给的那个写法。**这些值当初都"看着合理"，属于占位约定放久了自己长成事实。**
+   → 修法：在 §二 原表位置补「修正（2026-09-14 真帧）」行，历史条目不动；
+   并在 `models.ts` 头部注释里点明"显示名与 contextWindow 是自编，不是内核给的"（下一步改）。
+3. **默认值不一致不会报错，只会"默默地用了另一个"。** 内核 `model.currentValue` 是
+   `deepseek-v4-flash`，项目 `DEFAULT_MODEL = 'deepseek-flash'`（V41-Flash）。两者都能跑通，
+   所以不会有任何断言变红 —— 但"产品默认"与"内核默认"从此是两个答案。
+   → 记入 §二 待决策，**不在本轮擅自改**（动默认模型会挪动既有测试的参照物）。
+4. **探针输出很长，别用 `tail` 找关键帧。** 首次跑用 `| tail -80` 只看到 `session/list` 尾巴，
+   模型目录帧在 30–98 行之间。→ 落盘到临时文件后按分节标记 `grep -n "───"` 定位
+   （共 8 节：initialize / session/new / prompt 被拒 / prompt 成功 / 端点收到的请求 / session/list / session/close）。
+5. **基线数字会过时，而且没人会去核。** 复跑发现 ROADMAP §一 记的 `modelcfg 31` 实际是 **32**
+   —— 上一轮改了断言却没人回头改基线行，于是"18 套 17 绿"这句结论里的一个分量已经不准了。
+   这类偏差不会被任何测试捕获：**格式对、总量对、只有分量是旧的。**
+   → 修法：把它当成纪律的一部分 —— 复跑基线时**顺手核对文档里的项数**，不一致就地修正并加注日期。
+   （这是第 4 条踩坑的续集：一个是"凭印象写"，一个是"写对了但没跟着改"。）
+
+**遗留**
+
+- 4 条漏项**仍未实现**，本轮只补录：FR-10.2（P0）、FR-10.5（P0，上报侧挂起）、
+  FR-3.5（P1，可复用内核 `dsh-sandbox*`）、FR-3.8（P1），外加跨平台 NFR。
+- 「产品默认模型 vs 内核默认模型」待决策（§二）。
+- 内核原生但 UI 未呈现的能力一批：`todo_write` / `create_goal` / `update_goal` / `exit_plan_mode` /
+  `subagent*` / `list_agents` / `send_message` / `workflow` / `job_*` —— 做任务与计划面板时先看这里。
+- §五 的运维债（CI / 远端推送 / tag）仍在。
+
+**下一步**
+
+按 §七 的顺序开工，第一项是**模型来源以内核为准**：起点就是本轮拿到的真帧 ——
+把 `models.ts` 的硬编码四条换成吃 `session/new` 的 `configOptions`（显示名与可选值以内核为准，
+删掉自编的 contextWindow），并把内核已有的 **`reasoning_effort`** 接出来 ——
+这是 FR-10.2「快模型 / 推理模型分工」的**现成落点**，不必自建路由。
+契约先行：先改 `packages/protocol/src/`，再改实现；`test:modelcfg` 与 `test:acp` 同步扩断言，
+断言的参照物落在**实际发出的请求用了哪个模型与哪一档思考**，不是配置文本。
