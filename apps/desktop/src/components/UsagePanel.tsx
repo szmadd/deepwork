@@ -45,6 +45,12 @@ function formatCost(value: number | null): string {
  * ── 未定价不显示成 0 ──
  * 有模型没配单价时估算返回 null，界面显示「未定价」并单独列出这些模型。
  * 显示 0 会被读成「免费」，那是把「不知道」伪装成「知道」。
+ *
+ * ──「内核没上报」同样不显示成 0 ──
+ * 真实内核的 ACP 通道不上报 token 与费用（只上报上下文占用），所以真实模式下
+ * 这份汇总恒为 0。此处必须说清差额，并且**不能用「还没有用量数据」打发** ——
+ * 那等于把「内核不说话」写成「你没干过活」。空状态改由 coverage.runs 判定：
+ * 只有一轮都没跑过才是真的空。
  */
 export function UsagePanel({
   summary,
@@ -115,12 +121,27 @@ export function UsagePanel({
     >
       {!summary ? (
         <div className="empty-hint">正在汇总用量…</div>
-      ) : summary.totals.runs === 0 ? (
+      ) : summary.coverage.runs === 0 ? (
         <div className="empty-hint">
           还没有用量数据。跑一轮对话之后，这里会按日 / 按模型 / 按会话三个维度聚合。
         </div>
       ) : (
         <>
+          {/*
+            「跑过但没上报」必须先于数字出现。
+            这里用的是 coverage（跑了几轮 / 几轮有数据），而不是 totals.runs ——
+            后者只在有上报时才增加，于是真实内核下整页会显示成「从没跑过」，
+            比显示 0 更误导：用户明明跑了几十轮。
+          */}
+          {summary.coverage.runsWithUsage < summary.coverage.runs ? (
+            <div className="modal-hint modal-hint-warn">
+              共 <strong>{summary.coverage.runs}</strong> 轮里有{' '}
+              <strong>{summary.coverage.runs - summary.coverage.runsWithUsage}</strong> 轮没有任何用量数据。
+              真实内核（ACP 通道）不上报 token 与费用，只上报上下文占用 ——
+              所以下面的 0 是「内核没上报」，不是「没花钱、没消耗 token」。
+            </div>
+          ) : null}
+
           <div className="usage-cards">
             <StatCard
               label="总 token"
@@ -130,7 +151,7 @@ export function UsagePanel({
             <StatCard
               label="内核累计花费"
               value={`¥${totals!.costCny.toFixed(4)}`}
-              sub="内核上报；本地模型恒为 0"
+              sub="内核上报值；真实内核不上报时恒为 0"
             />
             <StatCard
               label="估算花费"
@@ -140,7 +161,7 @@ export function UsagePanel({
             <StatCard
               label="规模"
               value={`${summary.bySession.length} 会话`}
-              sub={`${totals!.runs} 次模型调用 · ${summary.byDay.length} 天`}
+              sub={`${summary.coverage.runsWithUsage}/${summary.coverage.runs} 轮有用量数据 · ${summary.byDay.length} 天`}
             />
           </div>
 

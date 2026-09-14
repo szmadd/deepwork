@@ -22,7 +22,7 @@ import { SkillsPanel } from './components/SkillsPanel';
 import { MemoryPanel } from './components/MemoryPanel';
 import { SchedulesPanel } from './components/SchedulesPanel';
 import { ConnectorsPanel } from './components/ConnectorsPanel';
-import { UsagePanel } from './components/UsagePanel';
+import { UsagePanel, formatTokens } from './components/UsagePanel';
 import { BrowserPanel } from './components/BrowserPanel';
 import { AttachmentBar } from './components/AttachmentBar';
 import { useAgent } from './useAgent';
@@ -284,15 +284,62 @@ export default function App() {
                   </select>
                 </label>
 
-                {/* 用量摘要做成入口：数字本身就是「点进去看详情」的最佳提示 */}
+                {/*
+                  上下文占用：内核上报的「现在装了多少 / 最多能装多少」。
+                  真实内核在每条助手消息后各报一次，取最近一次（写在会话 meta 上，
+                  所以切走再切回来、重启应用之后仍然在）。
+
+                  数据不在时**不显示 0% —— 什么都不显示**：0% 与「内核没说过」
+                  在界面上必须是两件事，前者会让人以为上下文是空的。
+                */}
+                {agent.current?.context ? (
+                  <button
+                    type="button"
+                    className="context-meter"
+                    title={
+                      `内核上报的上下文占用：${agent.current.context.used.toLocaleString()} / ` +
+                      `${agent.current.context.size.toLocaleString()} token\n` +
+                      `容量来自模型条目（自定义端点模型取你在设置里填的值）`
+                    }
+                    onClick={() => openView('usage')}
+                  >
+                    上下文 {formatTokens(agent.current.context.used)} /{' '}
+                    {formatTokens(agent.current.context.size)}
+                    {/*
+                      分隔符写在文本里而不是只靠 flex 的 gap：截图脚本回读的是
+                      textContent，只靠 gap 的话回执会变成「32.8k4%」那种连在一起的
+                      字样 —— 回执本身是给人看的证据，不该需要脑补分隔。
+                    */}
+                    <span className="context-meter-pct">
+                      {' · '}
+                      {Math.round((agent.current.context.used / agent.current.context.size) * 100)}%
+                    </span>
+                  </button>
+                ) : null}
+
+                {/*
+                  用量摘要做成入口：数字本身就是「点进去看详情」的最佳提示。
+
+                  但「没上报」与「真的是 0」必须分开显示 —— 真实内核不上报 token 与费用，
+                  照直渲染 0.0k / 0.0k · ¥0.0000 会让用户在花钱的同时看到一个
+                  「一切正常、没有消耗」的界面。所以：
+                    跑过但一轮都没上报 → 说「未上报」；一轮都没跑 → 说「尚无用量」。
+                */}
                 <button
                   type="button"
                   className="usage usage-btn"
-                  title="本会话累计用量；点击查看跨会话用量详情"
+                  title={
+                    agent.usageCoverage.runs > 0 && agent.usageCoverage.runsWithUsage < agent.usageCoverage.runs
+                      ? `本会话 ${agent.usageCoverage.runs} 轮中 ${agent.usageCoverage.runs - agent.usageCoverage.runsWithUsage} 轮没有用量数据：真实内核的 ACP 通道不上报 token 与费用，只上报上下文占用。点击查看跨会话用量详情`
+                      : '本会话累计用量；点击查看跨会话用量详情'
+                  }
                   onClick={() => openView('usage')}
                 >
-                  {(agent.usage.promptTokens / 1000).toFixed(1)}k /{' '}
-                  {(agent.usage.completionTokens / 1000).toFixed(1)}k · ¥{agent.usage.costCny.toFixed(4)}
+                  {agent.usageCoverage.runs === 0
+                    ? '尚无用量'
+                    : agent.usageCoverage.runsWithUsage < agent.usageCoverage.runs
+                      ? `用量未上报（${agent.usageCoverage.runs} 轮）`
+                      : `${(agent.usage.promptTokens / 1000).toFixed(1)}k / ${(agent.usage.completionTokens / 1000).toFixed(1)}k · ¥${agent.usage.costCny.toFixed(4)}`}
                 </button>
               </div>
             </header>

@@ -2210,6 +2210,33 @@ pre {
   color: var(--accent);
 }
 
+/*
+  上下文占用。与 .usage-btn 同一行、同一视觉层级：两者都是「点进去看用量详情」，
+  区别只在数据来源（占用是内核报的，花费多半没上报）。样式刻意做得一样，
+  避免用户以为它们是两种东西。
+*/
+.context-meter {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 8px;
+  background: var(--bg-2);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  /* 分隔符由文本自带（截图回执要能读），所以这里不靠 gap */
+  white-space: nowrap;
+}
+
+.context-meter:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.context-meter-pct {
+  color: var(--text-faint);
+}
+
 /* ── 用量面板 ─────────────────────────────────── */
 
 .usage-cards {

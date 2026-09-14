@@ -81,6 +81,11 @@ export interface UseAgentResult {
   refreshModels: () => Promise<void>;
   activeRunId: string | null;
   usage: { promptTokens: number; completionTokens: number; costCny: number };
+  /**
+   * 本会话的用量覆盖率：跑了几轮 / 其中几轮有内核上报。
+   * 两者不等时，界面要说「未上报」，不能把 0 当结果。
+   */
+  usageCoverage: { runs: number; runsWithUsage: number };
 
   /** 当前会话中被改动过的文件路径（相对工作区），用于文件树高亮 */
   changedPaths: Set<string>;
@@ -1030,6 +1035,23 @@ export function useAgent(): UseAgentResult {
   const usage = useMemo(() => sumUsage(events), [events]);
 
   /**
+   * 当前会话的用量覆盖率：跑了几轮、其中几轮有内核上报的用量。
+   *
+   * 存在的理由：真实内核（ACP 通道）不上报 token 与费用，只上报上下文占用。
+   * 少了这个判断，顶栏在真实内核下会显示 `0.0k / 0.0k · ¥0.0000` ——
+   * 用户明明在花钱，界面却"看起来一切正常"。所以「没上报」必须与「真的是 0」分开。
+   */
+  const usageCoverage = useMemo(() => {
+    const runs = new Set<string>();
+    const withUsage = new Set<string>();
+    for (const event of events) {
+      if (event.type === 'run.started') runs.add(event.runId);
+      else if (event.type === 'usage') withUsage.add(event.runId);
+    }
+    return { runs: runs.size, runsWithUsage: withUsage.size };
+  }, [events]);
+
+  /**
    * 当前会话改动过的文件。
    *
    * 直接从会话事件里的工具调用差异推出来，而不是再去问一次内核 ——
@@ -1065,7 +1087,7 @@ export function useAgent(): UseAgentResult {
     refreshModels,
     activeRunId,
     usage,
-    changedPaths,
+    usageCoverage,    changedPaths,
     tree,
     treeLoading,
     preview,
