@@ -1790,6 +1790,15 @@ npm run demo     # exit=0
 **基线数字核对结果**：ROADMAP §一 记的 `modelcfg 31` 是**stale** —— 实测 **32/32**
 （`8b7c487` 那轮新增了一项断言）。已就地修正并加注。**其余各套件项数与记录一致。**
 
+仓库一致性（克隆往返）：
+
+```bash
+git clone D:/mypython/deepwork D:/mypython/_clonecheck_dw_20260914
+git -C <clone> status --porcelain   # 空：检出内容 == 提交内容
+git -C <clone> log --oneline -1     # 3b42d26（本轮提交）
+git -C <clone> ls-files | wc -l     # 150
+```
+
 **踩坑与修复**
 
 1. **规划项会随约束变化而"失去依托"，但进度表上看不出来。** 「本地模型优先」是 2026-09-13 的战略，
