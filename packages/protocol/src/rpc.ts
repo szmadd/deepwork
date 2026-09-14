@@ -13,7 +13,7 @@ import type { MemoryEntry, MemoryLayer, MemoryLayerStat } from './memory';
 import type { ConnectorConfig, ConnectorState } from './mcp';
 import type { ScheduleSpec, ScheduleTask } from './schedule';
 import type { ApprovalDecision, GuardPolicy } from './security';
-import type { AgentMode, ForkOrigin, ModelDescriptor, Session } from './session';
+import type { AgentMode, ForkOrigin, ModelCatalog, Session } from './session';
 import type { SkillAuditReport, SkillInstallResult, SkillRecord } from './skills';
 import type { TerminalChunk, TerminalState } from './terminal';
 import type { UsageSummary } from './usage';
@@ -83,7 +83,19 @@ export interface RpcContract {
   'config.set': { params: { patch: Partial<AppConfig> }; result: AppConfig };
   'guard.get': { params: Record<string, never>; result: GuardPolicy };
   'guard.set': { params: { policy: Partial<GuardPolicy> }; result: GuardPolicy };
-  'models.list': { params: Record<string, never>; result: ModelDescriptor[] };
+  /**
+   * 模型目录。
+   *
+   * 权威来源是内核 `session/new` 公布的 configOptions 真帧 —— 只要能用真实内核，
+   * 这里返回的就是内核实际提供的模型与推理档位，而不是本机写死的一份清单。
+   * 拿不到真帧时返回空 models 并在 note 里说明原因，**绝不回退到一份自编的官方清单**：
+   * 那种回退会让「界面显示官方模型名、实际跑的是别的模型」永远不会被发现。
+   *
+   * `models.refresh` 强制重新取帧（会新建一个探针会话，用完即关），
+   * 用于「我刚在端点上换完模型，现在核对一下」。
+   */
+  'models.list': { params: Record<string, never>; result: ModelCatalog };
+  'models.refresh': { params: Record<string, never>; result: ModelCatalog };
   /**
    * 模型 API key 管理。
    *

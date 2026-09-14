@@ -65,13 +65,69 @@ export interface Usage {
   costCny: number;
 }
 
+/**
+ * 模型条目的来源。
+ *
+ * 每个条目都必须能回答「这个结论从哪来的」—— 从内核 session/new 真帧读来的，
+ * 与从用户填的端点配置里抄来的，可信度完全不同，界面上也不该长得一样。
+ */
+export type ModelSource =
+  /** 真实内核 session/new 公布的 configOptions（已核对） */
+  | 'kernel'
+  /** 用户填写的自定义端点模型名（未与端点核对） */
+  | 'endpoint'
+  /** mock 内核自报的链路验证模型 */
+  | 'mock';
+
 export interface ModelDescriptor {
   id: string;
   label: string;
   provider: string;
   /** 是否支持程序化工具调用 */
   supportsPtc: boolean;
-  contextWindow: number;
+  /**
+   * 上下文窗口。
+   *
+   * **只有真的知道时才带这个字段**：内核的 configOptions 帧里没有它，
+   * 自定义端点也要用户自己填。此前这里对所有模型写死 256_000 —— 那是自编数据，
+   * 界面显示得很精确，实际没有任何来源。缺省即「未知」，界面显示「未提供」。
+   */
+  contextWindow?: number;
+  source: ModelSource;
+  /** 自定义端点的地址，用于区分同名模型来自哪个端点；内核与 mock 条目为空 */
+  endpoint?: string;
+}
+
+/** 内核公布的推理档位（configOptions 的 reasoning_effort 项）。 */
+export interface ReasoningEffortOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+/**
+ * 模型目录：`models.list` / `models.refresh` 的返回。
+ *
+ * 它同时承载「有哪些模型」与「这份清单是怎么来的」—— 后者不是装饰：
+ * 真实内核的清单要建一个探针会话去取帧，取不到时必须如实说「没核对上」，
+ * 而不是回退到一份写死的官方清单让人以为一切正常。
+ */
+export interface ModelCatalog {
+  models: ModelDescriptor[];
+  /**
+   * 内核公布的推理档位。空数组 = 内核没公布（mock 内核，或取帧失败）——
+   * 此时界面只提供「不干预」，不构造一套看起来合理的默认档位。
+   */
+  reasoningEfforts: ReasoningEffortOption[];
+  /** 内核 session/new 当时的默认模型（取自 currentValue）；null = 未知 */
+  kernelDefaultModel: string | null;
+  /** 内核 session/new 当时的默认推理档位；null = 未知 */
+  kernelDefaultReasoningEffort: string | null;
+  source: ModelSource | 'unknown';
+  /** 与内核核对的时间戳（ms）；null = 从未核对成功过 */
+  checkedAt: number | null;
+  /** 一句话如实说明这份清单的来历，界面直接展示，不做二次解释 */
+  note: string;
 }
 
 export interface ToolCall {

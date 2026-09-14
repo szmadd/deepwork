@@ -54,8 +54,8 @@ export const APP_VIEW_LABEL: Record<AppView, string> = {
  * 模型端点。
  *
  * official = DeepSeek 官方（dsh 内置 provider 与模型目录，凭据在 dsh 家目录）。
- * custom  = 任意 OpenAI 兼容端点 —— 本地 Ollama（:11434/v1）、LM Studio（:1234/v1）、
- *           vLLM 或私有网关；「本地模型、离线运行」战略的落点。
+ * custom  = 任意 OpenAI 兼容端点 —— 局域网 GPUStack / vLLM / SGLang 网关，
+ *           或本机 Ollama（:11434/v1）、LM Studio（:1234/v1）。
  *
  * 生效路径（2026-09-13 两轮取证）：host 把它翻译成 dsh 启动补丁
  * （`--patch` 按 id 覆盖 `llm-deepseek` 条目的 baseURL 与 models 目录），
@@ -66,11 +66,22 @@ export const APP_VIEW_LABEL: Record<AppView, string> = {
  */
 export interface ModelEndpoint {
   kind: 'official' | 'custom';
-  /** custom 时的端点地址，如 http://localhost:11434/v1 */
+  /** custom 时的端点地址，如 http://127.0.0.1:8000/v1 */
   baseUrl?: string;
-  /** custom 时的模型 id（端点上的真实模型名，如 qwen2.5:7b） */
+  /** custom 时的模型 id（端点上的真实模型名，如 qwen3-8-27b） */
   model?: string;
-  /** 端点无需 key 时（本地 Ollama）置 true，凭据写占位值 */
+  /**
+   * custom 时的上下文窗口（token）。**必须由用户填**：端点不会在补丁里告诉我们，
+   * 而 dsh 的模型目录要求这个字段。不填按 DEFAULT_ENDPOINT_CONTEXT_WINDOW 估计，
+   * 界面上如实标注是估计值 —— 写死一个数字当事实正是上一版的问题。
+   *
+   * 它的实际影响**本轮未证实**：实测端点收到的请求里 `max_tokens` 恒为 256000，
+   * 与补丁里填的 131072 不一致，所以「填它就等于控制压缩时机」这句话目前没有证据。
+   * 保留这个字段的理由是它确实是配置的一部分、也确实需要用户提供；
+   * 但它到底影响什么，等有人真去验一次再说。
+   */
+  contextWindow?: number;
+  /** 端点无需 key 时置 true，凭据写占位值 */
   noApiKey?: boolean;
 }
 
@@ -82,7 +93,21 @@ export interface AppConfig {
    */
   adapter: 'auto' | 'mock' | 'harness';
   defaultMode: AgentMode;
+  /**
+   * 新建会话的默认模型。**由用户自行选定**，官方内核公布的模型与自定义端点上的
+   * 模型在这里不做区别对待 —— 它是一个模型 id，来源由 modelEndpoint 决定。
+   *
+   * 空串 = 跟随内核当前默认（session/new 的 currentValue）。刻意留一个「不选」的
+   * 取值：以前这里写死 'deepseek-flash'，而内核实际默认是 deepseek-v4-flash，
+   * 两个答案都不报错，只有抓端点请求才看得出来用的是哪个。
+   */
   defaultModel: string;
+  /**
+   * 新建会话的默认推理档位（内核的 reasoning_effort）。
+   * 空串 = 不干预，用内核默认。取值必须是内核 session/new 公布过的选项值 ——
+   * 这里不校验也不枚举：内核换档位表时，写死一份枚举就会变成「界面能选但内核不认」。
+   */
+  defaultReasoningEffort: string;
   /** 上次使用的工作区；新建会话时优先用它 */
   lastWorkspace: string;
   /** 上次所在的视图；下次启动停在同一页 */
@@ -109,7 +134,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   theme: 'dark',
   adapter: 'auto',
   defaultMode: 'ptc',
-  defaultModel: 'deepseek-flash',
+  defaultModel: '',
+  defaultReasoningEffort: '',
   lastWorkspace: '',
   lastView: 'chat',
   terminalBufferLimit: 200_000,
@@ -119,12 +145,23 @@ export const DEFAULT_CONFIG: AppConfig = {
   modelPrices: {},
 };
 
+/**
+ * 自定义端点未填 contextWindow 时的估计值（token）。
+ *
+ * 它是**估计**而不是事实，界面上必须这么说。dsh 的模型目录 schema 要求这个字段，
+ * 不给就连模型都注册不进去，所以只能兜底一个数。但请注意（2026-09-14 实测）：
+ * 端点收到的请求里 `max_tokens` 恒为 256000，与这里填多少无关 ——
+ * 所以不要声称它「控制压缩时机」，那是没验过的因果。
+ */
+export const DEFAULT_ENDPOINT_CONTEXT_WINDOW = 131_072;
+
 /** 配置项的取值域，设置面板据此渲染控件；未知键不进设置面板（由实现自行消费） */
 export const CONFIG_FIELDS = {
   theme: { kind: 'enum', values: ['dark', 'light'], label: '主题' },
   adapter: { kind: 'enum', values: ['auto', 'mock', 'harness'], label: '内核' },
   defaultMode: { kind: 'enum', values: ['ptc', 'standard', 'minimal', 'creative'], label: '默认模式' },
-  defaultModel: { kind: 'string', label: '默认模型' },
+  defaultModel: { kind: 'string', label: '默认模型（空 = 跟随内核默认）' },
+  defaultReasoningEffort: { kind: 'string', label: '默认推理档位（空 = 不干预）' },
   lastView: {
     kind: 'enum',
     values: [
