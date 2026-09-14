@@ -41,7 +41,10 @@ export function buildHandlers(host: DeepworkHost): Record<RpcMethod, Handler> {
     'config.set': (p) => host.setConfig((p.patch ?? {}) as Parameters<DeepworkHost['setConfig']>[0]),
     'guard.get': () => host.getGuard(),
     'guard.set': (p) => host.setGuard((p.policy ?? {}) as Partial<GuardPolicy>),
-    'models.list': () => host.models(),
+    // 模型目录是异步的：权威来源是内核 session/new 真帧，取帧要真的问一次内核。
+    // 返回 Promise 由调用方 await（RPC 派发本来就是异步的）。
+    'models.list': () => host.modelCatalog(false),
+    'models.refresh': () => host.modelCatalog(true),
     'model.apiKey.status': () => host.modelApiKeyStatus(),
     'model.apiKey.set': (p) => host.setModelApiKey(String(p.key ?? '')),
     'model.apiKey.clear': () => host.clearModelApiKey(),

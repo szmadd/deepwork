@@ -1,15 +1,23 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { AgentEventInput, RunStatus } from '@deepwork/protocol';
+import type { AgentEventInput, ModelCatalog, RunStatus } from '@deepwork/protocol';
 import { createLogger } from '../logger';
 import { applySelectedHunks, buildFileDiff } from '../diff';
+import {
+  MODEL_OPTION_ID,
+  REASONING_EFFORT_OPTION_ID,
+  catalogFromConfigOptions,
+  findOption,
+  matchModelValue,
+  matchPlainValue,
+  parseModelOptionValue,
+} from '../models/catalog';
 import { AdapterUnavailableError, type HarnessAdapter, type HealthReport, type RunContext } from './types';
 import { AcpClient } from './acp/client';
 import {
   ACP_PROTOCOL_VERSION,
   textOfContent,
   type AcpConfigOption,
-  type AcpConfigOptionValue,
   type AcpContentBlock,
   type AcpNewSessionResult,
   type AcpPermissionKind,
@@ -108,6 +116,19 @@ export class HarnessSidecarAdapter implements HarnessAdapter {
   /** 累积的助手文本，轮次结束时发 message.completed */
   private assistantText = '';
   private abortedRuns = new Set<string>();
+  /** 最近一次看到的内核真帧（探针或真实会话），供 modelCatalog 复用 */
+  private catalogCache: ModelCatalog | null = null;
+  /** 最近一次 session/new 公布的配置项；每轮 applyConfigOptions 都要用它 */
+  private configOptions: AcpConfigOption[] | undefined;
+  /**
+   * 每个内核会话**当前实际生效**的配置项（acpSessionId → "model|effort"）。
+   *
+   * 存在的理由是一个真实缺陷：会话是复用的，而此前模型只在 ensureSession
+   * 建会话那一次 set_config_option。用户在界面上换了模型，下一轮请求仍走旧模型 ——
+   * 事件流里写着新模型名、端点请求里是旧模型名，两边都没有报错。
+   * 记下「已经设成什么」，每轮开跑前比对一次，不一致才补发。
+   */
+  private appliedOptions = new Map<string, string>();
 
   constructor(private readonly options: HarnessSidecarOptions) {}
 
@@ -171,6 +192,54 @@ export class HarnessSidecarAdapter implements HarnessAdapter {
     return { ok: true, detail: `acp ok${this.agentInfo ? ` (${this.agentInfo})` : ''}`, processAlive: true };
   }
 
+  /**
+   * 内核公布的模型目录（`session/new` 的 configOptions 真帧）。
+   *
+   * ── 为什么要「探针会话」───────────────────────────────────────────
+   * 取真帧的唯一途径是 session/new —— 内核只在它上面公布 configOptions，
+   * initialize 不公布。所以「界面上有哪些模型可选」这一步本身就要求建一个会话。
+   * 探针会话建完立刻 session/close，且**不进 this.sessions 映射**：
+   * 它不是用户的一次对话，混进会话映射会让 abort/stop 去关一个不存在的会话。
+   *
+   * 真跑过一轮之后缓存立即被真实会话的帧覆盖（见 ensureSession）——
+   * 那时拿到的是「这个工作区真的在用的那份目录」，比探针更准。
+   */
+  async modelCatalog(probe = false): Promise<ModelCatalog | null> {
+    if (!this.client) return null;
+    if (this.catalogCache && !probe) return this.catalogCache;
+    // 探针是显式动作（UI 上那个「重新核对」按钮），失败必须如实上报；
+    // 但它绝不能让整个 models.list 变成一个错误 —— 没有清单是「不知道」，
+    // 不是「出错了」，界面要能区分这两种状态。
+    try {
+      const result = await this.client.request<AcpNewSessionResult>(
+        'session/new',
+        { cwd: path.resolve(this.options.workspace), mcpServers: [] },
+        this.options.startupTimeoutMs ?? 20_000,
+      );
+      const parsed = catalogFromConfigOptions(result?.configOptions);
+      if (result?.sessionId) {
+        await this.client
+          .request('session/close', { sessionId: result.sessionId }, 5_000)
+          .catch((error) => log.warn(`探针会话关闭失败（忽略）: ${String(error)}`));
+      }
+      if (!parsed) {
+        log.warn('内核 session/new 未公布模型目录（configOptions 里没有 model 项）');
+        return this.catalogCache;
+      }
+      this.catalogCache = {
+        ...parsed,
+        source: 'kernel',
+        checkedAt: Date.now(),
+        note: `内核 session/new 公布（${parsed.models.length} 个模型，推理档位 ${parsed.reasoningEfforts.length} 档）`,
+      };
+      log.info(`已向内核核对模型目录：${parsed.models.map((m) => m.id).join('/') || '(空)'}`);
+      return this.catalogCache;
+    } catch (error) {
+      log.warn(`向内核核对模型目录失败：${error instanceof Error ? error.message : String(error)}`);
+      return this.catalogCache;
+    }
+  }
+
   async stop(): Promise<void> {
     // 先礼貌关闭每个会话（内核会 drain 更新、flush 持久化），再关进程。
     // 直接 kill 也能退出，但会留下「日志没落完」的会话，恢复时少一截。
@@ -221,6 +290,9 @@ export class HarnessSidecarAdapter implements HarnessAdapter {
 
     try {
       const acpSessionId = await this.ensureSession(ctx);
+      // 每轮确认一次模型与推理档位：会话是复用的，只在建会话时设一次的话，
+      // 用户中途换模型/换档位会静默失效（见 applyConfigOptions 的注释）。
+      await this.applyConfigOptions(ctx, acpSessionId, this.configOptions);
 
       // 实测：参数键是 `prompt` 且必须是数组。写 `content` 会被内核以
       // -32602「prompt: expected array, received undefined」明确拒绝。
@@ -280,44 +352,91 @@ export class HarnessSidecarAdapter implements HarnessAdapter {
     });
     if (!result?.sessionId) throw new AdapterUnavailableError('内核未返回 sessionId');
     this.sessions.set(ctx.sessionId, result.sessionId);
-    await this.applyModel(ctx, result.sessionId, result.configOptions);
+    // 新会话还没有任何「已应用」的配置项，指纹清空 —— 否则会继承上一个会话的记录
+    this.appliedOptions.delete(result.sessionId);
+    this.rememberCatalog(result.configOptions);
+    await this.applyConfigOptions(ctx, result.sessionId, result.configOptions);
     return result.sessionId;
   }
 
   /**
-   * 把本项目选定的模型告诉内核。
+   * 用真实会话的真帧刷新目录缓存。
    *
-   * 会话创建时内核公布可选模型，实测值是 JSON 字符串数组（provider + model）。
-   * 匹配不上就**保持内核默认并记日志**，不让它变成一次失败 —— 模型名对不上
-   * 只影响用哪个模型，不该让任务跑不起来。
+   * 它比探针会话更值得信任：探针用的是「随便建一个会话」，而这里拿到的是
+   * **这个工作区真的在用的那份目录**（自定义端点的补丁会影响它）。
+   * 一次都拿不到真帧时缓存保持为 null，modelCatalog 会如实回 null，
+   * 由宿主决定怎么向用户交代。
    */
-  private async applyModel(ctx: RunContext, acpSessionId: string, configOptions?: AcpConfigOption[]): Promise<void> {
-    const option = configOptions?.find((item) => item.id === 'model');
-    if (!ctx.model || !option) return;
+  private rememberCatalog(configOptions?: AcpConfigOption[]): void {
+    this.configOptions = configOptions;
+    const parsed = catalogFromConfigOptions(configOptions);
+    if (!parsed) return;
+    this.catalogCache = {
+      ...parsed,
+      source: 'kernel',
+      checkedAt: Date.now(),
+      note: `内核 session/new 公布（${parsed.models.length} 个模型，推理档位 ${parsed.reasoningEfforts.length} 档）`,
+    };
+  }
 
-    const candidates: AcpConfigOptionValue[] = [];
-    for (const entry of option.options ?? []) {
-      const group = entry as { options?: AcpConfigOptionValue[] };
-      if (Array.isArray(group.options)) candidates.push(...group.options);
-      else candidates.push(entry as AcpConfigOptionValue);
+  /**
+   * 把本项目选定的模型与推理档位告诉内核。
+   *
+   * ── 每轮都调，而不是只在建会话时调 ──────────────────────────────
+   * 会话（ACP session）是复用的，两边都是「一个 DeepWork 会话 ≈ 一个内核会话」。
+   * 只在创建时设一次，用户中途换模型就不会生效 —— 而且**不会报错**：
+   * 日志里写着「内核模型已设为 X」是建会话那一刻的事，之后的每一轮都在用旧值。
+   * 现在用 appliedOptions 记住实际生效值，每轮比对、不一致才补发，
+   * 既修掉这个静默失效，也不会每轮都白多两次 RPC。
+   *
+   * ── 名字对不上怎么办 ────────────────────────────────────────────
+   * 保持内核默认并记日志，不让它变成一次失败 —— 模型名对不上只影响用哪个模型，
+   * 不该让任务跑不起来。但**不说反话**：日志写「保持内核默认」，不写「已设为」。
+   */
+  private async applyConfigOptions(ctx: RunContext, acpSessionId: string, configOptions?: AcpConfigOption[]): Promise<void> {
+    const modelOption = findOption(configOptions, MODEL_OPTION_ID);
+    const effortOption = findOption(configOptions, REASONING_EFFORT_OPTION_ID);
+
+    const desiredModel = ctx.model?.trim() ?? '';
+    const desiredEffort = ctx.reasoningEffort?.trim() ?? '';
+
+    // 命中不了就不发（保持内核默认），并让指纹里记上「没设成功」——
+    // 记成期望值的话，下一轮会以为已经生效而不去重试。
+    const modelValue = modelOption && desiredModel ? matchModelValue(modelOption, desiredModel) : null;
+    const effortValue = effortOption && desiredEffort ? matchPlainValue(effortOption, desiredEffort) : null;
+
+    const fingerprint = `${modelValue ?? '-'}|${effortValue ?? '-'}`;
+    if (this.appliedOptions.get(acpSessionId) === fingerprint) return;
+
+    if (modelOption && desiredModel && !modelValue) {
+      log.warn(`内核未提供模型 ${desiredModel}，保持内核默认`);
     }
-    const hit = candidates.find(
-      (item) => item.value === ctx.model || item.name === ctx.model || item.value.includes(`"${ctx.model}"`),
-    );
-    if (!hit) {
-      log.warn(`内核未提供模型 ${ctx.model}，保持内核默认`);
-      return;
+    if (effortOption && desiredEffort && !effortValue) {
+      log.warn(`内核未提供推理档位 ${desiredEffort}，保持内核默认`);
     }
-    try {
-      await this.client!.request(
-        'session/set_config_option',
-        { sessionId: acpSessionId, configId: 'model', value: hit.value },
-        10_000,
-      );
-      log.info(`内核模型已设为 ${hit.name ?? hit.value}`);
-    } catch (error) {
-      log.warn(`设置内核模型失败（保持默认）: ${error instanceof Error ? error.message : String(error)}`);
+
+    const applied: string[] = [];
+    for (const [configId, value] of [
+      [MODEL_OPTION_ID, modelValue],
+      [REASONING_EFFORT_OPTION_ID, effortValue],
+    ] as const) {
+      if (!value) continue;
+      try {
+        await this.client!.request(
+          'session/set_config_option',
+          { sessionId: acpSessionId, configId, value },
+          10_000,
+        );
+        applied.push(`${configId}=${parseModelOptionValue(value).model || value}`);
+      } catch (error) {
+        // 设不上就把这一项从指纹里排除，下一轮会重试
+        log.warn(`设置内核 ${configId} 失败（保持默认）: ${error instanceof Error ? error.message : String(error)}`);
+        this.appliedOptions.delete(acpSessionId);
+        return;
+      }
     }
+    this.appliedOptions.set(acpSessionId, fingerprint);
+    if (applied.length > 0) log.info(`内核配置已应用: ${applied.join(' ')}`);
   }
 
   // ── 通知与反向请求 ──────────────────────────────────────────────────────

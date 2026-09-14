@@ -20,12 +20,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { ModelEndpoint } from '@deepwork/protocol';
+import { DEFAULT_ENDPOINT_CONTEXT_WINDOW, type ModelEndpoint } from '@deepwork/protocol';
 import type { RuntimePatchOverride } from '../mcp/patch';
 import { homeDir, readJson, writeJson } from '../paths';
 
 const CREDENTIAL_REF = 'DEEPSEEK_API_KEY';
-/** 本地端点（Ollama 等）不校验 key，但 OpenAI 客户端要求非空 */
+/** 无 key 端点（局域网网关 / 本地模型）不校验 key，但 OpenAI 客户端要求非空 */
 const NO_KEY_PLACEHOLDER = 'deepwork-no-key';
 
 export function dshHomeDir(): string {
@@ -75,30 +75,43 @@ export function maskApiKey(key: string | null): string | undefined {
 export function validateEndpoint(endpoint: ModelEndpoint): void {
   if (endpoint.kind !== 'custom') return;
   if (!endpoint.baseUrl || !/^https?:\/\//.test(endpoint.baseUrl)) {
-    throw new Error('自定义端点需要合法的 http(s) 地址，例如 http://localhost:11434/v1');
+    throw new Error('自定义端点需要合法的 http(s) 地址，例如 http://127.0.0.1:8000/v1');
   }
   if (!endpoint.model?.trim()) {
     throw new Error('自定义端点需要填写模型名（端点上的真实模型 id）');
+  }
+  if (endpoint.contextWindow !== undefined && !(Number.isInteger(endpoint.contextWindow) && endpoint.contextWindow > 0)) {
+    throw new Error('上下文窗口应为正整数（token），留空表示按估计值处理');
   }
 }
 
 /**
  * 自定义端点 → 覆盖补丁条目（llm-deepseek 条目的 config 整体替换）。
  * official 返回 null：内核用内置目录与官方端点，补丁里没有这一项。
+ *
+ * contextWindow 优先取用户在端点配置里填的值；没填才用估计值
+ * （DEFAULT_ENDPOINT_CONTEXT_WINDOW，并在设置页如实标注是估计）。
+ * 这个数没法从端点探测出来，而 dsh 的模型目录又必须有它 ——
+ * 与其写死一个数字当事实，不如让知道的人填、不知道的人看到「估计」。
+ * （它的实际影响未证实：实测请求里 max_tokens 恒 256000，与这里无关。）
  */
-export function modelEndpointOverride(
-  endpoint: ModelEndpoint,
-  contextWindow = 131_072,
-): RuntimePatchOverride | null {
+export function modelEndpointOverride(endpoint: ModelEndpoint): RuntimePatchOverride | null {
   validateEndpoint(endpoint);
   if (endpoint.kind !== 'custom') return null;
+  const modelId = endpoint.model!.trim();
   return {
     id: 'llm-deepseek',
     name: '@deepseek-ai/dsh-llm-deepseek',
     config: {
       baseURL: endpoint.baseUrl!.replace(/\/+$/, ''),
       apiKeyEnv: CREDENTIAL_REF,
-      models: [{ id: endpoint.model!.trim(), name: endpoint.model!.trim(), contextWindow }],
+      models: [
+        {
+          id: modelId,
+          name: modelId,
+          contextWindow: endpoint.contextWindow ?? DEFAULT_ENDPOINT_CONTEXT_WINDOW,
+        },
+      ],
     },
   };
 }

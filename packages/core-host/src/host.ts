@@ -23,6 +23,8 @@ import {
   type MemoryEntry,
   type MemoryLayer,
   type MemoryLayerStat,
+  type ModelCatalog,
+  type ModelDescriptor,
   type RunStatus,
   type ScheduleSpec,
   type ScheduleTask,
@@ -38,7 +40,7 @@ import { createAdapter } from './adapter/factory';
 import type { HarnessAdapter } from './adapter/types';
 import { createLogger } from './logger';
 import { clearApiKey, getApiKey, maskApiKey, modelEndpointOverride, setApiKey, syncModelCredentials, validateEndpoint } from './models/endpoint';
-import { DEFAULT_MODE, DEFAULT_MODEL, listModels } from './models';
+import { DEFAULT_MODE, DEFAULT_MODEL, catalogUnavailable, mockCatalog } from './models';
 import { configPath, ensureDirs, guardPath, homeDir, readJson, writeJson } from './paths';
 import { SchedulerEngine } from './scheduler/engine';
 import { ScheduleStore } from './scheduler/store';
@@ -98,6 +100,13 @@ export class DeepworkHost {
   private connectors = new ConnectorStore();
   private browser = new BrowserManager();
   private adapter: HarnessAdapter | null = null;
+  /**
+   * 最近一次拿到的模型目录，供 createSession 决定「默认用哪个模型」。
+   *
+   * 它是**缓存而不是事实来源**：真事实在内核的 session/new 帧里，这里只是把
+   * 「刚才问到的答案」留一份，免得每建一个会话都要再去问一次内核。
+   */
+  private catalog: ModelCatalog | null = null;
   private sink: (event: AgentEvent) => void = () => undefined;
   private terminalSink: TerminalSink = () => undefined;
 
@@ -149,7 +158,10 @@ export class DeepworkHost {
     }
     this.adapter = await createAdapter({
       workspace: this.workspace,
-      model: DEFAULT_MODEL,
+      // 适配器构造参数里的 model 只是启动期的占位：真正决定每一轮用哪个模型的是
+      // RunContext.model（由会话携带）。这里传配置里的默认值，是为了让
+      // 「内核以什么身份起来」与「界面显示的默认模型」至少不互相矛盾。
+      model: this.getConfig().defaultModel || DEFAULT_MODEL,
       mode: this.getConfig().adapter,
       patchFile: this.prepareRuntimePatchFile(),
     });
@@ -236,7 +248,7 @@ export class DeepworkHost {
     try {
       this.adapter = await createAdapter({
         workspace: this.workspace,
-        model: DEFAULT_MODEL,
+        model: this.getConfig().defaultModel || DEFAULT_MODEL,
         mode: this.getConfig().adapter,
         patchFile: this.prepareRuntimePatchFile(),
       });
@@ -341,6 +353,10 @@ export class DeepworkHost {
     if (patch.modelEndpoint && JSON.stringify(patch.modelEndpoint) !== JSON.stringify(prev.modelEndpoint)) {
       const result = syncModelCredentials(next.modelEndpoint);
       this.prepareRuntimePatchFile();
+      // 端点一换，内核公布出来的目录跟着换（覆盖补丁会在下次启动生效），
+      // 缓存里那份就过期了。清掉而不是留着：留着会让「设置页显示的是什么」
+      // 与「重启后会变成什么」不一致，而这种不一致没有任何报错。
+      this.catalog = null;
       log.info(`模型端点已更新（重启内核生效）: ${result.detail}`);
     }
     return next;
@@ -354,21 +370,85 @@ export class DeepworkHost {
     return this.guard.set(policy);
   }
 
-  models() {
-    // 自定义端点：模型清单就是用户在端点配置里填的那一个（内核目录已被运行时补丁覆盖）
+  /**
+   * 模型目录：向内核要真帧，拿不到就如实说拿不到。
+   *
+   * 三条分支的顺序有讲究 —— **自定义端点优先**：端点插了覆盖补丁时，
+   * 内核公布出来的目录就是端点那一个模型，此时再走「问内核」也是同一个答案，
+   * 但会白建一个探针会话；而基址（baseUrl）只有宿主知道，界面上要显示它。
+   *
+   * 真实内核这条路上，目录的权威来源是 session/new 真帧（见 adapter 的 modelCatalog）。
+   * 探针会话只在显式要求（probe=true，UI 的「重新核对」）或还没有任何真帧时才建。
+   */
+  async modelCatalog(probe = false): Promise<ModelCatalog> {
     const endpoint = this.getConfig().modelEndpoint;
     if (endpoint.kind === 'custom' && endpoint.model) {
-      return [
-        {
-          id: endpoint.model,
-          label: `${endpoint.model}（自定义端点）`,
-          provider: endpoint.baseUrl ?? 'custom',
-          supportsPtc: false,
-          contextWindow: 0,
-        },
-      ];
+      const model: ModelDescriptor = {
+        id: endpoint.model,
+        label: endpoint.model,
+        provider: endpoint.baseUrl ?? 'custom',
+        // 端点上的模型支不支持程序化工具调用，只有端点自己知道 —— 我们不猜
+        supportsPtc: false,
+        source: 'endpoint',
+        endpoint: endpoint.baseUrl,
+      };
+      // 只有用户真的填了才带上这个字段。写成 `contextWindow: undefined` 会让
+      // `'contextWindow' in model` 为 true —— 「未知」与「值是 undefined」在
+      // 断言和界面判断上是两回事，别让它们混为一谈。
+      if (endpoint.contextWindow !== undefined) model.contextWindow = endpoint.contextWindow;
+      const catalog: ModelCatalog = {
+        models: [model],
+        reasoningEfforts: [],
+        kernelDefaultModel: model.id,
+        kernelDefaultReasoningEffort: null,
+        source: 'endpoint',
+        checkedAt: null,
+        note: `自定义端点：模型来自你在设置里填的模型名（${endpoint.baseUrl ?? '未填地址'}），未与端点核对`,
+      };
+      this.catalog = catalog;
+      return catalog;
     }
-    return listModels(this.adapter?.kind ?? 'mock');
+
+    if (this.adapter?.kind === 'harness') {
+      const fromKernel = await this.adapter.modelCatalog(probe);
+      if (fromKernel) {
+        this.catalog = fromKernel;
+        return fromKernel;
+      }
+      const failed = catalogUnavailable(
+        '未能向内核核对模型目录（session/new 未公布 configOptions 或取帧失败）——'
+        + ' 请查看内核日志；此状态下不改动内核模型，沿用内核默认。',
+      );
+      this.catalog = failed;
+      return failed;
+    }
+
+    const mock = mockCatalog();
+    this.catalog = mock;
+    return mock;
+  }
+
+  /**
+   * 新建会话默认用哪个模型。
+   *
+   * 顺序（用户选定优先）：
+   *   1. 调用方显式指定（界面上那一栏选的模型）；
+   *   2. `config.defaultModel` —— **用户在设置里自行选定的那个，官方模型或自定义端点模型都行**；
+   *   3. 内核真帧里的当前默认（currentValue）—— 「没选就是跟随内核」；
+   *   4. 自定义端点填的模型名；
+   *   5. DEFAULT_MODEL（最后的兜底，几乎没有机会用到）。
+   *
+   * 第 2 步曾经排在第 4 步之后：上一次改动让「切到自定义端点」顺手改写新建会话的模型，
+   * 于是用户在设置里选的默认被端点配置静默覆盖 —— 界面显示的是他选的，跑的是另一个。
+   * 端点配置决定「请求发到哪里」，不该顺手决定「用哪个模型」。
+   */
+  private resolveDefaultModel(config: AppConfig): string {
+    return (
+      config.defaultModel
+      || this.catalog?.kernelDefaultModel
+      || (config.modelEndpoint.kind === 'custom' ? config.modelEndpoint.model : '')
+      || DEFAULT_MODEL
+    );
   }
 
   // ── 模型 API key（secrets.json，明文不出宿主）──────────────────
@@ -409,14 +489,11 @@ export class DeepworkHost {
     model?: string;
   }): Session {
     const config = this.getConfig();
-    // 自定义端点时新建会话默认用端点模型（内核目录已只剩这一个模型）；
-    // 官方端点走配置默认。用户显式指定优先。
-    const endpointModel = config.modelEndpoint.kind === 'custom' ? config.modelEndpoint.model : undefined;
     const session = this.store.create({
       workspace: input.workspace,
       title: input.title,
       mode: input.mode ?? config.defaultMode ?? DEFAULT_MODE,
-      model: input.model ?? endpointModel ?? config.defaultModel ?? DEFAULT_MODEL,
+      model: input.model || this.resolveDefaultModel(config),
     });
     this.emit({ type: 'session.created', session });
     return session;
@@ -586,6 +663,9 @@ export class DeepworkHost {
         workspace: session.workspace,
         mode,
         model,
+        // 推理档位取自配置（空 = 不干预）。它不随会话存：用户改的是「我这几轮想多想少」，
+        // 不是「这个会话绑死在某个档位上」—— 下一轮就生效，不必新建会话。
+        reasoningEffort: this.getConfig().defaultReasoningEffort || undefined,
         skillContext: skillContext.prompt,
         memoryContext: memoryContext.prompt,
         guard: this.guard,

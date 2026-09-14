@@ -1,6 +1,7 @@
 import type {
   AgentEventInput,
   AgentMode,
+  ModelCatalog,
   RunStatus,
 } from '@deepwork/protocol';
 import type { Guard } from '../security/guard';
@@ -29,6 +30,14 @@ export interface RunContext {
   workspace: string;
   mode: AgentMode;
   model: string;
+  /**
+   * 推理档位（内核的 `reasoning_effort`）。空/省略 = 不干预，用内核默认。
+   *
+   * 它和 model 一样是**每一轮都可能变**的配置：用户完全可能在这一轮换成高推理、
+   * 下一轮换回低推理。适配器必须在每轮开跑前确认内核侧的实际取值与这里一致，
+   * 不能只在会话创建时设一次 —— 会话是复用的，设一次就意味着后续的改动全部静默失效。
+   */
+  reasoningEffort?: string;
   /**
    * 技能上下文注入文本（由宿主按「已启用技能 + /显式调用」构建）。
    * 适配器必须把它放在用户输入之前交给内核，且不得改写 —— 改写会让
@@ -72,6 +81,17 @@ export interface HarnessAdapter {
   run(ctx: RunContext): Promise<RunStatus>;
   abort(runId: string): boolean;
   health(): Promise<HealthReport>;
+  /**
+   * 内核公布的模型目录（`session/new` 的 configOptions 真帧）。
+   *
+   * **返回 null 表示「这个内核没有真帧可给」**（mock 内核即如此），
+   * 而不是「空清单」—— 调用方据此决定是显示空目录还是显示内置兜底条目，
+   * 两种情况的界面说法完全不同。
+   *
+   * @param probe 允许为此新建一个探针会话去取帧（用完即关）。默认 false：
+   *              不加限制的话，每次 UI 轮询都会多出一个内核会话。
+   */
+  modelCatalog(probe?: boolean): Promise<ModelCatalog | null>;
 }
 
 export class AdapterUnavailableError extends Error {

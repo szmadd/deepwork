@@ -43,6 +43,18 @@ export class MockHarnessAdapter implements HarnessAdapter {
     return { ok: this.ready, detail: this.ready ? 'ok' : '未启动', processAlive: this.ready };
   }
 
+  /**
+   * mock 内核没有 ACP 会话，也就没有 configOptions 真帧可公布 —— 返回 null。
+   *
+   * 这里刻意不返回一个「差不多」的清单：宿主拿到 null 会显示 mock 自己的
+   * 内置条目（models.ts 的 mockCatalog），那条路径上的每个字都是真的
+   * （它确实是 mock 自报的）。若在适配器这一层编一份官方清单顶上，
+   * 「这个清单从哪来」就再也说不清了。
+   */
+  async modelCatalog(): Promise<null> {
+    return null;
+  }
+
   abort(runId: string): boolean {
     if (this.aborted.has(runId)) return false;
     this.aborted.add(runId);

@@ -111,8 +111,18 @@ export interface AcpNewSessionResult {
   configOptions?: AcpConfigOption[];
 }
 
+/**
+ * 配置项。实测（dsh 0.1.5-rc.1）公布两项：`model` 与 `reasoning_effort`，
+ * 都是 `type: "select"`。`name` / `category` 是真帧里就有的字段，
+ * 之前没声明所以被丢掉了 —— 它们是「这个选项是干什么的」的唯一线索，
+ * 尤其 `category: "thought_level"` 一眼说明推理档位不是模型选择。
+ */
 export interface AcpConfigOption {
   id: string;
+  /** 真帧里的显示名（"Model" / "Reasoning effort"） */
+  name?: string;
+  /** 真帧里的分类（"model" / "thought_level"） */
+  category?: string;
   type?: string;
   /** 选择型选项的当前值。实测模型项是 JSON 字符串数组：`["provider","model"]`。 */
   currentValue?: string;
