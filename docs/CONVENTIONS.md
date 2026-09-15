@@ -471,3 +471,36 @@ Electron 加载的是 `apps/desktop/dist` 里的 bundle，它不跟着源码改�
   spliceCredentialRef 只动目标键，refs 下其它键（可能属于别的工具）逐行保留。
 - **setConfig 先校验再落盘**，不合法的端点配置不进 config.json。
 - Windows 拉起 dsh 用 `node <bin.js>` 直跑，不 spawn `dsh.cmd`（EINVAL）。
+
+### 沙箱与审批纪律（2026-09-15 起）
+
+**先记一条最容易搞错的：这是两层，不是一层。**
+
+- **内核沙箱**（`dsh-sandbox` 家族）管「命令**能不能写成文件**」。它由内核在执行时强制，
+  产品只能通过**启动参数** `DSH_PERMISSION_MODE` 决定（`dsh-sandbox-policy` 的 `mode`），
+  词汇是 `read-only` / `workspace-write` / `danger-full-access`。
+- **审批档位**（宿主 `Guard`）管「哪些命令**要问人**」。`Guard.assess()` 只作用于
+  宿主自建工具（`tools/builtin.ts`）与 mock 内核 —— **真实内核下模型的命令跑在内核里、
+  不过宿主，所以它管不到那些命令**。挡住越界写入的一直是内核沙箱。
+
+两条由此推出的硬规则：
+
+1. **不要给 `dsh-sandbox*` 另起名字。** 产品的 `SandboxMode` 必须与内核
+   `permission-presets` 的键逐字相同，两边不一致的那天，界面显示的档位与内核执行的就是两回事。
+   `tools/sandbox-test.js` 段 5 有断言钉住这一点（读 `--dump-config` 的真帧）。
+2. **`DSH_PERMISSION_MODE` 不要静默覆盖。** 它是内核的变量，用户可能直接设过。
+   `resolveSandboxMode()` 的优先级是「产品变量 `DEEPWORK_SANDBOX_MODE` > 内核变量 > 产品默认」，
+   非法值回落默认并留下 `rejected`（界面必须显示）—— 权限类设置上「以为生效了」是最坏的形态。
+
+**验证沙箱时，先证明「它本来能发生」。** `tools/sandbox-test.js` 段 0 是对照组：
+同一条写入命令不套沙箱时必须成功。没有这条基线，「文件没出现」既可能是沙箱拒绝、
+也可能是命令压根没跑起来 —— 后者会伪装成「沙箱生效了」的绿灯（这一轮真的踩到过）。
+
+**写断言时区分「策略拒绝」与「runner 故障」**：后者 stderr 带 `windows-acl-run:` 前缀、exit=127，
+是两种完全不同的故障，不要都算成「沙箱挡住了」。
+
+**本机平台边界（写文案时按此，不要拔高）**：win32 档报告 `partial` 强制执行 ——
+受限令牌必须保留 Everyone 才能完成进程初始化（授予 Everyone 写访问的外部对象仍可写），
+NTFS 硬链接会把同一文件对象别名为多个路径；且该 seam **只交叉检查写访问**，
+读、网络与进程可见性不受限。这些是**平台事实**（来自内核包自述），不是运行时测量值 ——
+ACP 面不暴露 enforcement 等级，不要写成「实测 full/partial」。

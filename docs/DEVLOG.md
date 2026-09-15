@@ -19,6 +19,7 @@
 | M1 MVP | 多会话/工作区/Diff 审阅/终端/审批三档/模型管理/设置持久化/Trajectory/打包 | ✅ 完成 | 100%（自动更新移入 M2） |
 | M2 V1 | 技能系统+审计/三层记忆/自动化/MCP/浏览器/Office/用量面板/自动更新 | ✅ 收口 | 100%（技能系统全链路 · 三层记忆 · 自动化调度 · 连接器管理(MCP) · 用量面板(M2-J) · 浏览器自动化(M2-H) · Office 生成与 OFD 原生读取(M2-I)；界面改为左侧活动栏 + 整页视图。**M2-K 自动更新显式挂起**，不计入未完成） |
 | **M2+ 收口后补强** | 模型目录以内核真帧为准 · 默认模型由用户自选 · 推理档位接出 · 上下文占用接出 · 用量口径如实化 | ✅ 完成 | 100%（2026-09-14 第二 / 第三轮，见文末记录） |
+| **需求矩阵漏项**（ROADMAP §七） | FR-10.2 模型路由与降级 · FR-3.5 沙箱 · FR-3.8 图表 · FR-10.5 崩溃上报 | 🔶 进行中 | FR-10.2 主干已落地（第二 / 三 / 四轮）；**FR-3.5 第一期已完成**（2026-09-15 第五轮：取证确认内核本就装配沙箱 + 把实际生效口径接出） |
 | M3 生态期 | 专家团/插件市场/发布分享/多模态/团队协作 | ⏸ 暂缓 | 0%（2026-09-14 决策：暂不启动） |
 
 **唯一的硬阻塞**：真实 Harness 的 headless 契约未校准（`harness-sidecar.ts` 的 `ENDPOINTS` /
@@ -2386,3 +2387,122 @@ browser 76 / office 130 / **modelcfg 92**；diff 段为「还原一致性 全部
 2. 重打一体化安装包（`npm run dist` + `package-verify --launch`）并覆盖安装。
 3. 若证据指向端点侧：把 `streamIdleTimeoutMs` 暴露为端点配置项（默认不变），
    让「没反应」在用户可接受的时间内变成一句 `TIMEOUT`。
+
+---
+
+## 2026-09-15（第五轮）· FR-3.5 取证：沙箱早就有了，缺的是「看得见」
+
+**目标**
+
+按 ROADMAP §七「下一轮建议动手顺序」第 2 项推进 FR-3.5 沙箱隔离。该项写死了开工前置：
+「先读内核 `dsh-sandbox*` / `dsh-fs-sandbox` / `dsh-pwsh-sandbox` 三个包的 README」
+（ROADMAP §二 的铁律：**动手前先查内核是否已有该能力，禁凭猜**）。
+
+**取证结果推翻了 ROADMAP 里 FR-3.5 的现状描述，原文「无实现」是错的。**四条事实：
+
+1. **内核 `acp` profile 本来就装配了完整沙箱链。** `dsh --profile acp --dump-config`
+   打出的是**组合后**的插件清单，里面有：`dsh-sandbox-local`（后端）+ `dsh-sandbox-policy`
+   （策略，`mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'`）
+   + win32 上启用的 `dsh-pwsh-sandbox` + `dsh-fs-sandbox` + `dsh-permission-presets`。
+2. **Windows 上它必然在生效。** 后端是 `dsh-sandbox-windows-acl`（ACL 受限令牌），
+   而 `dsh-sandbox-local` 的 runner 选择规则是「**唯一候选直接选择、不探测**」——
+   该平台只有这一个候选，所以不存在「可能没启用」。
+3. **产品从未设置过 `DSH_PERMISSION_MODE`**（全仓 grep 无一处），于是内核一直跑在
+   它自己的默认值 `workspace-write` 上。行为上没问题，可核验性上有问题：
+   内核改默认的那天我们会静默跟着变，而界面上没有任何一处能回答
+   「模型的写入到底受什么约束」。
+4. **更要紧的一条：宿主自建的「审批三档」在真实内核下不会被调用。**
+   `Guard.assess()` 只挂在宿主自建工具（`tools/builtin.ts`）与 mock 内核上；
+   真实内核用**自己的**工具（`write` / `edit` / `pwsh`），命令在内核里跑、不过宿主。
+   所以设置页那个「审批档位」管不到模型命令 —— **一直挡住越界写入的是内核沙箱**。
+
+于是本轮的题目不是「做一个沙箱」（内核已有，自建就是重复建设），而是**让它看得见**。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/security.ts` | 新增 `SandboxMode`（`read-only` / `workspace-write` / `danger-full-access`，**词汇直接取内核的**，不自造）、`SANDBOX_MODES`、`SandboxModeSource`、`SandboxStatus`（`mode` + `source` + 可选 `rejected` / `note`） |
+| `packages/protocol/src/rpc.ts` | `HostStatus` 增 `sandbox: SandboxStatus`，注释写明它与 `guard` 是「做不做得成」和「问不问」两层 |
+| `packages/core-host/src/security/sandbox.ts` | **新文件**。`KERNEL_SANDBOX_ENV` / `SANDBOX_MODE_ENV` / `DEFAULT_SANDBOX_MODE`；`resolveSandboxMode()`（优先级：产品变量 > 用户直接设的内核变量 > 产品默认；非法值回落默认并带 `rejected`）；`sandboxLaunchEnv()`；`sandboxPlatformNote()` |
+| `packages/core-host/src/adapter/factory.ts` | `CreateAdapterOptions` 增**必填** `sandboxMode`（必填是为了漏传时 tsc 就报错）；`harnessLaunch(mode)` 产出 `env`，随内核子进程下发 |
+| `packages/core-host/src/host.ts` | 构造时解析一次并记录（与 `kernelEndpoint` 同形态：启动参数、进程级）；两处 `createAdapter` 传入同一份值；`status()` 交出 `sandbox` |
+| `apps/desktop/src/components/SettingsPanel.tsx` | 安全页新增**只读**的「内核沙箱」一块，**排在审批档位之前**（它更根本），并写清两者的分层 |
+| `tools/sandbox-test.js` | **新文件**，21 项，进 verify |
+| `tools/fixtures/sandbox-writer.js` | **新文件**，沙箱验证用的最小写入器 |
+| `tools/capture.sh` | 新增 `settings-security` 场景（含回执：回读沙箱模式那一格的文字） |
+| `package.json` | `test:sandbox`；`verify` 链插入 `sandbox-test.js`（**在 `real-dsh-mcp` 之前** —— 它必须留链尾） |
+
+**验证**
+
+- `node tools/sandbox-test.js`：**21/21 通过**，五节：
+  - **段 0-2（runner 真帧，直接驱动内核用的那个 runner）**：对照组「不套沙箱时区内、区外都能写」；
+    `workspace-write` 下区内写成功、**区外写 `EPERM: operation not permitted`**；
+    `read-only` 下连区内写也 `EPERM`。判定落在**文件系统**上，不看退出码。
+  - **段 3**：记录拒绝方言（子进程内部报 EPERM，stderr 里**没有** `windows-acl-run:` 前缀
+    ⇒ runner 本身没坏，是 ACL 挡住了写 —— 与「runner 故障」是两种故障）。
+  - **段 4（解析规则，8 项）**：默认值 / 产品变量 / **用户直接设内核变量不被覆盖** / 两者都设时产品优先 /
+    非法值回落且留 `rejected` / 打错的宽值不会生效 / 交给内核的键名。
+  - **段 5（内核装配真帧，3 项）**：dump 里 `sandbox-policy` 的 mode **确实引用 `process.env.DSH_PERMISSION_MODE`**；
+    沙箱后端确实被装配；**`permission-presets` 的键与产品词汇逐字一致**。
+  - **段 6（宿主真的交出来了吗，5 项）**：`status().sandbox` 有值且默认值正确；
+    环境变量覆盖**真的进得了 status**；非法值在 status 里留下 `rejected`。
+- 全量基线与 `verify` 同序逐套跑（本机 bash 下 `npm run` 会被 WSL 黑名单拦，直接 `node tools/*.js`）：
+  **19 套中 18 套 exit=0**，末位 `real-dsh-mcp` **3/5** —— 与既有基线一致，未修也不摘。
+  点名数字：`diff-selftest` 全通过 · `tool-guard` 19 · `replay` 29 · `smoke-ipc` 30 ·
+  `approval-partial` 13 · `terminal` 22 · `acp-conformance` 40 · `real-dsh-e2e` 15 ·
+  `skills` 59 · `skillctx` 24 · `memory` 38 · `schedule` 68 · `connectors` 42 ·
+  `usage` 35 · `browser` 76 · `office` 130 · `modelcfg` 124 · **`sandbox` 21**。
+- `tsc --noEmit`：`packages/protocol`、`packages/core-host`、`apps/desktop` **均 exit=0**。
+- 截图 `artifacts/ui-settings-security.png`：安全页可见「内核沙箱 / 当前模式 workspace-write /
+  来源 产品默认（内核默认值）」与「审批档位」两块，回执
+  `sandbox:"当前模式workspace-write来源产品默认（内核默认值）" guard:["normal"] kv:1`。
+
+**踩坑与修复**
+
+1. **探针第一版是自欺的，差点交出一份假绿。** 第一版用 `cmd.exe /c echo probe> "路径"` 做写入动作，
+   三个用例的 stderr 全是同一句 cmd 报错（「文件名、目录名或卷标语法不正确」），
+   而判定写的是「文件没出现 = 被拒绝」→ 于是「区外写被拒绝」「read-only 被拒绝」**全绿**，
+   可实际上那条命令**根本没跑起来**。
+   → 修法：加**对照组**（同一命令不套沙箱必须先写成功）。没有基线，「文件没出现」既可能是沙箱拒绝、
+   也可能是命令本身没跑通，两者不可区分。这条纪律应当通用：**凡「没发生」类断言，先证明它本来能发生。**
+2. **runner 不做 shell 式的扩展名解析。** `--` 之后第一个 argv 直接给 `.js` 文件，
+   得到 `windows-acl-run: CreateProcessAsUserW failed (Win32 193)`、exit=127
+   （193 = `ERROR_BAD_EXE_FORMAT`）。它走的是 `CreateProcessAsUserW`，不是 shell。
+   → 必须显式给出解释器（`node writer.js`）。内核侧同理：它传的是 `pwsh.exe` 的路径而不是 `.ps1`。
+3. **差点把用户已经设好的值静默改掉。** `resolveSandboxMode()` 第一版只认产品变量
+   `DEEPWORK_SANDBOX_MODE`，而我们**总是**把 `DSH_PERMISSION_MODE` 叠进内核环境 ——
+   一个已经在环境里设了 `DSH_PERMISSION_MODE=read-only` 的用户，会被产品默认
+   `workspace-write` **覆盖**，而且界面上看不出来。
+   → 两个变量都认、产品侧优先，并有专门一条测试钉住。
+4. **mock 内核下界面会说谎。** `status.sandbox` 在 mock 下同样有值，但 mock 不执行任何真实命令 ——
+   照直显示「workspace-write」会让人以为有保护。
+   → 界面按 `status.adapter` 分支如实说「当前跑的是 mock 内核，这道沙箱不参与」。
+5. **`capture.sh` 在本机跑不通：`npm` 会拉起 `wsl.exe`，命中本机 Security Center 的
+   Program Blacklist（提示明确写着不可批准、不可绕过）。** 试过 `DEEPWORK_SKIP_BUILD=1` 跳过
+   它的 build 步骤，仍然被拦。
+   → 用**等效手搓命令**取到了图（同一套 `DEEPWORK_CAPTURE*` 环境变量 + 同一个 run_scene 语义），
+   回执与预期一致。**但要说清**：`capture.sh` 里新加的 `settings-security` case 本身
+   **没有在这台机器上端到端跑过**，它是照 `settings-prefs` 的既有写法写的。
+
+**遗留**
+
+- **模式切换入口未做**（本轮只做只读呈现，默认行为一字未改）。给入口就意味着用户能选
+  `danger-full-access`，那等于关掉沙箱 —— 这是安全决策，需要明示而不是顺手带出。
+- **内核侧拒绝文本到界面的如实呈现未做**：模型在工作区外写时，ACP 侧看到的工具结果长什么样
+  （是内核方言 `[sandbox: file access denied under <mode> mode]`，还是底层的 EPERM 栈），
+  需要真内核取证才知道 —— 本轮段 3 只证明了「runner 层」的样子。
+- **真内核端到端未做**：本轮验到 runner 层与装配层，没跑「替身端点驱动模型真的发出一次越界写」
+  的完整链路。
+- **`capture.sh` 在本机被拦的根因未定位**（只知道与 `npm` 有关）。
+- **内核沙箱的边界是文件写**：`dsh-sandbox` README 明写该 seam「不表达网络、进程、系统调用、
+  设备或凭据限制」，win32 档另有 Everyone 与 NTFS 硬链接两个已知例外（报告 `partial` 强制执行）。
+  界面上只提了前者，后者留给文档。
+
+**下一步**
+
+1. **真内核端到端取证**：用 `tools/fixtures/openai-stub-llm.js` 让模型发出一次工作区外写，
+   观察 ACP 侧的工具结果与事件流 —— 把「被拒绝」在界面上变成**可解释**的（这是本轮留下的
+   最实在的缺口：现在用户看到的是「命令失败了」，而不是「为什么失败」）。
+2. **模式切换入口**：等上面那条取证之后再定形态（默认保持 `workspace-write`）。
+3. **修 `capture.sh` 的 wsl 触发点**，让它在本机恢复可用（否则每次取证都要手搓）。

@@ -76,20 +76,26 @@ Ollama `:11434` / LM Studio `:1234` 一类的本机端点当作主路径，并�
 **需求矩阵漏项**：4 条（FR-3.5 沙箱 / FR-3.8 图表 / FR-10.2 模型路由降级 / FR-10.5 崩溃上报）
 **既不在 M2 剩余、也不在 M3** —— 已补录于第七节。其中 **FR-10.2 的「模型 × 思考档」一半已落地**（见下）。
 
-验证基线：`npm run verify` 18 套中 17 套全绿（diff / tools 19 / replay 29 / smoke **30** / partial 13 /
+验证基线：`npm run verify` **19 套中 18 套全绿**（diff / tools 19 / replay 29 / smoke **30** / partial 13 /
 terminal 22 / acp **40** / real-dsh 15 / skills 59 / skillctx 24 / memory 38 / schedule 68 /
-connectors 42 / usage **35** / browser 76 / office 130 / **modelcfg 109**）；`real-dsh-mcp` 本机 3/8，已用 `git stash`
-在改动前的基线上复现同样的失败，属环境性问题（见 `docs/CONVENTIONS.md` 的「已知的环境性失败」）。
+connectors 42 / usage **35** / browser 76 / office 130 / **modelcfg 124** / **sandbox 21**）；
+`real-dsh-mcp` 本机 3/5，已用 `git stash` 在改动前的基线上复现同样的失败，属环境性问题
+（见 `docs/CONVENTIONS.md` 的「已知的环境性失败」）。
 **它已被排到 verify 链尾** —— 它 exit=1 会中断 `&&` 链，排中间会让其后的套件（如 modelcfg）
-静默不跑（M2-H 轮发现并修正，见 DEVLOG）。
+静默不跑（M2-H 轮发现并修正，见 DEVLOG）。**新增套件一律插在它之前。**
 
 > **基线项数变更史（每次都要来自当场那次命令的输出）**：
 > `modelcfg 31 → 32`（2026-09-14 第二轮发现 stale 偏差，上一轮改了断言没回头改基线）→
 > **80**（第二轮：目录解析层 +48）→ **92**（第三轮：真内核上下文容量 6 条 × 连跑两轮 = +12）→
 > **109**（2026-09-15 内网三连修：三方一致性 +3、模型守卫 +5、连通性 +9）；
 > `smoke 26 → 27`（第二轮）→ **30**（第三轮：事件流 → 会话 meta +3）；
-> `acp 37 → 40`（第三轮：`usage_update` 映射 +3）；`usage 27 → 35`（第三轮：覆盖率 +8）。
-> 累计 **749 项通过**（上一轮 732）。
+> `acp 37 → 40`（第三轮：`usage_update` 映射 +3）；`usage 27 → 35`（第三轮：覆盖率 +8）；
+> `modelcfg 109 → 124`（2026-09-15 第四轮：端点「配置改了没重启」的守卫 +15）；
+> **新增 `sandbox 21`**（2026-09-15 第五轮：对照组 2 + runner 真帧 3 + 解析规则 8 +
+> 内核装配真帧 3 + 宿主 status 哨兵 5）。
+>
+> 这套数**只记增删与来源，不做跨套求和**：求和的中间口径（哪些算新增、哪些算替换）
+> 没有落成文字，加出来的数谁也验不了。要引用数字就引当轮的逐套输出。
 
 **`wip/m2-h` 半成品已并入 main（M2-H 完成）**：两个起步文件（`protocol/src/browser.ts` 契约 +
 `core-host/src/browser/cdp.ts` CDP 客户端）评审后沿用并大幅扩展，单实例端点共享、六动作统一实现、
@@ -117,7 +123,7 @@ MCP 服务、宿主接线、面板与 76 项测试全部补齐。分支可删。
 | 附件/多模态输入 | `dsh-attachment*` 存在，**但真帧 `promptCapabilities.image / audio / embeddedContext` 全为 `false`** | **修正 2026-09-13 的结论**：图片附件在 ACP 层**不通**，不是"可直接走既有通道"。vision 模型在模型目录里，但协议侧未开放图像输入 |
 | 浏览器 | 无专用包（`dsh-tool-web` 是抓取/搜索，非页面操作） | 上层自建 ✅（M2-H） |
 | Office 生成 | 无 | 上层自建 ✅（M2-I 已做：生成 docx/xlsx，并原生读 ofd） |
-| **沙箱** | **有**：`dsh-sandbox` / `dsh-sandbox-local` / `dsh-sandbox-policy` / `dsh-sandbox-windows-acl` / `dsh-fs-sandbox` / `dsh-bash-sandbox` / `dsh-pwsh-sandbox` | **FR-3.5 先复用内核沙箱**，不要自建 —— 动手前先翻这几个包的 README |
+| **沙箱** | **有**：`dsh-sandbox` / `dsh-sandbox-local` / `dsh-sandbox-policy` / `dsh-sandbox-windows-acl` / `dsh-fs-sandbox` / `dsh-bash-sandbox` / `dsh-pwsh-sandbox`；`acp` profile 的 `--dump-config` 证实**已装配**（含 `permission-presets`），win32 上默认 `workspace-write` 且实测生效（区外写 EPERM） | ✅ **已取证并复用**（2026-09-15，FR-3.5 第一期）：**确实不必自建**。产品此前从未设置 `DSH_PERMISSION_MODE`，本轮改为显式声明并接到界面上；见第七节 FR-3.5 |
 | **模型选择与思考档** | **有**：`session/new` 的 `configOptions` 公布 `model`（select）与 **`reasoning_effort`**（off/low/high/max，默认 high） | ✅ **已接出**（2026-09-14 第二轮）：目录以内核真帧为准、默认模型用户自选、推理档位可设；断言落在**端点实际收到的请求**（`reasoning_effort=max` 已实测到达） |
 | 会话导出 | `dsh-session-log-export` / `dsh-session-log-deepseek` | M3 挂起项的「导出为自包含 HTML」可先取证是否可以复用 |
 | 任务与计划 | 真帧工具表含 `todo_write` / `create_goal` / `get_goal` / `update_goal` / `exit_plan_mode` / `workflow` / `ralph` / `job_*` | 内核原生，**UI 完全未呈现**；做任务/计划面板时先看这里，别自建 |
@@ -320,7 +326,7 @@ M2 的剩余清单（H/J/I/K）里没有，M3 的 A/B 两档里也没有。此�
 |---|---|---|---|---|
 | **FR-10.2** | 模型路由与降级策略（快模型 / 推理模型分工） | **P0** | 🔶 **主干已落地（2026-09-14 第三轮）**：①「模型 × 思考档」接出（目录以内核真帧为准、默认模型用户自选、`reasoning_effort` 实测到达端点）；②**用量口径已如实化**——真实内核不上报 token 与费用 ⇒ 面板按 `coverage` 说明差额而不是显示 ¥0.0000，并把内核上报的上下文占用接出来。**未做**：多模型自动路由（按任务挑模型）、端点不可达时的如实降级提示 | 剩余部分照旧：**断言的参照物落在"实际发出的请求用了哪个模型与哪一档"**（本轮已建立这套参照物：`tools/fixtures/openai-stub-llm.js` 的 `requests[].extra`）；用量口径的参照物是 `usage-test` 的 coverage 断言 |
 | **FR-10.5** | 崩溃上报（可关） | **P0** | 无实现；只有 `DEEPWORK_LOG_FILE` 日志落盘 | ⏸ **上报侧需接收端 → 挂起**；本地侧（崩溃捕获 + 日志归档 + 一键导出）可做，判据是"崩溃后能找到一份可提交的日志" |
-| **FR-3.5** | 沙箱隔离（容器或进程级，作为 Provider 替换） | P1 | 无实现。工具在内核侧直接落宿主 FS，只靠审批网关拦一道 | 先取证 dsh 是否已有 sandbox Provider 接缝（**禁凭猜**）；有则复用，无则做进程级（工作区根 + 白名单写） |
+| **FR-3.5** | 沙箱隔离（容器或进程级，作为 Provider 替换） | P1 | 🔶 **第一期已落地（2026-09-15）**，同时**修正旧表述**：此前这一格写的「**无实现**」是错的。取证结论：内核 `acp` profile **本就装配**完整沙箱链（`dsh-sandbox-local` + `-policy` + win32 的 `-pwsh-sandbox` / `fs-sandbox` / `permission-presets`），win32 的 runner 链**只有唯一候选**（直接选择、不探测）⇒ 必然生效，默认 `workspace-write`；而产品**从未设置** `DSH_PERMISSION_MODE`、界面上没有任何一处能回答「模型的写入受什么约束」。本轮把实际生效口径接出（`HostStatus.sandbox` + 安全页只读呈现 + `DEEPWORK_SANDBOX_MODE` 覆盖入口），**默认行为一字未改**。另修正一条相关认知：宿主自建的「审批三档」（`Guard.assess`）**在真实内核下不会被调用**（模型命令跑在内核里、不过宿主），拦住越界写入的是内核沙箱 | 判据已达成：`tools/sandbox-test.js` **21 项**进 verify（对照组 + runner 真帧 + 解析规则 + 内核装配真帧 + 宿主 `status` 哨兵）。**未做**：模式切换入口（`danger-full-access` = 关掉沙箱，属安全决策待定）；内核拒绝文本到界面的如实呈现（需真内核取证） |
 | **FR-3.8** | 图表与可视化（生成可交互视图） | P1 | 无实现，全文无提及 | 口径待定：是"生成 HTML 图表并预览"还是"面板内可视化"；先定契约再写 |
 | — | **跨平台（macOS / Linux）** | 非功能 | 只出过 Windows NSIS + zip；两端未打包、未验证 | 依赖 CI 与运行环境，**与运维债（§五）同期做**更划算 |
 
@@ -329,9 +335,12 @@ M2 的剩余清单（H/J/I/K）里没有，M3 的 A/B 两档里也没有。此�
 1. ~~模型来源以内核/端点为唯一事实（FR-10.2 的前半）~~ ✅ **已完成**（2026-09-14 第二轮）。
    ~~用量口径（内核不上报的部分不许显示成 0）~~ ✅ **已完成**（2026-09-14 第三轮）。
    剩下的 FR-10.2 后半只剩**自动路由与端点不可达时的降级提示**。
-2. **FR-3.5 沙箱隔离** 或 **FR-3.8 图表可视化**——漏项里唯二不依赖后端的。
-   沙箱开工前先读内核 `dsh-sandbox*` / `dsh-fs-sandbox` / `dsh-pwsh-sandbox` 三个包的 README：
-   真帧里它们已在插件清单里（共 79 项），大概率不必自建。
+2. ~~**FR-3.5 沙箱隔离**~~ ✅ **第一期已完成**（2026-09-15，见上表与 DEVLOG 第五轮）：
+   取证证实内核**本就装配**沙箱链、默认 `workspace-write` 且实测生效（区外写 EPERM），
+   产品只是从未声明过它、界面上也无处可见 —— 本轮接出「实际生效口径 + 只读呈现」，
+   **未改默认行为**。剩余部分（模式切换入口、拒绝文本如实呈现）留在上表。
+   漏项里**仅剩的不依赖后端项是 FR-3.8 图表可视化**——口径待定（「生成 HTML 图表并预览」
+   还是「面板内可视化」），先定契约再写。
 3. **遗留债插空**（§五）：桌面通知、Composer `/` 补全、Trajectory 逐事件分叉、主题切换器、
    内核自动写记忆、技能市场 URL 源、连接器 HTTP 传输。
 4. **运维债**（§五末行）：接 CI、推远端、打 tag。

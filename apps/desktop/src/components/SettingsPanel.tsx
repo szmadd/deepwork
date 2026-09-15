@@ -31,6 +31,20 @@ interface SettingsPanelProps {
 const MODES: AgentMode[] = ['ptc', 'standard', 'minimal', 'creative'];
 
 /**
+ * 沙箱模式来源的显示名。
+ *
+ * `env-override` 刻意不写「你设的」以外的话：产品侧的 `DEEPWORK_SANDBOX_MODE`
+ * 与用户直接设的内核变量 `DSH_PERMISSION_MODE` 都归到这一档，而两者谁生效由宿主的
+ * 解析优先级决定 —— 界面只呈现「这个值不是产品默认」，不在渲染层重算一遍优先级
+ * （那会让同一条规则有两个实现）。
+ */
+function sandboxSourceLabel(source?: 'product-default' | 'env-override'): string {
+  if (source === 'env-override') return '环境变量指定';
+  if (source === 'product-default') return '产品默认（内核默认值）';
+  return '未知';
+}
+
+/**
  * 设置面板。
  *
  * ── 为什么把「偏好」与「安全」分成两栏 ──
@@ -295,7 +309,44 @@ export function SettingsPanel({
           ) : null}
           {tab === 'security' ? (
             <>
-              <div className="modal-label">审批档位</div>
+              {/*
+                沙箱排在审批档位**上面**，不是排版偏好：它更根本。
+                审批档位回答「哪些命令要问人」，沙箱回答「命令能不能写成文件」——
+                模型跑在内核里、用内核自己的工具，命令不过宿主，所以挡住越界写入的
+                一直是这道沙箱，而不是下面那个档位。两者不分开说，用户会以为自己
+                在设置的档位就是拦下写入的那道闸。
+              */}
+              <div className="modal-label">内核沙箱（模型改文件的实际边界）</div>
+              <div className="settings-kv">
+                <div>
+                  <span>当前模式</span>
+                  <code>{status?.sandbox?.mode ?? '未知'}</code>
+                </div>
+                <div>
+                  <span>来源</span>
+                  <code>{sandboxSourceLabel(status?.sandbox?.source)}</code>
+                </div>
+              </div>
+              {status?.sandbox?.rejected ? (
+                <div className="modal-hint modal-hint-warn">
+                  你设置的沙箱模式「<code>{status.sandbox.rejected}</code>」不是合法值，
+                  本次启动实际用的是 <code>{status.sandbox.mode}</code>。
+                  合法值：read-only / workspace-write / danger-full-access。
+                </div>
+              ) : null}
+              <div className="modal-hint">
+                {status?.adapter === 'harness' ? (
+                  <>
+                    由内核强制执行，作用于模型在内核里执行的命令。
+                    {status?.sandbox?.note ? ` ${status.sandbox.note}。` : ''}
+                  </>
+                ) : (
+                  <>当前跑的是 mock 内核，模型的命令不经内核执行，这道沙箱不参与 —— 模式值只在真实内核下才有意义。</>
+                )}
+                模式是内核的启动参数：改环境变量（<code>DEEPWORK_SANDBOX_MODE</code>）后需要重启内核才生效。
+              </div>
+
+              <div className="modal-label">审批档位（哪些命令要问你）</div>
               <select
                 className="settings-input"
                 value={guard.mode}
@@ -305,6 +356,10 @@ export function SettingsPanel({
                 <option value="strict">严格 —— 一切命令都要确认</option>
                 <option value="auto">宽松 —— 写操作也自动放行（仅建议在隔离环境中使用）</option>
               </select>
+              <div className="modal-hint">
+                这一档管的是<strong>宿主自己执行的命令</strong>与逐 hunk 写授权。
+                模型在内核里跑的命令不经过它 —— 那些命令的写入边界由上面的内核沙箱决定。
+              </div>
               {guard.mode === 'auto' ? (
                 <div className="modal-hint modal-hint-warn">
                   宽松档位下，Agent 的写操作不再需要你逐次点头。审批链路本身不会失效，

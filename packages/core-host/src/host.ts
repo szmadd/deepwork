@@ -27,6 +27,8 @@ import {
   type ModelCatalog,
   type ModelDescriptor,
   type RunStatus,
+  SANDBOX_MODES,
+  type SandboxStatus,
   type ScheduleSpec,
   type ScheduleTask,
   type Session,
@@ -40,6 +42,7 @@ import {
 import { createAdapter } from './adapter/factory';
 import type { HarnessAdapter } from './adapter/types';
 import { createLogger } from './logger';
+import { resolveSandboxMode, sandboxPlatformNote } from './security/sandbox';
 import { clearApiKey, endpointRestartMessage, endpointRoutingFingerprint, getApiKey, maskApiKey, modelEndpointOverride, setApiKey, syncModelCredentials, validateEndpoint } from './models/endpoint';
 import { testEndpoint } from './models/endpoint-test';
 import { DEFAULT_MODE, DEFAULT_MODEL, catalogUnavailable, mockCatalog } from './models';
@@ -118,6 +121,18 @@ export class DeepworkHost {
    * 只能等用户来报「发出去一直没有回应」。null = 还没成功起过内核（不知道，不猜）。
    */
   private kernelEndpoint: string | null = null;
+  /**
+   * 内核沙箱模式：**启动时定下、进程级生效**，所以在构造时解析一次就固定。
+   *
+   * 与 `kernelEndpoint` 同一形态（启动参数、改了要重启内核），但不需要「旧值 vs 新值」
+   * 的比较：它没有运行期修改入口 —— ACP 面不暴露 mode（`session/set_config_option`
+   * 只认 model 与 reasoning_effort），所以要换模式只有重启这一条路，
+   * 而重启会让 `resolveSandboxMode()` 重新跑一遍。
+   *
+   * 记它的意义在于**可核验**：在此之前产品从未设置过 `DSH_PERMISSION_MODE`，
+   * 内核跑在自己的默认值上，界面上没有任何一处能回答「模型的写入受什么约束」。
+   */
+  private sandbox: SandboxStatus;
   private sink: (event: AgentEvent) => void = () => undefined;
   private terminalSink: TerminalSink = () => undefined;
 
@@ -133,6 +148,22 @@ export class DeepworkHost {
    */
   constructor(options?: { scheduler?: { tickMs?: number; now?: () => Date } }) {
     ensureDirs();
+    // 沙箱模式在这里定一次：它是内核的启动参数，进程活着的期间不会再变。
+    // 非法覆盖值必须留下痕迹 —— 权限设置上「以为生效了」是最不该有的状态。
+    const sandbox = resolveSandboxMode();
+    if (sandbox.rejected !== undefined) {
+      log.warn(
+        `沙箱模式「${sandbox.rejected}」不是合法值（合法值：${SANDBOX_MODES.join(' / ')}），` +
+          `本次启动回落为 ${sandbox.mode}`,
+      );
+    }
+    const platformNote = sandboxPlatformNote();
+    this.sandbox = {
+      mode: sandbox.mode,
+      source: sandbox.source,
+      ...(sandbox.rejected !== undefined ? { rejected: sandbox.rejected } : {}),
+      ...(platformNote !== null ? { note: platformNote } : {}),
+    };
     registerBuiltinTools(this.tools, { browser: this.browser });
     this.scheduler = new SchedulerEngine({
       store: this.scheduleStore,
@@ -175,6 +206,7 @@ export class DeepworkHost {
       model: this.getConfig().defaultModel || DEFAULT_MODEL,
       mode: this.getConfig().adapter,
       patchFile: this.prepareRuntimePatchFile(),
+      sandboxMode: this.sandbox.mode,
     });
     // 补丁已经写盘、内核已经带着它起来 —— 记下「这一代内核的端点是哪个」
     this.kernelEndpoint = endpointRoutingFingerprint(this.getConfig().modelEndpoint);
@@ -264,6 +296,7 @@ export class DeepworkHost {
         model: this.getConfig().defaultModel || DEFAULT_MODEL,
         mode: this.getConfig().adapter,
         patchFile: this.prepareRuntimePatchFile(),
+        sandboxMode: this.sandbox.mode,
       });
     } catch (error) {
       throw new Error(`内核重启失败：${error instanceof Error ? error.message : String(error)}`);
@@ -341,6 +374,8 @@ export class DeepworkHost {
       guard: this.guard.get(),
       kernelEndpoint: this.kernelEndpoint ?? endpointRoutingFingerprint(this.getConfig().modelEndpoint),
       configEndpoint: endpointRoutingFingerprint(this.getConfig().modelEndpoint),
+      // 拷贝一份出去：调用方拿到的是状态快照，不该能改到宿主的字段
+      sandbox: { ...this.sandbox },
     };
   }
 

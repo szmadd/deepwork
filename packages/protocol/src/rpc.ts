@@ -12,7 +12,7 @@ import type { AgentEvent } from './events';
 import type { MemoryEntry, MemoryLayer, MemoryLayerStat } from './memory';
 import type { ConnectorConfig, ConnectorState } from './mcp';
 import type { ScheduleSpec, ScheduleTask } from './schedule';
-import type { ApprovalDecision, GuardPolicy } from './security';
+import type { ApprovalDecision, GuardPolicy, SandboxStatus } from './security';
 import type { AgentMode, ForkOrigin, ModelCatalog, Session } from './session';
 import type { SkillAuditReport, SkillInstallResult, SkillRecord } from './skills';
 import type { TerminalChunk, TerminalState } from './terminal';
@@ -46,6 +46,19 @@ export interface HostStatus {
    * 让渲染层自己再实现一遍指纹算法的话，两处迟早不同步，而不一致的那天没有人会看到。
    */
   configEndpoint: string;
+  /**
+   * 内核沙箱实际生效的文件策略模式。
+   *
+   * `guard` 与它是**互不相同**的两件事：`guard` 决定「哪些命令要问人」（宿主侧静态
+   * 规则），`sandbox` 决定「命令能不能写成文件」（内核侧强制执行）。真实内核下
+   * 模型的命令在内核里跑、不过宿主，所以 `guard` 对它们不生效 —— 挡住越界写入的
+   * 一直是这个沙箱。界面必须把两者分开说，否则用户以为自己在设置里调的档位
+   * 就是拦下写入的那道闸。
+   *
+   * 模式只在启动内核时定得下来（ACP 面没有它的运行时切换），所以这里是
+   * 「内核带着什么起来的」，粒度是进程而不是会话 —— 与 `kernelEndpoint` 同一形态。
+   */
+  sandbox: SandboxStatus;
 }
 
 export interface ModelApiKeyStatus {

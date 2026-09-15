@@ -139,7 +139,7 @@ run_scene() {
 # 「点不到就返回 no-rail」必须存在的原因。
 RAIL_HELPER='const openRail=async(label)=>{const b=[...document.querySelectorAll(".rail-item")].find(x=>x.getAttribute("title")===label);if(!b)return "no-rail:"+label;b.click();await new Promise(r=>setTimeout(r,1600));return "ok";};'
 
-SCENES="${*:-chat tree terminal preview hunk settings skills memory schedule connectors usage browser office}"
+SCENES="${*:-chat tree terminal preview hunk settings settings-security skills memory schedule connectors usage browser office}"
 
 for scene in $SCENES; do
   case "$scene" in
@@ -185,6 +185,16 @@ for scene in $SCENES; do
       # 「下拉是空白的」与「下拉里只有一项」在图上不容易区分。
       run_scene "ui-settings-prefs" ".settings-tabs" \
         "$RAIL_HELPER await openRail('设置'); const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('偏好')); if(!t) return 'no-prefs-tab'; t.click(); await new Promise(r=>setTimeout(r,1200)); const sels=[...document.querySelectorAll('.page-body select')]; const labels=[...document.querySelectorAll('.page-body .modal-label')].map(x=>x.textContent); const mi=labels.indexOf('新建会话的默认模型'); const ei=labels.indexOf('默认推理档位'); const m=mi>=0?sels[mi]:null; const e=ei>=0?sels[ei]:null; return 'model:'+(m?m.value||'(跟随)':'none')+' options:'+(m?m.options.length:0)+' effort:'+(e?e.options.length:'none');" \
+        "0"
+      ;;
+    settings-security)
+      # 安全页是 FR-3.5 的落点：**内核沙箱**（模型改文件的实际边界）与**审批档位**
+      # （哪些命令要问人）是两层，界面上刻意分开说 —— 混成一条会让用户以为
+      # 自己在设置的档位就是拦下越界写入的那道闸，而真实内核下模型的命令不过宿主。
+      # 末尾回读两处的文字作为回执：图上分不清「显示为未知」与「压根没渲染」，
+      # 而「沙箱模式那一格是空的」恰好是这一轮最该被看见的失败形态。
+      run_scene "ui-settings-security" ".settings-tabs" \
+        "$RAIL_HELPER await openRail('设置'); const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('安全')); if(!t) return 'no-security-tab'; t.click(); await new Promise(r=>setTimeout(r,1200)); const kvs=[...document.querySelectorAll('.settings-kv')].map(x=>x.textContent.replace(/\\s+/g,' ').trim()); const sels=[...document.querySelectorAll('.page-body select')].map(x=>x.value); return 'sandbox:'+JSON.stringify(kvs[0]||'(none)')+' guard:'+JSON.stringify(sels)+' kv:'+kvs.length;" \
         "0"
       ;;
     skills)

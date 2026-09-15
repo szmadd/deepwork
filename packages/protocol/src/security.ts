@@ -87,3 +87,61 @@ export const DEFAULT_GUARD_POLICY: GuardPolicy = {
     'diskpart',
   ],
 };
+
+/**
+ * 内核沙箱的逐调用**文件**策略模式。
+ *
+ * ── 与 `GuardPolicy` 是两层，别混────────────────────────────────────
+ * `GuardPolicy.mode`（auto/normal/strict）回答的是「**哪些命令要问人**」，
+ * 由宿主侧的静态规则匹配决定；这个 `SandboxMode` 回答的是「**命令能对文件做什么**」，
+ * 由**内核**在执行时强制执行。两者都叫「权限」，但一个管「问不问」，
+ * 一个管「做不做得成」—— 一个命令可以既被批准、又写不成（被沙箱拒）。
+ *
+ * ── 词汇来自内核，不要自造 ──────────────────────────────────────────
+ * 这三个值是 `dsh-sandbox-policy` 的 `mode` 字段，与 `dsh-permission-presets`
+ * 的三个预置同名。产品侧只做透传与呈现，不另起一套名字：一旦两处词汇不同步，
+ * 界面上显示的档位与内核实际执行的档位就会是两件事。
+ */
+export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
+
+/** 内核沙箱模式的三个合法值，顺序与内核 README 的表格一致（由窄到宽） */
+export const SANDBOX_MODES: readonly SandboxMode[] = [
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
+];
+
+/**
+ * 该模式是谁定的。
+ *
+ * 模式只在**内核启动**时生效（`dsh-sandbox-policy` 的 `mode` 是插件配置，
+ * 而 ACP 侧没有暴露它的运行时切换 —— 见 `dsh-acp` README「不支持界面」一节），
+ * 所以「当前值从哪来」必须由宿主记住并交出来，界面才有的可说。
+ */
+export type SandboxModeSource = 'product-default' | 'env-override';
+
+export interface SandboxStatus {
+  /** 内核进程启动时拿到的模式 */
+  mode: SandboxMode;
+  /** 该值的来源 */
+  source: SandboxModeSource;
+  /**
+   * 覆盖值给了但不可用时留下的原值。
+   *
+   * 有值时说明「有人想设一个模式，但那个值不合法，实际用的是默认值」——
+   * 界面必须把它显示出来。静默回落到默认会让设错的人以为自己的设置生效了，
+   * 而权限这类设置上「以为生效了」正是最不该出现的状态。
+   */
+  rejected?: string;
+  /**
+   * 该平台的已知边界说明（没有已知边界时为 undefined）。
+   *
+   * 由宿主按平台填好交给界面 —— 渲染层不自己按平台分支写文案：那些边界是
+   * 内核包自述的**平台事实**（win32 档报告 partial 强制执行，只交叉检查写访问），
+   * 它属于知识而不是判断，放一处才不会与实现漂移。
+   *
+   * 注意它是**平台级事实**，不是运行时测量值：ACP 面不暴露强制执行等级，
+   * 所以这里不会出现「实测 full/partial」这种字样。
+   */
+  note?: string;
+}

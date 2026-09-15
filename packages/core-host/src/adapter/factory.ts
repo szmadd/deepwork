@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { SandboxMode } from '@deepwork/protocol';
 import { createLogger } from '../logger';
+import { sandboxLaunchEnv } from '../security/sandbox';
 import { HarnessSidecarAdapter } from './harness-sidecar';
 import { MockHarnessAdapter } from './mock-harness';
 import type { HarnessAdapter } from './types';
@@ -14,6 +16,14 @@ export interface CreateAdapterOptions {
   patchFile?: string;
   /** 内核选择（来自 AppConfig.adapter）；省略时按 DEEPWORK_ADAPTER 环境变量，再省略为 auto */
   mode?: 'auto' | 'mock' | 'harness';
+  /**
+   * 内核沙箱模式，交给内核的 `DSH_PERMISSION_MODE`。
+   *
+   * 由宿主解析一次后传入（而不是这里各自调一次解析函数）：解析结果要同时进
+   * `HostStatus` 给界面看，两个地方各算一次的话，「界面上显示的」与「真正传给
+   * 内核的」就有了两条独立的路径 —— 它们不一致的那天没有人会看到。
+   */
+  sandboxMode: SandboxMode;
 }
 
 /**
@@ -46,14 +56,20 @@ export async function createAdapter(options: CreateAdapterOptions): Promise<Harn
 
   if (mode === 'harness') {
     log.info('按配置强制使用真实内核');
-    const adapter = new HarnessSidecarAdapter({ ...options, ...harnessLaunch() });
+    const adapter = new HarnessSidecarAdapter({
+      ...options,
+      ...harnessLaunch(options.sandboxMode),
+    });
     await adapter.start();
     return adapter;
   }
 
   if (process.env.DEEPWORK_HARNESS_CMD || bundledDshBin()) {
     try {
-      const adapter = new HarnessSidecarAdapter({ ...options, ...harnessLaunch() });
+      const adapter = new HarnessSidecarAdapter({
+        ...options,
+        ...harnessLaunch(options.sandboxMode),
+      });
       await adapter.start();
       return adapter;
     } catch (error) {
@@ -88,19 +104,28 @@ function bundledDshBin(): string | null {
  * 优先级：DEEPWORK_HARNESS_CMD > 随包 dsh（一体化安装包）> 仓库内 devDependency
  * 的 dsh（node 直跑 bin.js —— Windows 上 spawn dsh.cmd 会 EINVAL，.cmd 需要
  * shell；与 tools/real-dsh-e2e.js 同一形态）> PATH 里的 dsh（用户全局安装的场景）。
+ *
+ * `env` 随内核进程一起给出，与启动命令同层：`DSH_PERMISSION_MODE` 是插件**加载期**
+ * 读的配置（`dsh-sandbox-policy` 的 mode 默认值就是它），所以它与 `--patch` 一样
+ * 属于启动参数，而不是能事后改的运行期指令。
  */
-function harnessLaunch(): { command?: string; args?: string[] } {
+function harnessLaunch(sandboxMode: SandboxMode): {
+  command?: string;
+  args?: string[];
+  env: Record<string, string>;
+} {
+  const env = sandboxLaunchEnv(sandboxMode);
   if (process.env.DEEPWORK_HARNESS_CMD) {
-    return { command: process.env.DEEPWORK_HARNESS_CMD };
+    return { command: process.env.DEEPWORK_HARNESS_CMD, env };
   }
   const bundled = bundledDshBin();
   if (bundled) {
-    return { command: process.execPath, args: [bundled, '--profile', 'acp'] };
+    return { command: process.execPath, args: [bundled, '--profile', 'acp'], env };
   }
   // __dirname = packages/core-host/dist/adapter；仓库根在它上四级
   const localDsh = path.resolve(__dirname, '../../../../node_modules/@deepseek-ai/dsh/lib/bin.js');
   if (fs.existsSync(localDsh)) {
-    return { command: process.execPath, args: [localDsh, '--profile', 'acp'] };
+    return { command: process.execPath, args: [localDsh, '--profile', 'acp'], env };
   }
-  return {};
+  return { env };
 }
