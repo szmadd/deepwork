@@ -2225,3 +2225,66 @@ browser 76 / office 130 / **modelcfg 92**；diff 段为「还原一致性 全部
 
 1. 按 8.5 顺序开工：先定 8.4 安装器语义，再做 8.1 取证。
 2. 提交本轮文档改动（可与下一次代码改动合并，或单独 docs 提交）。
+
+## 2026-09-15（第三轮）· 内网自定义模型三连修：白名单漏方法 / 目录不刷新 / 开跑前守卫 + 测试连接
+
+**目标**
+
+修复内网部署现场（截图 222.bmp）暴露的三个问题：模型无法访问、模型 UI 不更新、
+模型配置页无法测试连通性。
+
+**改动**
+
+诊断（证据链全部落在代码上）：
+
+1. **UI 不更新的根**：截图横幅 `方法未授权: models.refresh` —— 契约（rpc.ts）与
+   stdio-server 都注册了它，唯独 `apps/desktop/electron/main.js` 白名单漏了。
+2. **无法访问的根**：会话带着旧官方默认模型 `deepseek-v4-flash` 发给内网端点，
+   端点回 "Model not found"；服务没起/地址错/key 无效/模型名错四层原因共用一个症状。
+3. **不能测试**：功能从未存在（ROADMAP 第〇节第 1/4 项）。
+
+修复：
+
+- `main.js` 白名单补 `models.refresh` 与新方法 `models.testEndpoint`；
+- `useAgent.ts`：`kernel.restart` 成功后自动 `models.refresh` 刷新目录；
+  `config.set` 端点变更后自动 `models.list` 刷新（endpoint 源目录无需重启即反映）；
+- `host.ts` **开跑前模型守卫**：目录非空且查无本轮模型时，run 在宿主侧直接失败，
+  错误带可选模型清单与改法，不发请求（目录为空 = 「不知道」时不拦）；
+- 新文件 `models/endpoint-test.ts`：`GET {baseUrl}/models` 真实请求，8s 超时，
+  key 只进 Authorization 头；失败按层翻译（拒连/解析失败/超时/401/404/非 JSON），
+  每层一句可行动的中文；经 `models.testEndpoint` RPC 暴露；
+- `SettingsPanel.tsx`：自定义端点区加「测试连接」按钮（测未保存的输入值），
+  成功展示延迟与端点模型清单、点击回填模型名；默认模型不在目录时模型页黄字提示。
+
+**验证**
+
+- `npm run test:modelcfg`：**109/109**（92 → 109，+17）：
+  - 三方一致性静态断言 3 项（宿主注册 ⊆ 白名单 ⊆ 契约）——models.refresh 类漏配
+    从此有哨兵；
+  - 守卫 5 项：宿主侧直接失败、错误可行动、无 tool.started、会话落 failed、
+    目录为空不拦；
+  - 连通性 9 项：stub 断言请求真的到达、key 透传、尾斜杠规范化、404/拒连/非法地址
+    的可行动文案、host 链路用已存 custom key、结果不含 key 明文。
+- 真实 dsh 段（两轮连跑）保持全绿，未受守卫影响。
+
+**踩坑与修复**
+
+1. **一致性断言首轮测了个寂寞**：正则按两格缩进匹配 stdio-server 注册行，
+   实际缩进是四格，`stdio` 集合为空，「⊆ 白名单」在空集上恒真 —— 空集通过
+   正是这条断言要防的假阳性。修成四格后详情行显示「共 46 个方法」才作数。
+2. **undici 的错误包裹有两层**：`fetch failed` 的真因在 `cause.code`；
+   且写死 `127.0.0.1:1` 测拒连时，undici 直接回 'bad port'（根本不走连接），
+   换成「监听后立刻关闭」的真实端口才拿到 ECONNREFUSED。
+
+**遗留**
+
+- ROADMAP 〇.1 的全量形态（目录直接吃 `/v1/models` 替代手填）未做，本轮是
+  「测试 + 点选回填」；modelCatalog 的 endpoint 分支语义不变。
+- 设置页 UI 截图未更新（capture.sh settings 场景可复用，留给下一轮顺手）。
+- 系统代理由启动环境继承，宿主不主动处理；测试按钮会如实报连通失败。
+
+**下一步**
+
+1. verify 全绿后重打一体化安装包（`npm run dist` + `package-verify --launch`），
+   交付内网重新部署。
+2. 更新 ROADMAP 第〇节状态与 README 的内网部署提示。

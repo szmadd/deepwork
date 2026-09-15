@@ -45,6 +45,11 @@ export function buildHandlers(host: DeepworkHost): Record<RpcMethod, Handler> {
     // 返回 Promise 由调用方 await（RPC 派发本来就是异步的）。
     'models.list': () => host.modelCatalog(false),
     'models.refresh': () => host.modelCatalog(true),
+    'models.testEndpoint': (p) =>
+      host.testModelEndpoint({
+        baseUrl: String(p.baseUrl ?? ''),
+        apiKey: typeof p.apiKey === 'string' && p.apiKey.trim() ? p.apiKey : undefined,
+      }),
     'model.apiKey.status': () => host.modelApiKeyStatus(),
     'model.apiKey.set': (p) => host.setModelApiKey(String(p.key ?? '')),
     'model.apiKey.clear': () => host.clearModelApiKey(),

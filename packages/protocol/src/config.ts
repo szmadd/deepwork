@@ -85,6 +85,21 @@ export interface ModelEndpoint {
   noApiKey?: boolean;
 }
 
+/**
+ * 端点连通性测试的结果（`models.testEndpoint` 的返回）。
+ *
+ * ok 与 error 互斥；models 是端点 `GET /models` 公布的模型 id 清单
+ * （端点不给就是空数组，不猜）。httpStatus 在「连上了但回的不是 200」时保留 ——
+ * 401 与 404 的处置完全不同，只回一个 ok=false 等于把诊断信息丢掉。
+ */
+export interface EndpointTestResult {
+  ok: boolean;
+  httpStatus?: number;
+  latencyMs: number;
+  models: string[];
+  error?: string;
+}
+
 export interface AppConfig {
   theme: 'dark' | 'light';
   /**

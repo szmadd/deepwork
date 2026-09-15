@@ -489,6 +489,7 @@ export default function App() {
             onClearApiKey={agent.clearModelApiKey}
             onRefreshKeyStatus={agent.refreshModelKeyStatus}
             onRefreshModels={agent.refreshModels}
+            onTestEndpoint={agent.testEndpoint}
             onRestartKernel={agent.restartKernel}
             onClose={backToChat}
           />

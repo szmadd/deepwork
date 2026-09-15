@@ -9,6 +9,7 @@ import type {
   ConnectorConfig,
   BrowserState,
   ConnectorState,
+  EndpointTestResult,
   FilePreview,
   GuardPolicy,
   HostState,
@@ -79,6 +80,8 @@ export interface UseAgentResult {
   catalog: ModelCatalog | null;
   /** 强制重新向内核核对模型目录（会新建一个探针会话，用完即关） */
   refreshModels: () => Promise<void>;
+  /** 端点连通性测试（设置页「测试连接」）：对未保存的输入值发一次真实请求 */
+  testEndpoint: (params: { baseUrl: string; apiKey?: string }) => Promise<EndpointTestResult>;
   activeRunId: string | null;
   usage: { promptTokens: number; completionTokens: number; costCny: number };
   /**
@@ -628,6 +631,15 @@ export function useAgent(): UseAgentResult {
       const next = await invoke('config.set', { patch });
       setConfig(next);
       if (patch.terminalBufferLimit) textLimitRef.current = patch.terminalBufferLimit;
+      // 端点变更立即刷新目录（endpoint 源目录无需重启即可反映）；
+      // 内核侧生效仍要重启 —— 两件事，别让用户以为刷新了就等于生效了。
+      if (patch.modelEndpoint) {
+        try {
+          setCatalog(await invoke('models.list'));
+        } catch {
+          // 目录刷新失败不阻断配置保存
+        }
+      }
     } catch (cause) {
       setError(describeError(cause));
     }
@@ -932,6 +944,14 @@ export function useAgent(): UseAgentResult {
     const next = await invoke('kernel.restart');
     // 重启可能改变内核类型（例如配置变化后走了另一条适配路径），状态以返回值为准
     setStatus(next);
+    // 目录的权威在内核：重启就是为了让新补丁（端点 / 连接器）生效，
+    // 不把目录一起刷新，界面上看到的就是重启前那份旧清单 ——
+    // 内网部署时这正是「端点配好了，模型下拉里却没有」的直接原因。
+    try {
+      setCatalog(await invoke('models.refresh'));
+    } catch {
+      // 状态已返回，目录沿用旧的；核对失败会在设置页的 note 里如实呈现
+    }
   }, []);
 
   // ── 浏览器（M2-H）────────────────────────────────────────
@@ -1024,6 +1044,12 @@ export function useAgent(): UseAgentResult {
     }
   }, []);
 
+  /** 端点连通性测试：纯透传，结果（含错误文案）由设置页就地展示 */
+  const testEndpoint = useCallback(
+    (params: { baseUrl: string; apiKey?: string }) => invoke('models.testEndpoint', params),
+    [],
+  );
+
   const current = useMemo(
     () => sessions.find((session) => session.id === currentId) ?? null,
     [sessions, currentId],
@@ -1085,6 +1111,7 @@ export function useAgent(): UseAgentResult {
     approvals,
     catalog,
     refreshModels,
+    testEndpoint,
     activeRunId,
     usage,
     usageCoverage,    changedPaths,

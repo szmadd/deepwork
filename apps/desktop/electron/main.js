@@ -44,6 +44,8 @@ const ALLOWED_METHODS = new Set([
   'guard.get',
   'guard.set',
   'models.list',
+  'models.refresh',
+  'models.testEndpoint',
   'model.apiKey.status',
   'model.apiKey.set',
   'model.apiKey.clear',

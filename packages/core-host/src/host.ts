@@ -15,6 +15,7 @@ import {
   type BrowserState,
   type ConnectorConfig,
   type ConnectorState,
+  type EndpointTestResult,
   type FileDiff,
   type FilePreview,
   type ForkOrigin,
@@ -40,6 +41,7 @@ import { createAdapter } from './adapter/factory';
 import type { HarnessAdapter } from './adapter/types';
 import { createLogger } from './logger';
 import { clearApiKey, getApiKey, maskApiKey, modelEndpointOverride, setApiKey, syncModelCredentials, validateEndpoint } from './models/endpoint';
+import { testEndpoint } from './models/endpoint-test';
 import { DEFAULT_MODE, DEFAULT_MODEL, catalogUnavailable, mockCatalog } from './models';
 import { configPath, ensureDirs, guardPath, homeDir, readJson, writeJson } from './paths';
 import { SchedulerEngine } from './scheduler/engine';
@@ -476,6 +478,17 @@ export class DeepworkHost {
     return this.modelApiKeyStatus();
   }
 
+  /**
+   * 端点连通性测试（设置页「测试连接」）：对界面上的未保存值发一次真实请求。
+   * key 优先级：显式参数 > 已存的 custom key > 无。结果不含 key，可直接回渲染层。
+   */
+  testModelEndpoint(input: { baseUrl?: string; apiKey?: string }): Promise<EndpointTestResult> {
+    return testEndpoint({
+      baseUrl: String(input.baseUrl ?? ''),
+      apiKey: input.apiKey?.trim() || getApiKey('custom') || undefined,
+    });
+  }
+
   // ── 会话 ──────────────────────────────────────────────────
 
   listSessions(): Session[] {
@@ -635,6 +648,34 @@ export class DeepworkHost {
 
     // 用户输入先进事件流，保证日志可用于回放
     this.emit({ type: 'user.message', runId, text: input.text, attachments });
+
+    /*
+     * 开跑前模型守卫：目录里查无此模型时不发请求。
+     *
+     * 来历是内网部署的一次真实现场：用户切到自定义端点后，会话仍带着旧的官方
+     * 默认模型，每一轮都被端点回一句 "Model not found" —— 四层原因（服务没起 /
+     * 地址错 / key 无效 / 模型名错）共用一个症状，排障无从下手。在这里拦下，
+     * 把「端点回的字符串」换成「目录里实际有哪些、去哪改」。
+     *
+     * 目录为空（从未核对上）时不拦：那是「不知道」，不是「不匹配」，
+     * 让请求照常走、由内核与端点给出它们那一层的答案。
+     */
+    const knownModels = this.catalog?.models ?? [];
+    if (knownModels.length > 0 && !knownModels.some((item) => item.id === model)) {
+      const options = knownModels.map((item) => item.id).join(' / ');
+      this.emit({
+        type: 'run.failed',
+        runId,
+        message:
+          `模型「${model}」不在当前模型目录里（可选：${options}）。` +
+          '请到设置修改默认模型（或新建会话时在顶栏选择），再重试。',
+        retryable: false,
+      });
+      this.emit({ type: 'session.updated', session: this.store.update(session.id, { status: 'failed' }) });
+      this.activeRuns.delete(runId);
+      this.runToSession.delete(runId);
+      return { runId };
+    }
 
     // 技能上下文：每轮按「当前启用清单」重新构建 —— 用户在面板里停用一个技能，
     // 下一轮就必须看不到它，不存在「缓存里还有」的窗口期

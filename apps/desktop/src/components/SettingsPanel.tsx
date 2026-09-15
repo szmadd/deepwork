@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type {
   AppConfig,
   AppView,
+  EndpointTestResult,
   GuardPolicy,
   HostStatus,
   ModelCatalog,
@@ -22,6 +23,7 @@ interface SettingsPanelProps {
   onClearApiKey: () => Promise<void>;
   onRefreshKeyStatus: () => Promise<void>;
   onRefreshModels: () => Promise<void>;
+  onTestEndpoint: (params: { baseUrl: string; apiKey?: string }) => Promise<EndpointTestResult>;
   onRestartKernel: () => Promise<void>;
   onClose: () => void;
 }
@@ -53,6 +55,7 @@ export function SettingsPanel({
   onClearApiKey,
   onRefreshKeyStatus,
   onRefreshModels,
+  onTestEndpoint,
   onRestartKernel,
   onClose,
 }: SettingsPanelProps) {
@@ -118,6 +121,7 @@ export function SettingsPanel({
               onSetApiKey={onSetApiKey}
               onClearApiKey={onClearApiKey}
               onRefreshModels={onRefreshModels}
+              onTestEndpoint={onTestEndpoint}
               onRestartKernel={onRestartKernel}
             />
           ) : null}
@@ -372,6 +376,7 @@ interface ModelSettingsProps {
   onSetApiKey: (key: string) => Promise<void>;
   onClearApiKey: () => Promise<void>;
   onRefreshModels: () => Promise<void>;
+  onTestEndpoint: (params: { baseUrl: string; apiKey?: string }) => Promise<EndpointTestResult>;
   onRestartKernel: () => Promise<void>;
 }
 
@@ -399,6 +404,7 @@ function ModelSettings({
   onSetApiKey,
   onClearApiKey,
   onRefreshModels,
+  onTestEndpoint,
   onRestartKernel,
 }: ModelSettingsProps) {
   const endpoint = config.modelEndpoint;
@@ -416,6 +422,7 @@ function ModelSettings({
     endpoint.contextWindow !== undefined ? String(endpoint.contextWindow) : '',
   );
   const [keyInput, setKeyInput] = useState('');
+  const [testResult, setTestResult] = useState<EndpointTestResult | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -458,6 +465,25 @@ function ModelSettings({
         });
       },
       '端点配置已保存（重启内核生效）',
+    );
+
+  /**
+   * 测试连接：对**未保存**的输入值发一次真实请求（GET {baseUrl}/models）。
+   * 这是把「模型无法访问」的四层原因（服务没起 / 地址错 / key 无效 / 少了 /v1）
+   * 在配置的那一刻分开 —— 而不是等一轮对话发出去，换一句端点侧的 Model not found。
+   */
+  const testConnection = () =>
+    run(
+      'test',
+      async () => {
+        const result = await onTestEndpoint({
+          baseUrl: baseUrl.trim(),
+          apiKey: keyInput.trim() || undefined,
+        });
+        setTestResult(result);
+        if (!result.ok) throw new Error(result.error ?? '连接失败');
+      },
+      '',
     );
 
   return (
@@ -538,7 +564,32 @@ function ModelSettings({
             <button type="button" className="btn btn-primary" disabled={busy !== null} onClick={() => void saveEndpoint()}>
               {busy === 'endpoint' ? '保存中…' : '保存端点配置'}
             </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy !== null || !baseUrl.trim()}
+              onClick={() => void testConnection()}
+            >
+              {busy === 'test' ? '测试中…' : '测试连接'}
+            </button>
           </div>
+          {testResult?.ok ? (
+            <>
+              <div className="modal-hint">
+                连接正常 · {testResult.latencyMs}ms · 端点公布 {testResult.models.length} 个模型
+                {testResult.models.length > 0 ? '（点击回填到模型名）：' : '（/models 为空，模型名仍需手填）'}
+              </div>
+              {testResult.models.length > 0 ? (
+                <div className="modal-foot">
+                  {testResult.models.map((id) => (
+                    <button key={id} type="button" className="btn btn-tiny" onClick={() => setModelName(id)}>
+                      {id}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : null}
         </>
       ) : null}
 
@@ -548,6 +599,13 @@ function ModelSettings({
       */}
       <div className="modal-label">当前模型目录</div>
       <div className="modal-hint">{catalog ? catalog.note : '尚未拉取。'}</div>
+      {config.defaultModel && catalog && catalog.models.length > 0
+      && !catalog.models.some((item) => item.id === config.defaultModel) ? (
+        <div className="modal-hint modal-hint-warn">
+          默认模型「{config.defaultModel}」不在这份目录里 —— 发送时会被宿主在开跑前拦下。
+          请到「偏好」修改默认模型，或先点下面「重新向内核核对」。
+        </div>
+      ) : null}
       {catalog && catalog.models.length > 0 ? (
         <div className="settings-kv">
           {catalog.models.map((model) => (

@@ -15,6 +15,13 @@
  *      （requests[0].model === 'qwen-local-7b'）、推理档位真的进了请求体，以及
  *      **内核上报的上下文容量 = 我们在补丁里给该模型填的 contextWindow**
  *      —— 「配置写了但内核还在用旧值」只能靠这类端到端观察抓出来。dsh 缺席时优雅 SKIP。
+ *   5. RPC 三方一致性（静态）：stdio-server 注册的方法、Electron 主进程白名单、
+ *      protocol RpcContract 必须互相咬合 —— 内网现场出现过「契约注册了 models.refresh、
+ *      白名单没有」，渲染层每次核对都被「方法未授权」顶回来。
+ *   6. 开跑前模型守卫与端点连通性测试（2026-09-15 内网问题的两个修复）：
+ *      目录查无此模型时 run 在宿主侧直接失败（错误带可选模型清单），
+ *      不再把请求发给端点换一句 "Model not found"；testEndpoint 对本地 stub
+ *      断言请求真的到达、key 透传、各失败形态的可行动文案。
  *
  * 前置条件（很关键）：替身端点必须回 `usage` 帧。dsh 的 llm 适配器会带
  * `stream_options.include_usage=true` 去请求它，而内核**只在拿到 usage 时才产生
@@ -592,8 +599,178 @@ async function realDshSection() {
   }
 }
 
+// ══════════════════════════════════════════════════════════
+// 5. RPC 三方一致性（静态）：宿主注册 ⊆ 主进程白名单 ⊆ 契约
+// ══════════════════════════════════════════════════════════
+console.log('\n── RPC 三方一致性 ──');
+
+function consistencySection() {
+  const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  // stdio-server 的处理器表：缩进四格的 '方法名': 注册行
+  const stdio = new Set(
+    [...read('packages/core-host/src/rpc/stdio-server.ts').matchAll(/^ {4}'([a-z][a-z0-9]*\.[a-z0-9.]+)':/gm)]
+      .map((m) => m[1]),
+  );
+  // main.js 的白名单：缩进两格的 '方法名', 条目行
+  const whitelist = new Set(
+    [...read('apps/desktop/electron/main.js').matchAll(/^ {2}'([a-z][a-z0-9]*\.[a-z0-9.]+)',$/gm)]
+      .map((m) => m[1]),
+  );
+  // RpcContract 的方法键
+  const contract = new Set(
+    [...read('packages/protocol/src/rpc.ts').matchAll(/^ {2}'([a-z][a-z0-9]*\.[a-z0-9.]+)': \{/gm)]
+      .map((m) => m[1]),
+  );
+
+  const missingFromWhitelist = [...stdio].filter((m) => !whitelist.has(m));
+  check(
+    '宿主注册的方法全部进了主进程白名单（models.refresh 漏配是内网现场的实际故障）',
+    missingFromWhitelist.length === 0,
+    missingFromWhitelist.join(', ') || `共 ${stdio.size} 个方法`,
+  );
+  const missingFromContract = [...stdio].filter((m) => !contract.has(m));
+  check(
+    '宿主注册的方法全部在 RpcContract 里有契约',
+    missingFromContract.length === 0,
+    missingFromContract.join(', ') || `共 ${stdio.size} 个方法`,
+  );
+  const whitelistOutsideContract = [...whitelist].filter((m) => !contract.has(m));
+  check(
+    '白名单不含契约之外的方法',
+    whitelistOutsideContract.length === 0,
+    whitelistOutsideContract.join(', ') || `共 ${whitelist.size} 个方法`,
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// 6. 开跑前模型守卫 + 端点连通性测试
+// ══════════════════════════════════════════════════════════
+console.log('\n── 模型守卫与连通性测试 ──');
+
+async function guardSection() {
+  const workspace = path.join(root, 'workspace-guard');
+  fs.mkdirSync(workspace, { recursive: true });
+  const host = new DeepworkHost();
+  const events = [];
+  host.onEvent((event) => events.push(event));
+  await host.start(workspace);
+
+  // 目录已知（mock 只公布 mock-echo）时，带着官方模型名的会话必须在宿主侧被拦下 ——
+  // 内网现场的形状：每一轮都被端点回 "Model not found"，四层原因共用一个症状。
+  await host.modelCatalog();
+  const blocked = host.createSession({ workspace, title: 'blocked', model: 'deepseek-v4-flash' });
+  const before = events.length;
+  const { runId } = host.send({ sessionId: blocked.id, text: '你好' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const failure = events.slice(before).find((event) => event.type === 'run.failed' && event.runId === runId);
+  check(
+    '目录查无此模型时 run 在宿主侧直接失败（不发请求）',
+    Boolean(failure),
+    failure?.message ?? '（没有 run.failed 事件）',
+  );
+  check(
+    '守卫错误带可选模型清单与改法（可行动，不是端点字符串）',
+    Boolean(failure?.message.includes('mock-echo') && failure?.message.includes('默认模型')),
+    failure?.message ?? '',
+  );
+  check(
+    '被守卫拦下的 run 不产生 tool.started（请求没发出去）',
+    !events.slice(before).some((event) => event.type === 'tool.started' && event.runId === runId),
+  );
+  check(
+    '会话状态落为 failed',
+    host.listSessions().find((s) => s.id === blocked.id)?.status === 'failed',
+  );
+
+  // 目录为空（从未核对上）时不拦：那是「不知道」不是「不匹配」，让请求照常走。
+  const fresh = new DeepworkHost();
+  const freshEvents = [];
+  fresh.onEvent((event) => freshEvents.push(event));
+  const freshWorkspace = path.join(root, 'workspace-guard-fresh');
+  fs.mkdirSync(freshWorkspace, { recursive: true });
+  await fresh.start(freshWorkspace);
+  const free = fresh.createSession({ workspace: freshWorkspace, title: 'free', model: 'whatever-model' });
+  const freeRun = fresh.send({ sessionId: free.id, text: '你好' });
+  check(
+    '目录为空时守卫不拦（不知道 ≠ 不匹配）',
+    !freshEvents.some((event) => event.type === 'run.failed' && event.runId === freeRun.runId),
+  );
+  await fresh.stop();
+  await host.stop();
+}
+
+async function endpointTestSection() {
+  const http = require('node:http');
+  const { testEndpoint } = require('../packages/core-host/dist/models/endpoint-test');
+
+  const seen = { auth: null, path: null };
+  const server = http.createServer((req, res) => {
+    seen.path = req.url;
+    if (req.url === '/v1/models') {
+      seen.auth = req.headers.authorization ?? null;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'qwen-local-7b' }, { id: 'qwen-local-14b' }] }));
+      return;
+    }
+    res.writeHead(404).end('not found');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  try {
+    const ok = await testEndpoint({ baseUrl: `http://127.0.0.1:${port}/v1/`, apiKey: 'sk-stub-key' });
+    check('testEndpoint 连通成功并拿回端点模型清单',
+      ok.ok === true && ok.models.join('/') === 'qwen-local-7b/qwen-local-14b', JSON.stringify(ok.models));
+    check('testEndpoint 把 key 透传进 Authorization 头（请求真的到达了端点）',
+      seen.auth === 'Bearer sk-stub-key', String(seen.auth));
+    check('baseUrl 尾部斜杠被规范化', seen.path === '/v1/models', String(seen.path));
+    check('返回带 HTTP 状态与延迟', ok.httpStatus === 200 && ok.latencyMs >= 0);
+
+    const wrongPrefix = await testEndpoint({ baseUrl: `http://127.0.0.1:${port}` });
+    check('少了 /v1 时给出可行动的 404 提示',
+      wrongPrefix.ok === false && wrongPrefix.httpStatus === 404 && wrongPrefix.error.includes('/v1'),
+      wrongPrefix.error);
+
+    // 拿一个「真实但已关闭」的端口：直接写死小端口号会被 undici 以 'bad port'
+    // 拦在连接前，测不到 ECONNREFUSED 这层翻译。
+    const closedPort = await new Promise((resolve) => {
+      const probe = http.createServer();
+      probe.listen(0, '127.0.0.1', () => {
+        const p = probe.address().port;
+        probe.close(() => resolve(p));
+      });
+    });
+    const refused = await testEndpoint({ baseUrl: `http://127.0.0.1:${closedPort}/v1` });
+    check('服务未监听时给出「连接被拒绝」的可行动提示',
+      refused.ok === false && refused.error.includes('连接被拒绝'), refused.error);
+
+    const malformed = await testEndpoint({ baseUrl: 'not-a-url' });
+    check('非法地址在发请求前拦下', malformed.ok === false && malformed.error.includes('http'));
+
+    // host 链路：未显式传 key 时用已存的 custom key
+    const workspace = path.join(root, 'workspace-test');
+    fs.mkdirSync(workspace, { recursive: true });
+    const host = new DeepworkHost();
+    await host.start(workspace);
+    host.setConfig({ modelEndpoint: { kind: 'custom', baseUrl: `http://127.0.0.1:${port}/v1`, model: 'qwen-local-7b' } });
+    host.setModelApiKey('sk-saved-cccc');
+    seen.auth = null;
+    const viaHost = await host.testModelEndpoint({ baseUrl: `http://127.0.0.1:${port}/v1` });
+    check('host.testModelEndpoint 未显式传 key 时用已存的 custom key',
+      viaHost.ok === true && seen.auth === 'Bearer sk-saved-cccc', String(seen.auth));
+    check('testModelEndpoint 结果不含 key 明文（可安全回渲染层）',
+      !JSON.stringify(viaHost).includes('sk-saved-cccc'));
+    await host.stop();
+  } finally {
+    server.close();
+  }
+}
+
 async function main() {
   await hostSection();
+  consistencySection();
+  await guardSection();
+  await endpointTestSection();
   // 竞态教训：真实段连跑两轮，补丁路径必须轮轮一致
   await realDshSection();
   await realDshSection();

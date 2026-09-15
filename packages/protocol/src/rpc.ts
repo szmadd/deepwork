@@ -6,7 +6,7 @@
  *      回环 + 一次性 token 只用于 core-host 访问更下游的真实 Harness（见 harness-sidecar.ts）。
  */
 
-import type { AppConfig } from './config';
+import type { AppConfig, EndpointTestResult } from './config';
 import type { BrowserShotImage, BrowserShotInfo, BrowserState } from './browser';
 import type { AgentEvent } from './events';
 import type { MemoryEntry, MemoryLayer, MemoryLayerStat } from './memory';
@@ -96,6 +96,13 @@ export interface RpcContract {
    */
   'models.list': { params: Record<string, never>; result: ModelCatalog };
   'models.refresh': { params: Record<string, never>; result: ModelCatalog };
+  /**
+   * 端点连通性测试：对 `GET {baseUrl}/models` 发一次真实请求，回延迟、HTTP 状态与
+   * 端点公布的模型清单。给设置页的「测试连接」用 —— 填完端点先测一下，
+   * 而不是等一轮对话发出去才知道通不通。baseUrl 用界面上的未保存值，
+   * key 优先级：显式参数 > 宿主已存的 custom key > 无。
+   */
+  'models.testEndpoint': { params: { baseUrl: string; apiKey?: string }; result: EndpointTestResult };
   /**
    * 模型 API key 管理。
    *
