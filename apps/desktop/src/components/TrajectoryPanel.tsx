@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { parseSandboxDenial } from '@deepwork/protocol';
 import type { AgentEvent } from '@deepwork/protocol';
 
 interface TrajectoryPanelProps {
@@ -54,8 +55,13 @@ function summarize(event: AgentEvent): string {
       return `${event.text.length} 字符`;
     case 'tool.started':
       return `${event.call.name} ${event.call.summary}`;
-    case 'tool.completed':
-      return `${event.ok ? 'ok' : 'fail'} ${event.durationMs}ms`;
+    case 'tool.completed': {
+      // 这一栏刻意不做美化（见文件头），但 `fail` 与 `fail` 不是同一件事：
+      // 「被内核沙箱拦下」是既定边界在生效，「工具报错」才是异常。
+      // 不区分的话，排查时最该先看的那一类失败会淹没在噪声里。
+      const denial = event.ok ? null : parseSandboxDenial(event.output);
+      return `${event.ok ? 'ok' : 'fail'} ${event.durationMs}ms${denial ? ` · 沙箱拦下(${denial.mode})` : ''}`;
+    }
     case 'approval.requested':
       return `${event.request.tool}: ${event.request.subject}`;
     case 'approval.resolved':

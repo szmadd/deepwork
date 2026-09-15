@@ -366,6 +366,10 @@ npm run verify          # 差异引擎随机对拍 + 写工具守卫 19 项 + �
                         # + Office 生成与文档读取 130 项（M2-I 起新增：zip 编解码/坐标排序读 OFD/文本视图审批/
                         #   Python 独立实现校验/真实 WPS 打开是验收动作）
                         # + 模型配置 31 项（自定义端点/凭据分存/真实 dsh 到达端点）
+                        # + 沙箱后端 32 项（FR-3.5 起新增：runner 真帧对照/模式解析/内核装配真帧/
+                        #   宿主 status 调用点/拒绝方言解析与防漂移）
+                        # + 沙箱端到端 17 项（FR-3.5 第二期：真内核 + 真 ACP + 真工具 + 真落盘；
+                        #   含对照组与反证组，见「沙箱与审批纪律」）
                         # + 真实 dsh+MCP 端到端 8 项（M2-G 起新增：真实插件加载；**排在最后**）
 npm run demo            # 内核链路与差异还原一致性
 npm run typecheck       # 三包（protocol / core-host / desktop）
@@ -383,6 +387,11 @@ npm run test:package    # 打包产物验收（--launch 会真的启动打包后
 > 已用 `git stash` 在改动前的基线上复现同样的 3 PASS / 5 FAIL，**与当轮改动无关**。
 > 定位它属于「dsh 的 mcp-client 插件在隔离 DSH_HOME 下拉不起来」这一类环境问题，
 > 不能因此把该套件从 verify 里摘掉 —— 摘掉等于让真实 MCP 通路失去唯一哨兵。
+
+> **疑似不稳定套件（2026-09-15 第六轮，仅一次观测）**：`memory-test` 在某次整链跑到它时
+> `exit=1`，输出只剩 Node 崩溃栈尾（最后一行 `Node.js v22.22.2`）。随后**单独跑 4 次全绿**、
+> **两次重跑整链也全绿**，未复现、未定位。它**不是**已知环境性失败，暂按「待观察」处理。
+> 下次它若再红，第一件事是**把完整输出留档** —— 这一轮的教训是「只留了栈尾等于没证据」。
 
 > **测试断言的参照物不要写死实现细节**（例如演示脚本的文件落点）：改成从契约数据（`diff.path`）取。否则实现一挪动，断言就会拿 `null` 继续对拍，失败信息还看不出真正原因 —— 这类失败最难定位，因为测试显示「通过」。
 
@@ -419,6 +428,8 @@ export ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-b
 | `git` 报 `cannot change to ...` | git.exe 是原生 Windows 程序，**只认 `D:/...`，不认 msys 的 `/d/...`**；而 `ls` / `cd` 反过来只认 `/d/` | 同一个命令里两者不可混用 |
 | Electron 应用启动即退、退出码 0、无日志 | 环境里带 `ELECTRON_RUN_AS_NODE=1`（宿主自身跑在 Electron 上），electron.exe 退化为纯 Node | 启动前 `unset ELECTRON_RUN_AS_NODE` |
 | `VAR=1 npm run ...` 里变量「没生效」但命令成功 | 本机 workbuddy 的 PortableGit bash 作为父进程时，shell 内 `export` / `VAR=1` 后加的变量传不进原生 Windows 进程链（npm → cmd → node）；命令不报错，只是分支走错（如 `DEMO_DENY=1` 跑了放行分支） | 一律用 `env VAR=1 npm run ...`；或在 cmd 里 `set VAR=1 && npm run ...` |
+| 任何 `bash -c '...'` / `bash 脚本.sh` 都报 `PROGRAM BLOCKED ... wsl.exe` | **本机的嵌套 bash 被实现为经 `wsl.exe`**，而 wsl 在 Security Center 的 Program Blacklist 上（提示写明不可批准、不可绕过）。症状是 `bash -x` 连一行 trace 都不打就命中拦截 | **不要绕。** 需要跑脚本时改用「把脚本里的命令拆开直接在 shell 里跑」或「用 node 驱动」（`node -e "..."` 里用 `spawnSync`）。因此 `tools/capture.sh` 在本机**跑不通**，取证走直连 Electron（见「验收截图」）|
+| 在 bash 的 `node -e "…"` **双引号**里写了反引号，于是满屏 `command not found`，目标脚本最后以 `SyntaxError` 收场；甚至出现「某个 `.ts` / `.png` 被当成脚本执行」 | bash 先做**命令替换**：反引号里的内容被当命令**真的执行**（2026-09-15 第六轮真实事故，被执行的包括 `packages/protocol/src/security.ts` 与一个 png） | **给文件写内容一律用编辑工具，不要经 shell 拼字符串。** 非要在 shell 里跑 node：`-e` 的脚本用**单引号**包（内含反引号才安全），或把脚本落成临时 `.js` 再 `node <文件>`。事故后**先核对 `git status` 与文件大小**再继续 |
 
 ### 打包约定
 
@@ -432,9 +443,25 @@ export ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-b
 ### 验收截图
 
 ```bash
-bash tools/capture.sh [场景...]     # 场景：chat / tree / terminal / preview / hunk / settings
+bash tools/capture.sh [场景...]     # 场景：chat / tree / terminal / preview / hunk / settings / settings-prefs
+                                    #       / settings-security / sandbox-denial
                                     #       / skills / memory / schedule / connectors / usage / browser / office
 ```
+
+> **本机（2026-09-15 起）跑不了这个脚本**：嵌套 bash 会命中 wsl.exe 黑名单（见「三个必踩的坑」最后一行）。
+> 替代做法是**直连 Electron**，用完全相同的一套 `DEEPWORK_CAPTURE*` 环境变量，并在命令前
+> 自行做 `reset_fixture` 的两件事（删 `artifacts/.deepwork` 与工作区里的 `AGENT-NOTES.md`）：
+>
+> ```bash
+> cd apps/desktop && unset ELECTRON_RUN_AS_NODE
+> DEEPWORK_CAPTURE="D:/.../artifacts/<名>.png" DEEPWORK_CAPTURE_FOCUS="<选择器>" \
+> DEEPWORK_CAPTURE_SCRIPT="..." DEEPWORK_CAPTURE_PROMPT="..." \
+> DEEPWORK_WORKSPACE="D:/.../artifacts/demo-workspace" DEEPWORK_HOME="D:/.../artifacts/.deepwork" \
+> "D:/.../node_modules/electron/dist/electron.exe" . 2>&1
+> ```
+>
+> **改完截图脚本后要把实际跑过的那一版同步回 `capture.sh`**，否则文件与事实会变成两套
+> （第六轮就出现过：手搓命令里已经改成「不点击、默认展开」，而 `capture.sh` 里还留着旧的点开逻辑）。
 
 `office` 场景与前 12 场不同：它不渲染本项目的 UI，而是**用系统里真实的 WPS / Office 打开刚生成的
 `report.docx` / `budget.xlsx`**，再按窗口标题截取那个文档窗口。它是 M2-I「能被真实软件打开」这条
@@ -504,3 +531,40 @@ Electron 加载的是 `apps/desktop/dist` 里的 bundle，它不跟着源码改�
 NTFS 硬链接会把同一文件对象别名为多个路径；且该 seam **只交叉检查写访问**，
 读、网络与进程可见性不受限。这些是**平台事实**（来自内核包自述），不是运行时测量值 ——
 ACP 面不暴露 enforcement 等级，不要写成「实测 full/partial」。
+
+---
+
+**补充（2026-09-15 第六轮，真内核端到端取证之后）**
+
+上面的分层是从文档与装配真帧推出来的；第六轮用真内核 + 真 ACP + 真工具 + 真落盘把它验成了事实。
+下面是验证过程中必须记住的四条，**每一条都对应一个曾经会得出相反结论的坑**：
+
+1. **`os.tmpdir()` 在 `workspace-write` 下是**可写区**。**（`dsh-fs-sandbox` README 原文：
+   可写集合 = 会话工作区 ∪ 平台临时根目录。）所以取证时把「工作区外」的目标放进临时目录，
+   它会被**放行**，而结论会被写成「沙箱没生效」。
+   → 拿临时目录当现场的一切沙箱验证，都要**先自检现场**：`outside` 必须既不位于
+   `workspace` 之下、也不位于 `tmpdir` 之下（`tools/sandbox-e2e.js` 段 0 就是这么做的），
+   自检不过时整份结论作废。
+2. **沙箱拒绝不是审批事件。** 内核把拦截当**工具错误**返回（`tool.completed ok=false`），
+   并在输出里告诉**模型**可以带一次 `sandbox_permissions` 重试 —— **重试才会弹审批**。
+   实测五组场景的审批请求数全是 0。
+   → 界面上不能说「沙箱拦下 = 我拦下的」；也不能把审批档位当成拦越界写入的那道闸
+   （它在本机观测中是**模型升级决策的下游**）。措辞照 `ToolCard` 里的来：说明档位语义
+   + 说明「内核还留了一跳，那时才问你」。
+3. **两条能力族的拒绝方言不对称，解析器只认一条（有意）。**
+   - fs 族（模型改文件）→ `[sandbox: file access denied under <mode> mode]`，**有**显式标记；
+   - shell 族（bash/pwsh）→ 裸 `EPERM: operation not permitted`，**没有**标记。
+   `EPERM` 与「文件本来就只读 / ACL 不让写」不可区分，把它算成沙箱拒绝就是**编结论**。
+   → `parseSandboxDenial()` 只认 fs 族；shell 族在界面上仍是普通失败。这是知情取舍，
+   `tools/sandbox-test.js` 段 7 有一条断言把这个边界钉住，防止后来者以为解析器覆盖了全部。
+4. **让 mock 造真实内核独有的帧是允许的，但必须同时满足三条。**
+   界面上「被沙箱拦下」这条路径在 mock 下永远跑不到，没有帧就没有验收（这与 M2-J 让 mock
+   模拟 `context.usage` 是同一条理由）。允许的前提：
+   (a) 帧的内容是**真帧逐字副本**，且注释写明来源与日期；(b) 代码与注释都写明它证明的是
+   **渲染路径可达**、不证明沙箱会拦，真取证指向哪个文件；(c) 有一条**断言**钉住
+   「mock 的字面量 === 解析层的真帧副本」逐字相同 —— 光靠注释提醒「多处一起改」是拦不住人的。
+
+**做沙箱类「没发生」的断言时，最少要两组对照**：一组证明「它本来能发生」（不设限时写成功），
+一组证明「换个变量结论就反过来」（同一目标在 `danger-full-access` 下写成功）。
+只有前者时，「没写进去」还可能是因为目标目录本身不可写（ACL、只读盘、路径写错）；
+有了后者，归因才能落到模式上。`tools/sandbox-e2e.js` 的 A 与 D 就是这两组。

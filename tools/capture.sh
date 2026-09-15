@@ -104,7 +104,7 @@ reset_fixture() {
 }
 
 run_scene() {
-  local name="$1" focus="$2" script="$3" hold_partial="$4" post_reset="${5:-}"
+  local name="$1" focus="$2" script="$3" hold_partial="$4" post_reset="${5:-}" extra_env="${6:-}"
   echo "── 截图场景：$name"
   reset_fixture
   # 某些场景需要在清空 fixture 之后、应用启动之前预置数据（如技能场景要真的装一个技能）
@@ -121,6 +121,7 @@ run_scene() {
     DEEPWORK_CAPTURE_PROMPT="$PROMPT" \
     DEEPWORK_WORKSPACE="$WORKSPACE_WIN" \
     DEEPWORK_HOME="$HOME_WIN" \
+    ${extra_env} \
     "$ELECTRON_MSYS" . > "$LOG" 2>&1 )
 
   grep -E '^\[capture\]' "$LOG" | sed 's/^/   /'
@@ -139,7 +140,7 @@ run_scene() {
 # 「点不到就返回 no-rail」必须存在的原因。
 RAIL_HELPER='const openRail=async(label)=>{const b=[...document.querySelectorAll(".rail-item")].find(x=>x.getAttribute("title")===label);if(!b)return "no-rail:"+label;b.click();await new Promise(r=>setTimeout(r,1600));return "ok";};'
 
-SCENES="${*:-chat tree terminal preview hunk settings settings-security skills memory schedule connectors usage browser office}"
+SCENES="${*:-chat tree terminal preview hunk settings settings-security sandbox-denial skills memory schedule connectors usage browser office}"
 
 for scene in $SCENES; do
   case "$scene" in
@@ -196,6 +197,21 @@ for scene in $SCENES; do
       run_scene "ui-settings-security" ".settings-tabs" \
         "$RAIL_HELPER await openRail('设置'); const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('安全')); if(!t) return 'no-security-tab'; t.click(); await new Promise(r=>setTimeout(r,1200)); const kvs=[...document.querySelectorAll('.settings-kv')].map(x=>x.textContent.replace(/\\s+/g,' ').trim()); const sels=[...document.querySelectorAll('.page-body select')].map(x=>x.value); return 'sandbox:'+JSON.stringify(kvs[0]||'(none)')+' guard:'+JSON.stringify(sels)+' kv:'+kvs.length;" \
         "0"
+      ;;
+    sandbox-denial)
+      # FR-3.5 的渲染落点：被内核沙箱拦下的那张工具卡片。
+      #
+      # 这一帧**由 mock 模拟**（DEEPWORK_MOCK_SANDBOX_DENIAL=1）。为什么要说明这一点：
+      # 真沙箱的拒绝只会出现在真实内核里，而这张图要证的是**渲染路径可达** ——
+      # 「沙箱真的会拦」的取证在 tools/sandbox-e2e.js（真内核 + 真 ACP + 真落盘）。
+      # 把两件事说清楚，是为了不让这张图日后被当成沙箱生效的证据引用。
+      #
+      # 末尾回读 chip / 展开状态 / 升级说明三处作为回执：图上分不清
+      # 「说明没渲染」与「卡片是折叠的」，回执能分。不再需要脚本去点展开 ——
+      # 被沙箱拦下的卡片默认就是展开的（拒绝的成因就是这张卡片存在的意义）。
+      run_scene "ui-sandbox-denial" ".tool-card-sandboxed" \
+        "$RAIL_HELPER await openRail('对话'); const c=document.querySelector('.tool-card-sandboxed'); if(c===null) return 'no-sandboxed-card'; const chip=c.querySelector('.tool-sandbox-chip'); const ex=c.querySelector('.tool-sandbox p'); const esc=c.querySelector('.tool-sandbox-escalation'); return 'chip:'+(chip?chip.textContent:'none')+' | open:'+(ex?'yes':'no')+' | esc:'+(esc?'yes':'no');" \
+        "0" "" "DEEPWORK_MOCK_SANDBOX_DENIAL=1"
       ;;
     skills)
       # 技能必须走真实安装路径预置（含审计），而不是手工摆文件 ——

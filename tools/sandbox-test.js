@@ -134,6 +134,7 @@ function main() {
     modeResolutionSection();
     kernelAssemblySection();
     hostStatusSection();
+    denialDialectSection();
     console.log(`\n通过 ${passed} 项 / 失败 ${failed} 项`);
     process.exit(failed > 0 ? 1 : 0);
   }
@@ -152,6 +153,9 @@ function main() {
       /* 文件本就不存在 */
     }
   };
+
+  /** shell 族的拒绝原文，留给第 7 节做方言对比（见该节注释里的不对称说明） */
+  let runnerDenialText = '';
 
   try {
     // ── 对照组：不套沙箱 ──────────────────────────────────────────────
@@ -211,6 +215,7 @@ function main() {
     console.log(`    stderr: ${JSON.stringify((r2.stderr || '').trim().slice(0, 300))}`);
     console.log(`  read-only 工作区内写 exit=${r3.code}`);
     console.log(`    stderr: ${JSON.stringify((r3.stderr || '').trim().slice(0, 300))}`);
+    runnerDenialText = [r2.stderr, r3.stderr].filter(Boolean).join('\n');
   } finally {
     try {
       fs.rmSync(base, { recursive: true, force: true, maxRetries: 3 });
@@ -222,6 +227,7 @@ function main() {
   modeResolutionSection();
   kernelAssemblySection();
   hostStatusSection();
+  denialDialectSection([runnerDenialText]);
 
   console.log(`\n通过 ${passed} 项 / 失败 ${failed} 项`);
   if (failed > 0) console.log(`失败项：${failures.join('、')}`);
@@ -303,6 +309,120 @@ function modeResolutionSection() {
 
 function coreSandboxModule() {
   return require(path.join(ROOT, 'packages/core-host/dist/security/sandbox.js'));
+}
+
+/**
+ * 内核拒绝方言的**逐字真帧副本** —— 不要手改它。
+ *
+ * 来源：`node tools/sandbox-e2e.js` 于 2026-09-15 跑出的 `tool.completed.output`
+ * （场景 B1 workspace-write 越界、场景 C read-only 工作区内）。
+ * 手改这份副本会让下面的断言变成「用我的假设验我的假设」——
+ * 本项目上一版 `models.ts` 的自编目录就是这么活到文档里的。
+ * 真帧本身由 sandbox-e2e.js 用**当场跑出来的输出**另行校验，两份互为独立参照。
+ */
+const REAL_DENIALS = {
+  workspaceWrite: [
+    'Error: [sandbox: file access denied under workspace-write mode]',
+    '[sandbox: escalation available — retry this exact operation once with sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]',
+  ].join('\n'),
+  readOnly: [
+    'Error: [sandbox: file access denied under read-only mode]',
+    '[sandbox: escalation available — retry this exact operation once with sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]',
+  ].join('\n'),
+};
+
+/**
+ * 拒绝解析节。
+ *
+ * ── 为什么单列一节而不是塞进 e2e ──────────────────────────────────────
+ * sandbox-e2e.js 在检测不到真实内核时会整份 SKIP。解析规则与平台、与内核安装
+ * 都无关，不该跟着一起静默消失 —— 那会让「解析器坏了」在一台没装内核的机器上
+ * 表现为全绿。这一节只依赖逐字副本，任何环境都要跑。
+ */
+function denialDialectSection(runnerOutputs = []) {
+  section('7) 拒绝方言解析（界面上「被沙箱拦下」与「工具失败」的分界）');
+  const { parseSandboxDenial, SANDBOX_ESCALATION_ARG, SANDBOX_MODES } = require(
+    path.join(ROOT, 'packages/protocol/dist/security.js'),
+  );
+
+  const w = parseSandboxDenial(REAL_DENIALS.workspaceWrite);
+  check(
+    'workspace-write 越界真帧 → 档位正确',
+    w !== null && w.mode === 'workspace-write' && w.knownMode === true,
+    JSON.stringify(w),
+  );
+  check('workspace-write 真帧 → 认出升级路径', w?.escalation === true, JSON.stringify(w));
+
+  const r = parseSandboxDenial(REAL_DENIALS.readOnly);
+  check(
+    'read-only 真帧 → 档位正确',
+    r !== null && r.mode === 'read-only' && r.knownMode === true,
+    JSON.stringify(r),
+  );
+
+  check(
+    '升级入参名与内核真帧一致（sandbox_permissions）',
+    SANDBOX_ESCALATION_ARG === 'sandbox_permissions' && REAL_DENIALS.readOnly.includes(SANDBOX_ESCALATION_ARG),
+    SANDBOX_ESCALATION_ARG,
+  );
+
+  // 假阳性：解析器必须在「不是沙箱拒绝」时说不是。这条比正例更重要 ——
+  // 一个过宽的正则会把所有工具失败都说成档位问题，用户会去改档位而问题依旧。
+  check('普通工具失败不被误判', parseSandboxDenial('Error: EPERM: operation not permitted') === null);
+  check('空输出不被误判', parseSandboxDenial('') === null);
+  check(
+    '提到 sandbox 但不含拒绝行的输出不被误判',
+    parseSandboxDenial('sandbox mode is workspace-write; nothing to do') === null,
+  );
+
+  // 未知档位必须保真：内核将来加第四档时，界面要照实显示而不是当成「没拒绝」。
+  const unknown = parseSandboxDenial(
+    'Error: [sandbox: file access denied under quantum-superuser mode]',
+  );
+  check(
+    '未知档位仍被识别为拒绝，但 knownMode=false（保真优先，不丢事实）',
+    unknown !== null && unknown.mode === 'quantum-superuser' && unknown.knownMode === false,
+    JSON.stringify(unknown),
+  );
+  check(
+    '已知词汇仍只有内核的三个档位',
+    SANDBOX_MODES.length === 3,
+    SANDBOX_MODES.join('/'),
+  );
+
+  /*
+   * ── 一条必须写下来的不对称，免得后来者以为解析器覆盖了全部沙箱 ──────────
+   * 内核有**两条**能力族的拒绝，方言并不一样：
+   *   · fs 族（模型改文件）→ `[sandbox: file access denied under <mode> mode]`，有显式标记；
+   *   · shell 族（bash/pwsh）→ 裸 `EPERM: operation not permitted`，**没有**标记（本节上方第 3 节打印的就是它）。
+   * 解析器只认前者，而且是**有意**的：`EPERM` 与「文件本来就只读 / ACL 不让写」
+   * 长得一模一样，把它算成沙箱拒绝就是编结论。代价是 shell 族被拒时界面不会贴
+   * 「被沙箱拦下」标签 —— 这是知情下的取舍，不是漏做。
+   */
+  const runnerText = runnerOutputs.join('\n');
+  if (runnerText) {
+    check(
+      'shell 族的拒绝不带 [sandbox: 标记，解析器不认它（有意，见注释）',
+      parseSandboxDenial(runnerText) === null && /EPERM/.test(runnerText),
+      `runner 方言片段：${JSON.stringify(runnerText.slice(0, 120))}`,
+    );
+  }
+
+  /*
+   * 防漂移：mock 为渲染截图造的那一帧，必须与这里的真帧副本**逐字相同**。
+   *
+   * 这条断言存在的理由：「三处使用同一份方言」写进注释是拦不住人的 ——
+   * 内核改方言时，改了一处、漏了两处的话，截图里显示的是旧方言、解析的是新方言，
+   * 两边各自「正常」，只有把它们摆在一起才知道分家了。
+   */
+  const { MOCK_SANDBOX_DENIAL } = require(path.join(ROOT, 'packages/core-host/dist/adapter/mock-harness.js'));
+  check(
+    'mock 模拟帧与解析层参照物逐字相同（防三处漂移）',
+    MOCK_SANDBOX_DENIAL === REAL_DENIALS.workspaceWrite,
+    MOCK_SANDBOX_DENIAL === REAL_DENIALS.workspaceWrite
+      ? ''
+      : `mock=${JSON.stringify(MOCK_SANDBOX_DENIAL.slice(0, 80))}`,
+  );
 }
 
 /**

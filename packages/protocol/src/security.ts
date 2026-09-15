@@ -145,3 +145,70 @@ export interface SandboxStatus {
    */
   note?: string;
 }
+
+/**
+ * 内核沙箱拒绝的识别结果（从工具输出里读出来的）。
+ *
+ * ── 为什么要有它：拒绝是一句英文错误串，用户不该自己翻译 ────────────────
+ * 2026-09-15 端到端取证（tools/sandbox-e2e.js）拿到的真帧：
+ *
+ *   Error: [sandbox: file access denied under workspace-write mode]
+ *   [sandbox: escalation available — retry this exact operation once with
+ *    sandbox_permissions (the narrowest wider mode that suffices) + justification;
+ *    the approval prompt asks the user]
+ *
+ * 在那之前，界面上它就是一坨 `Error: ...`（ToolCard 的「输出（失败）」）。
+ * 用户看到的是「写文件失败了」，而事实是「**被你自己设的档位拦下了**」——
+ * 这两句话指向完全不同的下一步动作，前者会让你去查磁盘权限，后者会让你去改档位。
+ */
+export interface SandboxDenial {
+  /**
+   * 内核声明的有效档位。**原样保留，不做白名单过滤。**
+   *
+   * 内核将来加第四档时，这里会拿到一个我们不认识的值 —— 那时界面应该照实显示
+   * 并提示「可能是内核新增的档位」，而不是因为不认识就当成「没有拒绝」。
+   * 把一个不认识的事实丢掉，比多显示一个陌生字符串危险得多。
+   */
+  mode: string;
+  /** mode 是否落在当前已知词汇（`SANDBOX_MODES`）里 */
+  knownMode: boolean;
+  /**
+   * 内核是否随拒绝给出了升级路径。
+   *
+   * 有它意味着「拦住」不是终点：模型可以带一次 `sandbox_permissions` 重试同一操作，
+   * **那时才会**出现问用户的审批弹窗（`the approval prompt asks the user`）。
+   * 界面据此可以如实说明「它还留了一跳」，而不是让用户以为此路不通。
+   */
+  escalation: boolean;
+}
+
+/**
+ * 升级重试所用的工具入参名。
+ *
+ * 真帧里就是这个字面量（`sandbox_permissions`）。记成常量而不是散落的字符串：
+ * 它是内核契约的一部分，内核改名的那天，只有引用它的地方会一起被找出来。
+ */
+export const SANDBOX_ESCALATION_ARG = 'sandbox_permissions';
+
+/** 拒绝行的形状。`under <mode> mode` 里的 mode 允许未知值（见 SandboxDenial.mode）。 */
+const SANDBOX_DENIAL_RE = /\[sandbox:\s*file access denied under\s+([A-Za-z][A-Za-z0-9_-]*)\s+mode\]/;
+/** 升级提示行的形状。它单独出现没有意义，只有与拒绝行同现才算数。 */
+const SANDBOX_ESCALATION_RE = /\[sandbox:\s*escalation available/;
+
+/**
+ * 从一段工具输出里识别「被内核沙箱拦下」。
+ *
+ * 不是沙箱拒绝就返回 `null` —— 绝不用「看起来像」去兜：普通工具失败与沙箱拒绝
+ * 在界面上必须区分，误判会把「代码写错了」说成「权限被拦了」，用户会去改档位，
+ * 然后问题依旧。参照物是 tools/sandbox-e2e.js 当场跑出来的真帧，不是手抄的样本。
+ */
+export function parseSandboxDenial(output: string): SandboxDenial | null {
+  const matched = SANDBOX_DENIAL_RE.exec(output);
+  if (!matched) return null;
+  const mode = matched[1];
+  return {
+    mode,
+    knownMode: (SANDBOX_MODES as readonly string[]).includes(mode),
+    escalation: SANDBOX_ESCALATION_RE.test(output),
+  };
+}

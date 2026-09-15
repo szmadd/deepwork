@@ -16,6 +16,22 @@ const log = createLogger('adapter:mock');
 const MOCK_CONTEXT_WINDOW = 32_768;
 
 /**
+ * 一帧「被内核沙箱拦下」的工具输出 —— **真帧逐字副本，不要手改。**
+ *
+ * 来源：`node tools/sandbox-e2e.js` 于 2026-09-15 跑出的
+ * `tool.completed.output`（场景 B1：workspace-write 下越界写工作区外的文件）。
+ * 它与 `packages/protocol/src/security.ts` 里 `parseSandboxDenial` 的参照物、
+ * 以及 `tools/sandbox-test.js` 第 7 节的 REAL_DENIALS 指的都是同一份字面量；
+ * 三处一起改才算改对，只改一处会让「模拟出来的方言」与「解析的方言」分家。
+ * 导出是为了让 sandbox-test.js 第 7 节能**断言**它与解析层参照物逐字相同 ——
+ * 靠注释提醒「三处一起改」是提醒不住的，靠断言才拦得住。
+ */
+export const MOCK_SANDBOX_DENIAL = [
+  'Error: [sandbox: file access denied under workspace-write mode]',
+  '[sandbox: escalation available — retry this exact operation once with sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]',
+].join('\n');
+
+/**
  * Mock 内核。
  *
  * 存在的意义有两个，都很重要：
@@ -237,6 +253,34 @@ export class MockHarnessAdapter implements HarnessAdapter {
 
       await this.say(ctx, summary);
 
+      /*
+       * 模拟一帧「被内核沙箱拦下」。
+       *
+       * ── 为什么要让 mock 造这一帧 ────────────────────────────────────────
+       * 与上面 `context.usage` 同理（见那一段的注释）：`[sandbox: file access denied
+       * under <mode> mode]` 是**只有真实内核**才会产的帧。没有这一帧，界面上
+       * 「被沙箱拦下」这条渲染路径在任何自动化测试与截图里都跑不到 ——
+       * 只能靠人手动把真实内核配成受限档位、再诱导模型越界写，才看得见一眼。
+       *
+       * ── 它证明了什么、不证明什么（别混）────────────────────────────────
+       * 证明：**渲染路径**可达（卡片、档位标签、升级说明真的画得出来）。
+       * 不证明：沙箱真的会拦。那件事的取证在 tools/sandbox-e2e.js，那里是真内核 +
+       * 真 ACP + 真落盘，真帧的来源写在那个文件头。
+       *
+       * ── 两个刻意的选择 ──────────────────────────────────────────────────
+       * 1. 用环境变量开闸，而不是直接插进演示链：演示链（新建 → 编辑 → 收尾）是
+       *    chat / tree / preview / hunk 四张验收截图的共同底稿，多一步会让那四张
+       *    一起变样 —— 而「照着旧图能再跑出同一幅画面」正是验收截图的全部价值。
+       * 2. 放在**演示链末尾**而不是中间：截图拍到的是视口底部，放中间会被后面流出来的
+       *    内容顶出画面（第一次拍就是这样，回执说卡片在、图上却看不见）。
+       *    靠 `DEEPWORK_CAPTURE_FOCUS` 把它滚回中央试过，没有生效；
+       *    与其和滚动机制较劲，不如让它在结尾 —— 这是确定性的做法。
+       */
+      if (process.env.DEEPWORK_MOCK_SANDBOX_DENIAL === '1') {
+        await this.think(ctx, '收尾前再试一次：把临时结果写到工作区外的目录，确认边界是否生效。');
+        this.simulateSandboxDenial(ctx);
+      }
+
       const completionTokens = Math.round(summary.length / 2);
       ctx.emit({
         type: 'usage',
@@ -352,6 +396,33 @@ export class MockHarnessAdapter implements HarnessAdapter {
       durationMs: Date.now() - startedAt,
     });
     return { ok: result.ok, output: result.output, risk: call.risk };
+  }
+
+  /**
+   * 造一帧「被内核沙箱拦下」的工具结果（只在 DEEPWORK_MOCK_SANDBOX_DENIAL=1 时走到）。
+   *
+   * 与 `context.usage` 那段同理：这一帧**只有真实内核会产**，不让模拟器造的话，
+   * 界面的渲染路径在自动化截图里永远跑不到。它证明渲染可达，不证明沙箱会拦 ——
+   * 后者是真内核取证的事（tools/sandbox-e2e.js）。
+   */
+  private simulateSandboxDenial(ctx: RunContext): void {
+    const call: ToolCall = {
+      id: `call_${crypto.randomUUID().slice(0, 8)}`,
+      name: 'fs.write',
+      args: { path: '../shared/cache.json', content: '{}\n' },
+      summary: '写入工作区外的 ../shared/cache.json',
+      risk: 'confirm',
+    };
+    ctx.emit({ type: 'tool.started', runId: ctx.runId, call });
+    ctx.emit({
+      type: 'tool.completed',
+      runId: ctx.runId,
+      callId: call.id,
+      ok: false,
+      // 逐字真帧副本，与解析层的参照物是同一份字面量（见 MOCK_SANDBOX_DENIAL）
+      output: MOCK_SANDBOX_DENIAL,
+      durationMs: 3,
+    });
   }
 
   private assessRisk(ctx: RunContext, name: string, args: Record<string, unknown>): RiskLevel {

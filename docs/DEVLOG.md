@@ -19,7 +19,7 @@
 | M1 MVP | 多会话/工作区/Diff 审阅/终端/审批三档/模型管理/设置持久化/Trajectory/打包 | ✅ 完成 | 100%（自动更新移入 M2） |
 | M2 V1 | 技能系统+审计/三层记忆/自动化/MCP/浏览器/Office/用量面板/自动更新 | ✅ 收口 | 100%（技能系统全链路 · 三层记忆 · 自动化调度 · 连接器管理(MCP) · 用量面板(M2-J) · 浏览器自动化(M2-H) · Office 生成与 OFD 原生读取(M2-I)；界面改为左侧活动栏 + 整页视图。**M2-K 自动更新显式挂起**，不计入未完成） |
 | **M2+ 收口后补强** | 模型目录以内核真帧为准 · 默认模型由用户自选 · 推理档位接出 · 上下文占用接出 · 用量口径如实化 | ✅ 完成 | 100%（2026-09-14 第二 / 第三轮，见文末记录） |
-| **需求矩阵漏项**（ROADMAP §七） | FR-10.2 模型路由与降级 · FR-3.5 沙箱 · FR-3.8 图表 · FR-10.5 崩溃上报 | 🔶 进行中 | FR-10.2 主干已落地（第二 / 三 / 四轮）；**FR-3.5 第一期已完成**（2026-09-15 第五轮：取证确认内核本就装配沙箱 + 把实际生效口径接出） |
+| **需求矩阵漏项**（ROADMAP §七） | FR-10.2 模型路由与降级 · FR-3.5 沙箱 · FR-3.8 图表 · FR-10.5 崩溃上报 | 🔶 进行中 | FR-10.2 主干已落地（第二 / 三 / 四轮）；**FR-3.5 第二期已完成**（第五轮取证确认内核本就装配沙箱 + 接出生效口径；**第六轮真内核端到端证明该口径真的约束模型写文件 + 拒绝在界面上说人话**）。剩：模式切换入口（安全决策）、模型升级路径取证 |
 | M3 生态期 | 专家团/插件市场/发布分享/多模态/团队协作 | ⏸ 暂缓 | 0%（2026-09-14 决策：暂不启动） |
 
 **唯一的硬阻塞**：真实 Harness 的 headless 契约未校准（`harness-sidecar.ts` 的 `ENDPOINTS` /
@@ -2506,3 +2506,109 @@ browser 76 / office 130 / **modelcfg 92**；diff 段为「还原一致性 全部
    最实在的缺口：现在用户看到的是「命令失败了」，而不是「为什么失败」）。
 2. **模式切换入口**：等上面那条取证之后再定形态（默认保持 `workspace-write`）。
 3. **修 `capture.sh` 的 wsl 触发点**，让它在本机恢复可用（否则每次取证都要手搓）。
+
+---
+
+## 2026-09-15（第六轮）· FR-3.5 第二期：真内核端到端取证 + 让「被拦下」在界面上说人话
+
+**目标**
+
+补第五轮遗留第 1 条。第五轮只证明了「内核装的 runner 会挡」，走的是 **shell 能力族**；
+而设置页上写的是「模型改文件的实际边界」，模型的 `write` 工具走的是**另一条路** ——
+`dsh-fs-sandbox` 的进程内围栏。两条路共享 `writableRoots`，但那是**文档的承诺，不是本机的观测**。
+本轮把这条因果链补成：真内核 + 真 ACP + 真工具 + 真落盘，并且把内核的拒绝方言
+在界面上讲成人话（第五轮遗留第 2 条的进阶：不再是「命令失败了」，而是「为什么失败、下一步改什么」）。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `tools/sandbox-e2e.js` | **新文件**。5 场景矩阵 A/B1/B2/C/D（见下），含 **fixture 自检**、拒绝方言记录、解析器真帧自证，17 项，进 verify |
+| `packages/protocol/src/security.ts` | 新增 `SandboxDenial`、`SANDBOX_ESCALATION_ARG`、`parseSandboxDenial()` —— 从工具输出识别沙箱拒绝的纯函数 |
+| `apps/desktop/src/components/ToolCard.tsx` | 沙箱拒绝单独成一条渲染路径：头部档位 chip + 琥珀色边框 + 成因解释 + 升级路径说明；**拒绝卡片默认展开**（`userToggled ?? (diff \|\| sandbox)`，`result` 是后到的，`useState` 初值看不到那一帧） |
+| `apps/desktop/src/components/TrajectoryPanel.tsx` | `tool.completed` 摘要里 `fail` 与 `fail` 分开：沙箱拦下标注档位 |
+| `apps/desktop/src/styles.css` | `.tool-card-sandboxed` / `.tool-sandbox-chip` / `.tool-sandbox` —— **用琥珀不用红**：这是边界按设计生效，不是「工具崩了」 |
+| `packages/core-host/src/adapter/mock-harness.ts` | 导出 `MOCK_SANDBOX_DENIAL`（真帧逐字副本）+ `simulateSandboxDenial()`，由 `DEEPWORK_MOCK_SANDBOX_DENIAL=1` 开闸 |
+| `tools/sandbox-test.js` | 新增第 7 节「拒绝方言解析」11 项（含防漂移断言），21 → **32 项** |
+| `tools/capture.sh` | `run_scene` 增第 6 个可选参数 `extra_env`；新增 `sandbox-denial` 场景 |
+| `package.json` | `test:sandbox-e2e`；`verify` 链在 `sandbox-test` 之后、`real-dsh-mcp` 之前插入 |
+
+**验证**
+
+`node tools/sandbox-e2e.js` —— **17/17 通过**。核心是真帧表（落盘与审批请求数都是实测）：
+
+| 场景 | `DSH_PERMISSION_MODE` | 目标 | `tool.completed` | 落盘 | 审批请求数 |
+|---|---|---|---|---|---|
+| A | （不设 = 内核默认） | 工作区内 | `ok=true` | ✅ | 0 |
+| B1 | `workspace-write` | 工作区外 | `ok=false` | ❌ | 0 |
+| B2 | `workspace-write` | 工作区外（答复=放行） | `ok=false` | ❌ | 0 |
+| C | `read-only` | 工作区内 | `ok=false` | ❌ | 0 |
+| D | `danger-full-access` | 工作区外 | `ok=true` | ✅ | 0 |
+
+- **A 是控制组**（指令真的送到、工具真的跑了），**D 是反证**（同一个目录在宽模式下写得进 ⇒
+  排除「目录本来就不可写」）。有这两个，B1/C 的「没写进去」才归因于模式。
+- 全量 20 套，**19 套 exit=0**；末位 `real-dsh-mcp` **通过 3 / 失败 5** —— 与既有基线一致。
+  点名：`tool-guard` 19 · `replay` 29 · `smoke-ipc` 30 · `approval-partial` 13 · `terminal` 22 ·
+  `acp-conformance` 40 · `real-dsh-e2e` 15 · `skills` 59 · `skillctx` 24 · `memory` 38 ·
+  `schedule` 68 · `connectors` 42 · `usage` 35 · `browser` 76 · `office` 130 · `modelcfg` 124 ·
+  **`sandbox` 32** · **`sandbox-e2e` 17**。
+- `tsc --noEmit`：`protocol` / `core-host` / `desktop` **均 exit=0**。
+- 截图 `artifacts/ui-sandbox-denial.png`，回执
+  `chip:被沙箱拦下 · workspace-write | open:yes | esc:yes` —— chip、展开态、升级说明三处都在。
+
+**踩坑与修复**
+
+1. **`os.tmpdir()` 是 `workspace-write` 的可写区，差点据此得出「沙箱没生效」。**
+   `dsh-fs-sandbox` README 原文：`workspace-write` 只允许目标位于「会话工作区**或平台临时根目录**」之下。
+   取证的第一直觉是把「工作区外」放在临时目录里 —— 那样它会**被放行**，而结论会写成「沙箱不管用」。
+   → 「工作区外」改取 `os.tmpdir()` 的**兄弟目录**，并加 fixture 自检（`outside` 必须不位于
+   `workspace` 与 `tmpdir` 之下），自检失败则整份结论作废。**与第五轮踩坑 1 同一族：
+   先证明取证现场本身站得住。**
+2. **拒绝不走审批通道 —— 五组全是「审批请求数 = 0」。** 拦截被当作**工具错误**返回，
+   内核只在输出里告诉**模型**「可以用 `sandbox_permissions` 重试一次，那时审批弹窗才问用户」。
+   这是本轮最出乎预料的一条：设置页那三档审批**不是没用，而是在模型主动升级决策的下游**。
+   B2（答复=放行）也仍是 ❌，正因为替身端点不会自己重试。
+3. **两条能力族的拒绝方言不一样，解析器只认一条（有意）。**
+   fs 族：`[sandbox: file access denied under <mode> mode]`，有显式标记；
+   shell 族：裸 `EPERM: operation not permitted`，**没有**标记（第五轮段 3 打印的就是它）。
+   `EPERM` 与「文件本来就只读 / ACL 不让写」长得一模一样，把它算成沙箱拒绝就是编结论。
+   → 只认 fs 族；代价是 shell 族被拒时界面不贴标签，这是知情下的取舍，已钉成断言
+   （`shell 族的拒绝不带 [sandbox: 标记，解析器不认它（有意）`）。
+4. **mock 造了一帧真实内核才有的出力。** 界面的「被沙箱拦下」路径在 mock 下永远跑不到，
+   看不到就等于没验收。理由与 `context.usage` 那一段完全同构（模拟器连内核独有的上报也一并模拟），
+   所以照做。**但要划清**：它证明的是**渲染路径可达**，不证明沙箱会拦 —— 后者是 `sandbox-e2e.js` 的事，
+   两处都写了这句。为防三处方言各自漂移，`sandbox-test.js` 里有一条断言钉住
+   「mock 的模拟帧 === 解析层的真帧副本」逐字相同。
+5. **修正第五轮踩坑 5 的归因：拦下 `capture.sh` 的不是 `npm`，是「嵌套 bash」本身。**
+   本轮用 `bash -x tools/capture.sh` 复现，trace **一行都没出来**就命中 wsl.exe 黑名单；
+   再用 `bash -c 'echo hi'` 单独验证，同样被拦。结论：本机的嵌套 bash（`bash -c` / `bash 脚本`）
+   被实现为经 `wsl.exe`，而 wsl 在 Security Center 的 Program Blacklist 上，提示写明不可批准、不可绕过。
+   → `capture.sh` 在这台机器上**不可能**端到端跑通（第五轮写的「试过 SKIP_BUILD 仍被拦」
+   现象对、归因错）。取证改走**直连 Electron + 同一套 `DEEPWORK_CAPTURE*` 环境变量**，
+   并**同步**把 capture.sh 里那个 case 的脚本改成实际跑过的那一版 —— 不然文件与事实两套。
+6. **`DEEPWORK_CAPTURE_FOCUS` 在这两场里没把卡片滚进画面。** 第一版把模拟帧放在演示链中间，
+   回执说卡片在、图上却看不见（视口仍在末尾）；改用 FOCUS 滚到中央，仍未生效。
+   → 不跟滚动机制较劲：把模拟帧挪到**演示链末尾**（底部自然是它）+ 让拒绝卡片**默认展开**。
+   两条都是确定性的做法，且第一条顺带是一条真正的 UX 改进。
+7. **`memory-test` 出现一次未复现的失败。** 某次整链跑到它时 exit=1，输出只剩 Node 崩溃栈尾
+   （最后一行 `Node.js v22.22.2`，没留到完整报错）。随后**单独跑 4 次全绿**、
+   **两次重跑整链也全绿**。未定位根因，如实记在遗留里，不当作已通过。
+
+**遗留**
+
+- **`memory-test` 的一次性 flake 未定位**（症状与次数见踩坑 7）。下次它若再红，第一件事是
+  **把完整输出留档**（这次只留了栈尾，等于没证据）。
+- **模型升级路径未取证**：内核告诉模型可以用 `sandbox_permissions` 重试，模型**真的会**这么做吗？
+  会的话弹的是什么样的审批？这决定了那三档审批在真实内核下的实际地位，需要专门一次取证
+  （替身端点的剧本当前只支持「一轮工具 → 一轮收尾」，要验升级得先让它能表达第二轮工具调用）。
+- **shell 族的沙箱拒绝在界面上仍是普通失败**（踩坑 3 的取舍）。
+- **模式切换入口未做**（第五轮遗留，仍是安全决策，默认保持 `workspace-write`）。
+- `capture.sh` 在本机仍不可用 —— 根因已定位为环境策略（嵌套 bash → wsl 黑名单），不是代码问题，
+  非本机环境应可正常跑，但**本机没有端到端验证过**这一事实要一直带着。
+
+**下一步**
+
+1. **模型升级路径取证**（上面遗留第 2 条）：先扩替身端点剧本，再观察「被拒 → 升级 → 审批」
+   整条链路，据此把界面上那句「此时才会弹审批」从**引用内核文档**变成**本机观测**。
+2. **FR-3.8 图表**（ROADMAP §七里剩余的唯一一项不依赖后端平台的）。
+3. **模式切换入口**：等第 1 条取证后再定形态（默认不变，且要明示 `danger-full-access` 等于关掉沙箱）。
