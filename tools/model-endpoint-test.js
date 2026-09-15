@@ -766,10 +766,136 @@ async function endpointTestSection() {
   }
 }
 
+async function endpointRestartSection() {
+  const {
+    endpointRestartMessage,
+    endpointRoutingFingerprint,
+  } = require('../packages/core-host/dist/models/endpoint');
+
+  // ── 指纹：只有决定「请求发到哪里」的字段算数 ──────────────────────
+  check('官方端点的指纹是 official', endpointRoutingFingerprint({ kind: 'official' }) === 'official');
+  check(
+    '自定义端点的指纹带地址',
+    endpointRoutingFingerprint({ kind: 'custom', baseUrl: 'http://10.0.0.9:8000/v1', model: 'm' })
+      === 'custom:http://10.0.0.9:8000/v1',
+  );
+  // 归一化必须与 modelEndpointOverride 一致，否则「同一条地址的两种写法」会被判成改过端点
+  check(
+    '末尾斜杠不影响指纹（与补丁里的归一化同一口径）',
+    endpointRoutingFingerprint({ kind: 'custom', baseUrl: 'http://10.0.0.9:8000/v1//', model: 'm' })
+      === 'custom:http://10.0.0.9:8000/v1',
+  );
+  check(
+    '换模型 / 改 contextWindow 不算端点变更（改的是别的东西）',
+    endpointRoutingFingerprint({ kind: 'custom', baseUrl: 'http://a/v1', model: 'x' })
+      === endpointRoutingFingerprint({ kind: 'custom', baseUrl: 'http://a/v1', model: 'y', contextWindow: 4096 }),
+  );
+
+  // ── 判定：什么该拦、什么不该拦 ────────────────────────────────────
+  const custom = { kind: 'custom', baseUrl: 'http://10.0.0.9:8000/v1', model: 'qwen-local-7b' };
+  const blocked = endpointRestartMessage({ adapterKind: 'harness', running: 'official', configured: custom });
+  check('harness：内核按官方起来、配置改成内网端点 → 拦', Boolean(blocked), blocked ?? '');
+  check(
+    '拦下的理由说清了「差别 + 改法」（可行动，不是一句失败）',
+    Boolean(blocked && blocked.includes('10.0.0.9:8000/v1') && blocked.includes('重启内核')
+      && blocked.includes('一直')),
+    blocked ?? '',
+  );
+  check(
+    'harness：核内就是当前配置的端点 → 不拦',
+    endpointRestartMessage({
+      adapterKind: 'harness',
+      running: 'custom:http://10.0.0.9:8000/v1',
+      configured: custom,
+    }) === null,
+  );
+  check(
+    'harness：不知道内核带着什么（没起过）→ 不拦（不知道 ≠ 不匹配）',
+    endpointRestartMessage({ adapterKind: 'harness', running: null, configured: custom }) === null,
+  );
+  // mock 内核不发任何模型请求，拦它只会制造假失败
+  check(
+    'mock 内核不参与判定（端点对它没有意义）',
+    endpointRestartMessage({ adapterKind: 'mock', running: 'official', configured: custom }) === null,
+  );
+
+  // ── 走一遍真实路径：status 的两个值 + send() 的守卫 ───────────────
+  const workspace = path.join(root, 'workspace-endpoint-restart');
+  fs.mkdirSync(workspace, { recursive: true });
+  const host = new DeepworkHost();
+  const events = [];
+  host.onEvent((event) => events.push(event));
+  await host.start(workspace);
+
+  const st0 = host.status();
+  check(
+    'status 同时给出「内核启动时的端点」与「配置里的端点」，未改时两者相等',
+    st0.kernelEndpoint === 'official' && st0.configEndpoint === 'official',
+    `${st0.kernelEndpoint} / ${st0.configEndpoint}`,
+  );
+
+  // 改了端点但先不重启：两个值必须分叉 —— 界面横幅靠的就是这一对
+  host.setConfig({ modelEndpoint: custom });
+  const st1 = host.status();
+  check(
+    '端点改了没重启：kernelEndpoint 留在旧值、configEndpoint 是新的',
+    st1.kernelEndpoint === 'official' && st1.configEndpoint === 'custom:http://10.0.0.9:8000/v1',
+    `${st1.kernelEndpoint} / ${st1.configEndpoint}`,
+  );
+
+  /*
+   * send() 的守卫用 harness 形态的替身来验。
+   *
+   * 本节要证的是「send() 里那次判定确实接上了」—— 判定函数本身上面已经逐条验过，
+   * 但「函数对」与「调用点在」是两件事：白名单漏 models.refresh 那次就是后者出问题。
+   * 真内核的链路另有 realDshSection 与 guardSection 覆盖，这里把 adapter 换成
+   * 只回答 kind 的替身，是因为 mock 按设计不参与端点判定（它不发模型请求）。
+   */
+  const realAdapter = host.adapter;
+  // 替身只需回答 kind 与让 run 正常返回：守卫命中时根本不会走到 run
+  const harnessStub = { kind: 'harness', version: 'stub', capabilities: () => [], run: async () => 'completed', stop: async () => undefined };
+  host.adapter = harnessStub;
+  const before = events.length;
+  const { runId } = host.send({ sessionId: host.createSession({ workspace, title: 'stale-endpoint' }).id, text: '你好' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const failure = events.slice(before).find((event) => event.type === 'run.failed' && event.runId === runId);
+  check(
+    'harness + 端点待重启：run 在宿主侧直接失败（不发请求）',
+    Boolean(failure) && failure.message.includes('重启内核'),
+    failure?.message ?? '（没有 run.failed 事件）',
+  );
+  check(
+    '该 run 可重试（重启内核后原样再发即可，不是终态错误）',
+    failure?.retryable === true,
+    String(failure?.retryable),
+  );
+
+  // 重启之后判定必须放行：漏更新这一笔，界面会一直说「不一致」，而用户已经重启过了
+  host.adapter = realAdapter;
+  await host.restartKernel();
+  const st2 = host.status();
+  check(
+    '重启内核后 kernelEndpoint 跟上配置（不再误报不一致）',
+    st2.kernelEndpoint === st2.configEndpoint && st2.kernelEndpoint === 'custom:http://10.0.0.9:8000/v1',
+    `${st2.kernelEndpoint} / ${st2.configEndpoint}`,
+  );
+  const after = events.length;
+  host.adapter = harnessStub;
+  const clearRun = host.send({ sessionId: host.createSession({ workspace, title: 'fresh-endpoint' }).id, text: '你好' });
+  await new Promise((resolve) => setImmediate(resolve));
+  check(
+    '重启之后同一句话不再被端点守卫拦下',
+    !events.slice(after).some((event) => event.type === 'run.failed' && event.runId === clearRun.runId),
+  );
+  host.adapter = realAdapter;
+  await host.stop();
+}
+
 async function main() {
   await hostSection();
   consistencySection();
   await guardSection();
+  await endpointRestartSection();
   await endpointTestSection();
   // 竞态教训：真实段连跑两轮，补丁路径必须轮轮一致
   await realDshSection();

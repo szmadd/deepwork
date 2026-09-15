@@ -33,6 +33,19 @@ export interface HostStatus {
   nodeVersion: string;
   capabilities: string[];
   guard: GuardPolicy;
+  /**
+   * 内核进程**启动时**带着的模型端点（routing 指纹：`official` 或 `custom:<baseUrl>`）。
+   *
+   * 端点在启动的组合期才进补丁，所以它与 `config.modelEndpoint` 是两回事：改了端点
+   * 不重启内核，配置是新的、内核还是旧的。这跟 `adapterMode` / `adapter` 那一对
+   * 是同一类差别。还没起过内核时它等于配置值 —— 那时没有「旧内核」可言。
+   */
+  kernelEndpoint: string;
+  /**
+   * **配置里现在写的**端点（同一套指纹）。两个值都由宿主给出，界面只做相等比较 ——
+   * 让渲染层自己再实现一遍指纹算法的话，两处迟早不同步，而不一致的那天没有人会看到。
+   */
+  configEndpoint: string;
 }
 
 export interface ModelApiKeyStatus {

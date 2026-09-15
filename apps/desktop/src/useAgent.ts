@@ -639,6 +639,13 @@ export function useAgent(): UseAgentResult {
         } catch {
           // 目录刷新失败不阻断配置保存
         }
+        // 宿主状态里带着「内核启动时的端点 vs 配置里的端点」，横幅靠这一对判据。
+        // 不刷它的话，改完端点到重启之间这段最危险的时间里，界面上一句提示都没有。
+        try {
+          setStatus(await invoke('host.status'));
+        } catch {
+          // 状态刷新失败同样不阻断保存
+        }
       }
     } catch (cause) {
       setError(describeError(cause));

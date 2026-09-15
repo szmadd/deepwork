@@ -7,7 +7,7 @@ import {
   type AttachmentPreview,
   type ModelDescriptor,
 } from '@deepwork/protocol';
-import { formatBytes } from './api';
+import { formatBytes, describeError } from './api';
 import { ActivityRail } from './components/ActivityRail';
 import { PanelPage } from './components/PanelPage';
 import { Sidebar } from './components/Sidebar';
@@ -117,6 +117,35 @@ export default function App() {
   const disabled = !agent.ready;
   const showStarting = !agent.ready || agent.hostState.state === 'restarting';
 
+  /*
+   * 「端点配置改了、内核还是按旧端点起来的」。
+   *
+   * 两个值都由宿主给（status.kernelEndpoint / status.configEndpoint），界面只做相等比较 ——
+   * 判据不在渲染层自己重算，否则同一条规则会有第二份实现，而它们不一致的那天没人看得见。
+   *
+   * 为什么这件事必须显式提示，而不是留在设置页里当一句说明：它的后果不是「设置没生效」，
+   * 而是**接下来每一轮都打到旧端点**。内网部署现场的形状是配置指向内网端点、内核仍打官方
+   * 地址，于是表现为「消息发出去了、一直没有回应」—— 没有报错、没有回复，用户唯一的线索
+   * 是一条永远转圈的 run。补丁在启动的组合期应用，这件事只能靠重启解决。
+   */
+  const endpointPending = Boolean(
+    agent.status && agent.status.kernelEndpoint !== agent.status.configEndpoint,
+  );
+  const [endpointRestarting, setEndpointRestarting] = useState(false);
+  const [endpointRestartError, setEndpointRestartError] = useState<string | null>(null);
+
+  const restartForEndpoint = async () => {
+    setEndpointRestarting(true);
+    setEndpointRestartError(null);
+    try {
+      await agent.restartKernel();
+    } catch (cause) {
+      setEndpointRestartError(describeError(cause));
+    } finally {
+      setEndpointRestarting(false);
+    }
+  };
+
   /**
    * 切视图。
    *
@@ -201,6 +230,25 @@ export default function App() {
         {showStarting ? (
           <div className="banner banner-warn">
             {agent.hostState.detail || '内核正在启动，请稍候…'}
+          </div>
+        ) : null}
+
+        {endpointPending && !showStarting ? (
+          <div className="banner banner-warn">
+            <span>
+              模型端点配置已改，但内核仍是按<strong>旧端点</strong>启动的 ——
+              现在发消息会打到旧端点（内网环境下就是「一直没有回应」）。
+            </span>
+            <button
+              type="button"
+              className="btn-tiny"
+              disabled={endpointRestarting || running}
+              title={running ? '有正在运行的任务，先中断或等它结束' : '停止并重新拉起内核进程，使端点配置生效'}
+              onClick={() => void restartForEndpoint()}
+            >
+              {endpointRestarting ? '重启中…' : '重启内核使配置生效'}
+            </button>
+            {endpointRestartError ? <span className="banner-detail">{endpointRestartError}</span> : null}
           </div>
         ) : null}
 

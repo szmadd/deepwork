@@ -2288,3 +2288,101 @@ browser 76 / office 130 / **modelcfg 92**；diff 段为「还原一致性 全部
 1. verify 全绿后重打一体化安装包（`npm run dist` + `package-verify --launch`），
    交付内网重新部署。
 2. 更新 ROADMAP 第〇节状态与 README 的内网部署提示。
+
+---
+
+## 2026-09-15（第四轮）· 端点「配置改了没重启」不再是无声的：开跑前拦截 + 横幅
+
+**目标**
+
+用户报告：**使用自定义模型配置后，无法通过对话框发起任务**。现场是内网目标机上的
+一体化离线安装包，症状是「**消息能发出去，但内核一直没有回应**」—— 没有报错、没有回复，
+唯一的线索是一条永远转圈的 run。
+
+目标不是「让某个配置能跑」，而是让这个症状**不再以「无反应」的形式出现**。
+
+**改动**
+
+诊断（全部落在代码上，逐条可查）：
+
+1. **端点的生效时机**：`prepareRuntimePatchFile()` 只在 `start()` / `restartKernel()`
+   里被调用，而 `setConfig` 改了端点只做「同步凭据 + 重建补丁文件 + 清目录缓存」，
+   **不重启内核**。所以「保存端点配置」到「重启内核」之间，磁盘、设置页、模型目录
+   全都已经是新的，只有真正在跑的那个内核还是旧的。
+2. **上一轮的模型守卫会被这件事骗过**：`modelCatalog()` 的自定义端点分支是照
+   **config 现算**出一份单条目录（`host.ts` 自定义端点分支），内核那边可能还是旧端点。
+   用它去判「这轮模型在不在目录里」，等于拿一份描述「重启后会怎样」的清单
+   去裁决「现在的内核能不能跑」。
+3. **宿主从不记录内核带着哪个端点起来** —— 没有任何依据发现上面两件事，
+   只能等用户来报症状。
+4. **内网环境为什么表现为「没反应」而不是报错**：请求打到官方端点时，内网没有出网
+   路径，连接会被静默丢弃；而内核侧 `dsh-llm-deepseek` 的
+   `streamIdleTimeoutMs` 默认 **300000ms（5 分钟）**、`retryPolicy` normal **5 次重试**
+   （`node_modules/@deepseek-ai/dsh-llm-deepseek/lib/index.js:1897` 与 README.zh.md
+   配置表）—— 于是「一轮对话」可以安静地卡上十几分钟。
+
+修复：
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/rpc.ts` | `HostStatus` 增 `kernelEndpoint`（内核**启动时**带着的端点）与 `configEndpoint`（配置里现在写的）。两个值都由宿主给，界面只做相等比较 —— 判据不在渲染层重算，避免同一规则两份实现 |
+| `packages/core-host/src/models/endpoint.ts` | 新 `endpointRoutingFingerprint()`：只让**决定请求发到哪里**的字段参与（`official` / `custom:<归一化 baseUrl>`），归一化与 `modelEndpointOverride` 同口径；新 `endpointRestartMessage()`：待重启判定的纯函数（mock 不参与、不知道内核端点时不拦） |
+| `packages/core-host/src/host.ts` | 新增 `kernelEndpoint` 字段，在 `start()` / `restartKernel()` 成功之后各记一笔；`status()` 回两个值；`send()` 里**端点守卫排在最前（先于模型守卫）**，命中即 `run.failed`（`retryable: true`，消息含「差别 + 改法」），不发请求 |
+| `apps/desktop/src/useAgent.ts` | `updateConfig` 在端点变更时额外刷新 `host.status`（否则改完到重启之间那段最危险的时间界面上一句提示都没有） |
+| `apps/desktop/src/App.tsx` | 两个值不一致时出横幅（`banner-warn`）：「内核仍按**旧端点**启动 —— 现在发消息会打到旧端点（内网环境下就是「一直没有回应」）」，带「重启内核使配置生效」按钮与失败原因行 |
+| `apps/desktop/src/styles.css` | `.banner-detail`（横幅里的补充说明，出现时才占位） |
+| `tools/model-endpoint-test.js` | 新增 `endpointRestartSection()`，15 项 |
+
+**验证**
+
+- `node tools/model-endpoint-test.js`：**124/124 通过**（109 → 124，+15）。新增部分：
+  - 指纹 4 项：官方 / 自定义 / 尾斜杠归一化 / 换模型与改 contextWindow **不算**端点变更；
+  - 判定 5 项：harness 待重启拦下、理由含地址与改法、核内即当前端点不拦、
+    没起过内核不拦、mock 不参与；
+  - 真实路径 6 项：`status` 两个值未改时相等、改后分叉、`send()` 命中守卫落
+    `run.failed` 且 `retryable`、重启后 `kernelEndpoint` 跟上、重启后同一句话不再被拦。
+- 全量验证基线与 `npm run verify` 同序逐套跑（本机 bash 下 `npm run` 会被
+  WSL 黑名单拦，直接 `node tools/*.js`）：**17 套 exit=0**，末位
+  `real-dsh-mcp` **通过 3 项 / 失败 5 项** —— 与既有基线一致，未修也不摘。
+  点名数字：`diff-selftest` 全通过 · `tool-guard` 19 · `replay` 29 · `smoke-ipc` 30 ·
+  `approval-partial` 13 · `terminal` 22 · `acp-conformance` 40 · `real-dsh-e2e` 15 ·
+  `skills` 59 · `skillctx` 24 · `memory` 38 · `schedule` 68 · `connectors` 42 ·
+  `usage` 35 · `browser` 76 · `office` 130 · `modelcfg` 124。
+- `tsc --noEmit`：`packages/protocol`、`packages/core-host`、`apps/desktop` **均 exit=0**。
+
+**踩坑与修复**
+
+1. **判据差点落在渲染层**：最初想让界面自己按 `config.modelEndpoint` 算指纹再和
+   `status` 比。那会让「什么算端点变了」这条规则有第二份实现 —— 两处不一致的那天
+   正是守卫失效的那天。改成两个值都由宿主给、界面只比字符串。
+2. **守卫排在最前是必须的**：先按目录判模型，会在「目录来自 config、内核还是旧端点」
+   时给出错误结论（可能恰好放行）。谁更根本谁先判。
+3. **测试替身第一版会在「不拦」的路径上炸**：`send()` 在不拦时会走
+   `this.adapter.run(...)`，替身没写 `run` 就是一个同步 TypeError。补上 `run`/`stop`
+   两个方法才既覆盖「拦」也覆盖「重启后放行」。
+4. **mock 按设计不参与判定，所以本节需要替身**：真内核链路另有 `realDshSection` 与
+   `guardSection` 覆盖；但「判定函数对」与「`send()` 里的调用点在」是两件事
+   （白名单漏 `models.refresh` 那次栽的正是后者），所以调用点必须单独有哨兵。
+5. **本机 git 写不进需要新建一级目录的引用**（`refs/remotes/origin/x` 这类 4 段路径
+   exit=0 但什么都不写）：`git fetch` 会打印成功却没有跟踪引用，`git status` 显示
+   `[gone]`。已排除沙箱、bash 包装、PortableGit 自带 git、hooks；node 手写同一路径能落盘。
+   绕法：拉完代码用 node 补写 loose ref。**这条是环境问题不是项目问题**，详见助手侧
+   工作区记忆，本次未改仓库。
+
+**遗留**
+
+- **内网目标机上的实际根因尚未拿到现场证据**。本轮修的是「这个症状不该以无声的形式
+  出现」，而不是「端点为什么没回包」。判别只需两处：目标机
+  `%USERPROFILE%\.deepwork\logs\core-host.log` 在保存端点之后有没有 `内核已重启`；
+  设置页「测试连接」能否列出模型。前者无 → 就是本轮拦下的那种情形。
+- **`streamIdleTimeoutMs` 仍是内核默认 300s**，没动：本地大模型在长提示下的首 token
+  可能很慢，贸然调小会误杀合法慢请求。是否把它做成端点配置项，等现场数据再定。
+- 离线安装包未重打 —— 本轮改动要重打并覆盖安装才能在目标机生效。
+- 界面截图未更新（`capture.sh` 的 chat 场景可复用，横幅样式变化留给下一轮顺手）。
+
+**下一步**
+
+1. 内网机上按上面两处取证，确认是「配置没生效」还是「端点不回/不流式」。
+2. 重打一体化安装包（`npm run dist` + `package-verify --launch`）并覆盖安装。
+3. 若证据指向端点侧：把 `streamIdleTimeoutMs` 暴露为端点配置项（默认不变），
+   让「没反应」在用户可接受的时间内变成一句 `TIMEOUT`。

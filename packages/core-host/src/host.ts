@@ -40,7 +40,7 @@ import {
 import { createAdapter } from './adapter/factory';
 import type { HarnessAdapter } from './adapter/types';
 import { createLogger } from './logger';
-import { clearApiKey, getApiKey, maskApiKey, modelEndpointOverride, setApiKey, syncModelCredentials, validateEndpoint } from './models/endpoint';
+import { clearApiKey, endpointRestartMessage, endpointRoutingFingerprint, getApiKey, maskApiKey, modelEndpointOverride, setApiKey, syncModelCredentials, validateEndpoint } from './models/endpoint';
 import { testEndpoint } from './models/endpoint-test';
 import { DEFAULT_MODE, DEFAULT_MODEL, catalogUnavailable, mockCatalog } from './models';
 import { configPath, ensureDirs, guardPath, homeDir, readJson, writeJson } from './paths';
@@ -109,6 +109,15 @@ export class DeepworkHost {
    * 「刚才问到的答案」留一份，免得每建一个会话都要再去问一次内核。
    */
   private catalog: ModelCatalog | null = null;
+  /**
+   * 内核进程**启动时**带着的端点指纹（见 models/endpoint 的 endpointRoutingFingerprint）。
+   *
+   * 为什么必须自己留一份：端点进补丁是内核启动的组合期动作，内核一旦起来，它就与
+   * config.json 脱钩了 —— 用户随后改配置，磁盘上、设置页里、模型目录里全都立刻是新的，
+   * 只有真正在跑的那个内核还是旧的。不记这一笔，宿主就没有任何依据发现这件事，
+   * 只能等用户来报「发出去一直没有回应」。null = 还没成功起过内核（不知道，不猜）。
+   */
+  private kernelEndpoint: string | null = null;
   private sink: (event: AgentEvent) => void = () => undefined;
   private terminalSink: TerminalSink = () => undefined;
 
@@ -167,6 +176,8 @@ export class DeepworkHost {
       mode: this.getConfig().adapter,
       patchFile: this.prepareRuntimePatchFile(),
     });
+    // 补丁已经写盘、内核已经带着它起来 —— 记下「这一代内核的端点是哪个」
+    this.kernelEndpoint = endpointRoutingFingerprint(this.getConfig().modelEndpoint);
     log.info(`内核就绪: ${this.adapter.kind} / ${this.adapter.version}`);
     this.scheduler.start();
     this.emit({
@@ -257,6 +268,9 @@ export class DeepworkHost {
     } catch (error) {
       throw new Error(`内核重启失败：${error instanceof Error ? error.message : String(error)}`);
     }
+    // 重启就是为了让新补丁（端点 / 连接器）生效，所以这一笔必须跟着更新：
+    // 漏了它，界面会一直说「端点配置和内核不一致」，而用户已经重启过了
+    this.kernelEndpoint = endpointRoutingFingerprint(this.getConfig().modelEndpoint);
     log.info(`内核已重启: ${this.adapter.kind} / ${this.adapter.version}`);
     // 壳层与 UI 靠 host.ready 恢复就绪态（与初次启动同一条通道）
     this.emit({
@@ -325,6 +339,8 @@ export class DeepworkHost {
       nodeVersion: process.version,
       capabilities: this.adapter?.capabilities() ?? [],
       guard: this.guard.get(),
+      kernelEndpoint: this.kernelEndpoint ?? endpointRoutingFingerprint(this.getConfig().modelEndpoint),
+      configEndpoint: endpointRoutingFingerprint(this.getConfig().modelEndpoint),
     };
   }
 
@@ -648,6 +664,27 @@ export class DeepworkHost {
 
     // 用户输入先进事件流，保证日志可用于回放
     this.emit({ type: 'user.message', runId, text: input.text, attachments });
+
+    /*
+     * 开跑前端点守卫：端点配置改了、内核还是按旧端点起来的，这一轮就问错地方。
+     *
+     * 排在最前面（先于模型守卫）：**它成立时，模型目录本身就是不可信的** ——
+     * 端点源目录是照 config 现算出来的（见 modelCatalog 的自定义端点分支），
+     * 内核那边其实还是旧端点。先按目录去判模型，等于拿一份描述「重启后会怎样」
+     * 的清单去裁决「现在的内核能不能跑」。
+     */
+    const endpointIssue = endpointRestartMessage({
+      adapterKind: this.adapter.kind,
+      running: this.kernelEndpoint,
+      configured: this.getConfig().modelEndpoint,
+    });
+    if (endpointIssue) {
+      this.emit({ type: 'run.failed', runId, message: endpointIssue, retryable: true });
+      this.emit({ type: 'session.updated', session: this.store.update(session.id, { status: 'failed' }) });
+      this.activeRuns.delete(runId);
+      this.runToSession.delete(runId);
+      return { runId };
+    }
 
     /*
      * 开跑前模型守卫：目录里查无此模型时不发请求。

@@ -116,6 +116,60 @@ export function modelEndpointOverride(endpoint: ModelEndpoint): RuntimePatchOver
   };
 }
 
+// ── 「配置改了 / 内核还没带着」的判定 ────────────────────────────────
+
+/**
+ * 端点的 routing 指纹：只有**决定「请求发到哪里」**的字段参与计算。
+ *
+ * 刻意不含 model / contextWindow / apiKey —— 它们改的是别的东西（用哪个模型、
+ * 容量、凭据），改完不重启也不会把请求发错地方。把无关字段算进去，守卫就会
+ * 变成「改什么都拦」，那比不拦更糟：用户会学会无视它。
+ *
+ * 末尾斜杠要与 `modelEndpointOverride` 的归一化保持一致，否则同一条地址的
+ * 「有斜杠 / 没斜杠」两种写法会被判成改过端点。
+ */
+export function endpointRoutingFingerprint(endpoint: ModelEndpoint): string {
+  if (endpoint.kind !== 'custom') return 'official';
+  return `custom:${(endpoint.baseUrl ?? '').trim().replace(/\/+$/, '')}`;
+}
+
+/** 指纹的中文说法，只用于给人看的消息 */
+function describeFingerprint(fingerprint: string): string {
+  if (fingerprint === 'official') return '官方端点';
+  const baseUrl = fingerprint.slice('custom:'.length);
+  return `自定义端点 ${baseUrl || '(未填地址)'}`;
+}
+
+/**
+ * 开跑前判定：端点配置改了、但内核还是按旧端点起来的 —— 返回拦下的理由，否则 null。
+ *
+ * 为什么要拦：「端点只在启动的组合期进补丁」这条语义在设置页里写着，但它的后果
+ * 不是「设置没生效」这么温和 —— 这一轮会带着**旧端点**发出去。内网部署现场的形状是
+ * 配置指向内网端点、内核仍打官方地址，于是表现为「消息发出去了、一直没有回应」：
+ * 既没有报错也没有回复，用户唯一能看到的线索是一条永远转圈的 run。
+ *
+ * 两条不拦：
+ *  - **mock 内核**不发任何模型请求，拿它的端点状态拦人只会制造假失败；
+ *  - **不知道内核带着什么**（还没成功起过内核）时是「不知道」不是「不匹配」，
+ *    与模型守卫同一条口径。
+ */
+export function endpointRestartMessage(input: {
+  adapterKind: 'mock' | 'harness';
+  /** 内核启动时的端点指纹；null = 还没起过内核 */
+  running: string | null;
+  configured: ModelEndpoint;
+}): string | null {
+  if (input.adapterKind !== 'harness' || !input.running) return null;
+  const configured = endpointRoutingFingerprint(input.configured);
+  if (configured === input.running) return null;
+  return (
+    `模型端点已改（现在是${describeFingerprint(configured)}），`
+    + `但内核仍是按${describeFingerprint(input.running)}启动的 —— `
+    + '端点在启动的组合期才进补丁，这一轮会打到旧端点（内网环境下就是「一直没有回应」）。'
+    + '请先到设置 → 模型点「重启内核使配置生效」，再重试。'
+  );
+}
+
 // ── credentials.yaml 的 refs 合并 ───────────────────────────────────
 
 /**
