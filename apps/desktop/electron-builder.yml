@@ -14,6 +14,13 @@
 #  3. 渲染层已被 vite 打成静态资源，壳层只依赖 electron 与 node 内建模块 ——
 #     所以不需要把 node_modules 打进去，产物里也没有原生模块需要 rebuild。
 #
+#  4. 一体化离线安装包额外携带两样运行时，目标机不装 Node、不联网即可用真实内核：
+#     - node-runtime/：便携 node.exe（单文件，core-host 与 dsh 都是纯 JS，够用了），
+#       core-host-client.js 的 resolveNodeRuntime 会优先于 PATH 命中它；
+#     - dsh-runtime/：@deepseek-ai/dsh 的完整 node_modules，core-host 的
+#       adapter/factory.ts 探测到它会自动启用真实内核（auto 模式），无需任何环境变量。
+#     两者都在 asar 之外 —— 它们要由外部 node 子进程读，理由同约束 1。
+#
 # 注：devDependencies 里 electron 的版本被钉成精确值（不带 ^）。electron-builder 必须知道
 # 一个确定版本才能去下载对应平台的二进制 —— 版本范围它无法解析，会直接失败。
 # 版本号只留在 apps/desktop/package.json，这里不重复，避免两处不同步。
@@ -46,6 +53,20 @@ extraResources:
       - "**/*.js"
   - from: ../../packages/protocol/package.json
     to: core-host/node_modules/@deepwork/protocol/package.json
+  # 一体化离线安装包的随包运行时（见顶部约束 4）。staging 目录由发布前准备
+  # （从 Node 官方 zip 抽 node.exe）；dsh-runtime 由 npm install @deepseek-ai/dsh
+  # 产出。二者不入库，重建方式见仓库使用说明。
+  - from: ../../offline-bundle/staging/node-runtime
+    to: node-runtime
+  - from: ../../offline-bundle/dsh-runtime/node_modules
+    to: dsh-runtime/node_modules
+    filter:
+      - "**/*"
+      # sourcemap / 类型声明在运行时用不到；.bin 是 npm 的 shim（dsh 由
+      # core-host 用 node 直跑 bin.js，不走 shim），一并去掉。
+      - "!**/*.map"
+      - "!**/*.d.ts"
+      - "!.bin/**"
 
 # 没有原生模块，跳过 rebuild —— 省掉一次本机 toolchain 依赖
 npmRebuild: false

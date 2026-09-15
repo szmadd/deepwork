@@ -22,6 +22,8 @@ export interface CreateAdapterOptions {
  * 默认仍是 mock，但理由与「契约未校准」无关 —— ACP 契约已于 2026-09-12 校准
  * （见 harness-sidecar.ts 顶部）。默认 mock 是因为真实内核要下载完整运行时
  * 并配置模型凭据：在没有显式要求的情况下静默去拉取，会让「装好就能跑」变成碰运气。
+ * 唯一的例外是一体化安装包：dsh 已随包内置（resources/dsh-runtime），不存在
+ * 「静默去拉取」的问题，auto 模式直接尝试真实内核，失败再降级 mock。
  *
  * 切换方式：
  *   DEEPWORK_ADAPTER=harness        使用真实内核（dsh --profile acp），失败即报错，不降级
@@ -49,7 +51,7 @@ export async function createAdapter(options: CreateAdapterOptions): Promise<Harn
     return adapter;
   }
 
-  if (process.env.DEEPWORK_HARNESS_CMD) {
+  if (process.env.DEEPWORK_HARNESS_CMD || bundledDshBin()) {
     try {
       const adapter = new HarnessSidecarAdapter({ ...options, ...harnessLaunch() });
       await adapter.start();
@@ -68,16 +70,32 @@ export async function createAdapter(options: CreateAdapterOptions): Promise<Harn
 }
 
 /**
+ * 随包 dsh 的入口；不在一体化安装包形态下（开发态、源码运行）返回 null。
+ *
+ * __dirname = packages/core-host/dist/adapter。打包态上三级是 resources/，
+ * 一体化安装包把 dsh 依赖布置在 resources/dsh-runtime/；开发态同一表达式
+ * 指向 packages/dsh-runtime，不存在，existsSync 自然为否 —— 因此这条探测
+ * 不会改变开发态「默认 mock」的行为，verify 各套件不受影响。
+ */
+function bundledDshBin(): string | null {
+  const bin = path.resolve(__dirname, '../../../dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js');
+  return fs.existsSync(bin) ? bin : null;
+}
+
+/**
  * 真实内核的启动方式。
  *
- * 优先用仓库内 devDependency 的 dsh（node 直跑 bin.js —— Windows 上 spawn dsh.cmd
- * 会 EINVAL，.cmd 需要 shell；与 tools/real-dsh-e2e.js 同一形态）。
- * 找不到再退回 PATH 里的 dsh（用户全局安装的场景，比如打包后的应用）。
- * DEEPWORK_HARNESS_CMD 显式指定时尊重它（比如指向源码构建的 dsh）。
+ * 优先级：DEEPWORK_HARNESS_CMD > 随包 dsh（一体化安装包）> 仓库内 devDependency
+ * 的 dsh（node 直跑 bin.js —— Windows 上 spawn dsh.cmd 会 EINVAL，.cmd 需要
+ * shell；与 tools/real-dsh-e2e.js 同一形态）> PATH 里的 dsh（用户全局安装的场景）。
  */
 function harnessLaunch(): { command?: string; args?: string[] } {
   if (process.env.DEEPWORK_HARNESS_CMD) {
     return { command: process.env.DEEPWORK_HARNESS_CMD };
+  }
+  const bundled = bundledDshBin();
+  if (bundled) {
+    return { command: process.execPath, args: [bundled, '--profile', 'acp'] };
   }
   // __dirname = packages/core-host/dist/adapter；仓库根在它上四级
   const localDsh = path.resolve(__dirname, '../../../../node_modules/@deepseek-ai/dsh/lib/bin.js');

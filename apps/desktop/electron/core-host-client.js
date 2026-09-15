@@ -41,13 +41,26 @@ const MIN_NODE_MINOR = 19;
  * 解析用哪个 Node 运行时来跑 core-host。
  *
  * 绝对不能用 Electron 自带的运行时去跑真实 Harness：官方要求 Node 22.19+，
- * 而 Electron 内置 Node 版本不受我们控制。这里的策略是「优先外部 Node，兜底
- * ELECTRON_RUN_AS_NODE」，并在 status 里把实际使用的运行时暴露出去。
+ * 而 Electron 内置 Node 版本不受我们控制。这里的策略是「显式指定 > 随包运行时 >
+ * 外部 Node > 兜底 ELECTRON_RUN_AS_NODE」，并在 status 里把实际使用的运行时暴露出去。
+ *
+ * 随包运行时（resources/node-runtime/）是一体化安装包离线部署的关键：目标机不装
+ * Node、不联网也能跑内核。只取 node.exe 单文件，core-host 与 dsh 都是纯 JS，
+ * 不需要完整 Node 发行版。
  */
 function resolveNodeRuntime() {
   const explicit = process.env.DEEPWORK_NODE_BIN;
   if (explicit && fs.existsSync(explicit)) {
     return { bin: explicit, args: [], source: 'DEEPWORK_NODE_BIN' };
+  }
+
+  if (process.resourcesPath) {
+    const bundled = path.join(
+      process.resourcesPath, 'node-runtime', process.platform === 'win32' ? 'node.exe' : 'node',
+    );
+    if (fs.existsSync(bundled)) {
+      return { bin: bundled, args: [], source: '随包 Node 运行时' };
+    }
   }
 
   const candidates = process.platform === 'win32' ? ['node.exe', 'node'] : ['node'];
@@ -105,6 +118,12 @@ class CoreHostClient extends EventEmitter {
       DEEPWORK_WORKSPACE: workspace,
     };
     if (home) env.DEEPWORK_HOME = home;
+    // 随包运行时不在系统 PATH 上；把它前置进子进程 PATH，下游（dsh、MCP 连接器）
+    // 若再解析 `node` 也能命中同一个运行时，而不是落空或撞上版本不符的系统 node。
+    if (this.runtime.source === '随包 Node 运行时') {
+      const key = Object.keys(env).find((k) => k.toLowerCase() === 'path') ?? 'PATH';
+      env[key] = `${path.dirname(this.runtime.bin)}${path.delimiter}${env[key] ?? ''}`;
+    }
 
     this.child = spawn(this.runtime.bin, [...this.runtime.args, entry], {
       env,

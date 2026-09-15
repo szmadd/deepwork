@@ -2112,3 +2112,70 @@ browser 76 / office 130 / **modelcfg 92**；diff 段为「还原一致性 全部
 3. FR-3.8 图表可视化（需求矩阵里最后一个无归属且不依赖后端的 P1）。
 4. §五 遗留债插空。
 5. 运维：接 CI、把落后的提交推到 `origin`、给 M1 打 tag。
+
+## 2026-09-15 · 一体化离线安装包：随包 Node + 随包 dsh，目标机零依赖双击即用
+
+**目标**
+
+把「安装应用 + 装 Node 22.19+ + 离线装 dsh + 配三个环境变量」的四步部署，
+整合成单个 setup.exe：面向无互联网的局域网机器，装完即用真实内核。
+
+**改动**
+
+1. `apps/desktop/electron/core-host-client.js`：`resolveNodeRuntime()` 在
+   `DEEPWORK_NODE_BIN` 之后、PATH 之前，探测随包运行时
+   `resources/node-runtime/node.exe`（由 extraResources 落位）；命中时把它的目录
+   前置进子进程 PATH —— 下游 dsh / MCP 连接器若再解析 `node`，命中的是同一个
+   运行时，而不是落空或撞上版本不符的系统 node。
+2. `packages/core-host/src/adapter/factory.ts`：新增 `bundledDshBin()` 探测随包
+   dsh（`resources/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js`，从
+   `dist/adapter` 上三级在打包态即 `resources/`）；auto 模式下探测到随包 dsh 就
+   尝试真实内核、失败降级 mock（与 `DEEPWORK_HARNESS_CMD` 路径同一条 try/catch）。
+   开发态同表达式指向 `packages/dsh-runtime`，不存在，existsSync 为否 ——
+   开发默认 mock 与 verify 基线不受影响。`harnessLaunch()` 优先级：
+   显式 CMD > 随包 dsh > 仓库 devDependency > PATH。
+3. `apps/desktop/electron-builder.yml`：extraResources 增加两条 ——
+   `offline-bundle/staging/node-runtime`（便携 node.exe 单文件）与
+   `offline-bundle/dsh-runtime/node_modules`（dsh 完整依赖，滤掉 sourcemap /
+   .d.ts / .bin shim）；顶部约束注释补第 4 条说明为什么这两样必须在 asar 之外。
+4. `offline-bundle/使用说明.txt`：重写为一体化形态（安装 → 双击 → 设置里配端点），
+   并记录随包运行时的重建方法。
+
+**验证**
+
+- `npm run verify`：全套 18 组自检通过（含真实 dsh 端到端、模型端点 92/92、
+  真实 dsh+MCP 8/8），退出码 0 —— factory.ts 改动未触碰开发态默认行为。
+- `node tools/package-verify.js --launch`：9/9 通过。内核测试日志显示 auto 模式
+  自动拉起随包 dsh 并完成 ACP 握手（`adapter=harness`）；应用启动日志显示
+  core-host 用的是随包 `resources\node-runtime\node.exe`。
+- 截图 `artifacts/packaged-app.png`：状态栏「就绪 · harness」，模型下拉为内核
+  真帧目录（DeepSeek-V41-Flash）；任务因未配 API key 如实报错 —— 属预期，
+  凭据由用户在设置里配置。
+
+**踩坑与修复**
+
+1. **Defender 实时扫描让 electron-builder 的 rename 必败（本轮 5 连败）。**
+   解压完 ~100MB Electron zip 后立刻 `rename(tmpDir, dir)`，AV 还锁着文件就
+   EPERM。上一次打包靠重试蒙混过去一次，本轮重试 5 次全败 —— 重试时机不对：
+   每次失败都重新解压、重新触发扫描。修法：给
+   `node_modules/app-builder-lib/out/util/electronGet.js` 的 rename 打本机补丁，
+   失败间隔 1.5s 重试 20 次，一次通过。**这是构建机环境补丁，不入库、不影响产物。**
+2. **auto 模式不能拿「仓库里有 devDependency dsh」当启用信号。** 开发仓库的
+   node_modules 里就有 dsh，若按「找得到就启真实内核」，开发态默认 mock 的承诺
+   立刻破功，verify 里一批按 mock 写的宿主测试会变味。因此随包探测只看
+   打包态才存在的 `resources/dsh-runtime` 相对路径，开发态恒为否。
+
+**遗留**
+
+- 随包运行时（node.exe / dsh node_modules）不入库，重建步骤写在
+  `offline-bundle/使用说明.txt` 第五节；换 dsh 版本时需同步改
+  factory 探测路径里的包名（版本无关，只有包名）。
+- 安装包体积来到 168MB（setup）/ 227MB（zip），dsh 依赖占大头；
+  如需瘦身可按 dsh 实际依赖树裁剪（node-pty prebuilds、ripgrep 等是否运行时必须，未取证）。
+- 本轮改动未提交；提交前需再跑一次 `npm run verify`（基线纪律）。
+
+**下一步**
+
+1. 在真实无网机器上做一次安装验收（当前验证均在本机完成，PATH 上有系统 Node）。
+2. 评估是否把「随包运行时准备」固化成 `tools/prepare-offline-bundle.js`，
+   避免手工步骤随时间腐烂。

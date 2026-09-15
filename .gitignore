@@ -28,3 +28,7 @@ artifacts/
 # 应用图标：由 tools/make-icon.js 从主题色常量生成，属于可复生产物。
 # 改主题色后重新打包即可同步，不需要手工维护一份二进制。
 apps/desktop/build/icon.png
+
+# 一体化安装包的随包运行时暂存区（便携 node.exe、dsh 依赖），体积数百 MB 且可重建，
+# 重建步骤见 offline-bundle/使用说明.txt 与 docs/DEVLOG.md
+offline-bundle/
