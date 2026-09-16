@@ -9,6 +9,7 @@ import type {
   ModelEndpoint,
 } from '@deepwork/protocol';
 import { AGENT_MODE_LABEL, APP_VIEW_LABEL, DEFAULT_ENDPOINT_CONTEXT_WINDOW, type AgentMode } from '@deepwork/protocol';
+import { DeploySettings } from './DeploySettings';
 
 interface SettingsPanelProps {
   config: AppConfig;
@@ -305,6 +306,9 @@ export function SettingsPanel({
                   <code>{config.lastWorkspace || status?.workspace || '未设置'}</code>
                 </div>
               </div>
+
+              {/* 部署与运行时（§8.1 / §8.2 / §8.3）：随包 Python 来源、内网 pip 源、环境体检 */}
+              <DeploySettings config={config} onUpdateConfig={onUpdateConfig} />
             </>
           ) : null}
           {tab === 'security' ? (

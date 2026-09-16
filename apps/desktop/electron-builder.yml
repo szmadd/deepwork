@@ -14,12 +14,15 @@
 #  3. 渲染层已被 vite 打成静态资源，壳层只依赖 electron 与 node 内建模块 ——
 #     所以不需要把 node_modules 打进去，产物里也没有原生模块需要 rebuild。
 #
-#  4. 一体化离线安装包额外携带两样运行时，目标机不装 Node、不联网即可用真实内核：
+#  4. 一体化离线安装包额外携带三样运行时，目标机不装 Node / Python、不联网即可用：
 #     - node-runtime/：便携 node.exe（单文件，core-host 与 dsh 都是纯 JS，够用了），
 #       core-host-client.js 的 resolveNodeRuntime 会优先于 PATH 命中它；
 #     - dsh-runtime/：@deepseek-ai/dsh 的完整 node_modules，core-host 的
-#       adapter/factory.ts 探测到它会自动启用真实内核（auto 模式），无需任何环境变量。
-#     两者都在 asar 之外 —— 它们要由外部 node 子进程读，理由同约束 1。
+#       adapter/factory.ts 探测到它会自动启用真实内核（auto 模式），无需任何环境变量；
+#     - python-runtime/：完整 CPython 3.12（含 pip），面向离线场景下的 Python
+#       技能 / 连接器 / 文档处理，以及 tools 里那套「另一实现复核」的独立校验。
+#       解析出口是 core-host/src/runtime/python.ts 的 resolvePythonRuntime()。
+#     三者都在 asar 之外 —— 它们要由外部子进程读，理由同约束 1。
 #
 # 注：devDependencies 里 electron 的版本被钉成精确值（不带 ^）。electron-builder 必须知道
 # 一个确定版本才能去下载对应平台的二进制 —— 版本范围它无法解析，会直接失败。
@@ -58,6 +61,19 @@ extraResources:
   # 产出。二者不入库，重建方式见仓库使用说明。
   - from: ../../offline-bundle/staging/node-runtime
     to: node-runtime
+  # 随包 Python 3.12 运行时（ROADMAP §8.1）。形态选择有取证依据，见 docs/DEPLOY.md：
+  # embeddable zip（11MB）**不带 pip**，而 §8.2 要求随包 pip 能走内网源，
+  # 故取完整发行版（nuget python 包解出的 tools/，14.5MB，开箱带 pip 25.0.1）。
+  # 代价是解压后 35.5MB vs 21.5MB —— 相比「离线机器上装不了包」这个后果，可以接受。
+  # 同样的取舍也决定了**不魔改** python312._pth：改它是 embeddable 路线才需要的动作，
+  # 而那种改动会在未来任何 Python 技能装包时反复咬人。
+  - from: ../../offline-bundle/staging/python-runtime
+    to: python-runtime
+    filter:
+      - "**/*"
+      # __pycache__ 是解释器跑过之后自己生成的，属于可再生产物，不该跟着发行
+      - "!**/__pycache__/**"
+      - "!**/*.pyc"
   - from: ../../offline-bundle/dsh-runtime/node_modules
     to: dsh-runtime/node_modules
     filter:
@@ -95,3 +111,16 @@ nsis:
   shortcutName: 深边AI Work
   # 产物名保持 ASCII，理由同 executableName
   artifactName: DeepWork-${version}-setup.${ext}
+  #
+  # ── 已安装组件的处置策略（ROADMAP §8.4）──────────────────────────────
+  # 每一条都对应 packages/protocol/src/deploy.ts 里 INSTALL_POLICY 的一个字段，
+  # tools/installer-test.js 会断言两边一致。改这里必须同时改那份契约。
+  #
+  # 降级安装不静默覆盖：装一个比已装版本旧的包会被拦下并提示。
+  # 静默降级 = 用户以为升级了、其实退回了旧版，而这件事没有任何迹象。
+  allowDowngrade: false
+  # 卸载不动 Electron 的 userData（%APPDATA%\深边AI Work）。
+  # 真正的用户数据（会话/配置/记忆/技能）在 <主目录>\.deepwork，本来就不在
+  # 安装树与 userData 里 —— 这条只是把「连 Chromium 缓存也留着」显式化，
+  # 免得下次有人顺手打开它。
+  deleteAppDataOnUninstall: false

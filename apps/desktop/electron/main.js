@@ -91,6 +91,10 @@ const ALLOWED_METHODS = new Set([
   'browser.state',
   'browser.open',
   'browser.close',
+  // 部署与运行时（§8）：都是只读查询。体检要往磁盘写一个探针文件再删掉，
+  // 但那发生在 core-host 侧、用的是它自己的边界，不是渲染层拿到的写权限。
+  'runtime.preflight',
+  'runtime.python',
 ]);
 
 /** 附件预览读取上限；超过就只回报体积，不把内容塞进渲染层 */
