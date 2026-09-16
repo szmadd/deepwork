@@ -2612,3 +2612,49 @@ browser 76 / office 130 / **modelcfg 92**；diff 段为「还原一致性 全部
    整条链路，据此把界面上那句「此时才会弹审批」从**引用内核文档**变成**本机观测**。
 2. **FR-3.8 图表**（ROADMAP §七里剩余的唯一一项不依赖后端平台的）。
 3. **模式切换入口**：等第 1 条取证后再定形态（默认不变，且要明示 `danger-full-access` 等于关掉沙箱）。
+
+---
+
+## 2026-09-16 · README 裁剪：590 → 130 行，细节拆进 docs 五个文件
+
+**目标**
+README 只留「这是什么 / 怎么跑 / 去哪看」，把设计细节、验证清单、打包说明、ACP 接入、
+环境变量等长文移到 docs/ 下的专文，README 与详文之间用链接咬合。
+顺带把上一轮新增的 FR-3.5 沙箱（README 尚未覆盖）写进架构文档与 README 进度。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `README.md` | 590 → 130 行。保留：定位、文档导航表（扩到 9 项）、目录结构、进程模型与三条约束（补一句内核沙箱）、快速开始、verify/demo 基线、`ELECTRON_RUN_AS_NODE` 疑难、打包/真实内核各一段 + 指针、压缩版当前进度、开发提交三要点 |
+| `docs/ARCHITECTURE.md` | **新文件**。界面布局、用量面板、写操作与差异审阅（含逐块取舍）、内置终端、浏览器自动化、文件树/预览/附件、会话分叉与回放；新增「沙箱安全模型（FR-3.5）」一节（两层模型 / 拒绝不是审批事件 / 拒绝方言不对称 / win32 partial 边界），内容取自 CONVENTIONS 沙箱纪律与第六轮取证结论 |
+| `docs/VERIFICATION.md` | **新文件**。demo / smoke 定位手法、verify 全部 20 套自检清单表（含新增的 test:sandbox / test:sandbox-e2e）、UI 截图验收（capture.sh 变量表与两个坑）、打包产物验收；断言数与已知环境性失败明确指向 CONVENTIONS §三，不双写 |
+| `docs/PACKAGING.md` | **新文件**。产物表、镜像、打包形态三条硬约束、两个坑、内网部署后的模型配置；补一句一体化离线安装包指向 offline-bundle/ |
+| `docs/REAL-HARNESS.md` | **新文件**。ACP 接入方式、为什么是 ACP、ACP 消息映射表、两层协议验证（test:acp / test:real-dsh）与 real-dsh-probe 取证工具 |
+| `docs/REFERENCE.md` | **新文件**。环境变量全表（按运行时 / 开发验收分组，新增 `DEEPWORK_SANDBOX_MODE` / `DEEPWORK_HARNESS_ARGS` / `DEEPWORK_BROWSER_HEADFUL` / `DEEPWORK_MOCK_SANDBOX_DENIAL`，以源码 grep 为准）+ 数据存放布局 |
+
+内容以搬移为主、不重写：原文的设计论述逐段保留，仅补沙箱相关的增量。
+
+**验证**
+
+- README 指向 docs 的 9 个链接逐个 `test -e`：OK × 9；
+- 反向扫描五个新文档里的 `docs/*.md` 链接：无断链（脚本输出无 BROKEN 行）；
+- 全仓 grep「见 README / 见「打包与分发」/ 见「切换到真实内核」」：仅 DEVLOG 两处历史记录命中
+  （append-only 不改写；且 README 仍保留疑难节，指涉未失效）；
+- 环境变量表与 `packages/core-host/src`、`apps/desktop/electron` 的 `DEEPWORK_*` grep 结果逐项核对。
+- 纯文档改动，未动代码，未重跑 verify（基线见上轮：20 套 19 绿，末位 real-dsh-mcp 环境性 3/8）。
+
+**踩坑与修复**
+
+无（搬迁型改动）。一个值得记的判断：DEVLOG 里两处「写进 README 疑难节」「README 链接 × 4」
+是历史事实记录，链接数如今已变为 9 —— 按日志纪律不回改，本条目即为修正说明。
+
+**遗留**
+
+- README 的「当前进度」是压缩版，与 DEVLOG 里程碑快照表双写；下次里程碑变化时两处都要更新
+  （或届时把 README 进度段也改成纯指针）。
+- 沙箱模式切换入口仍未做（沿袭上轮遗留），README 三条约束里已先按「默认 workspace-write」措辞。
+
+**下一步**
+
+同上轮：模型升级路径取证（沙箱拒绝 → `sandbox_permissions` 重试 → 审批）、FR-3.8 图表。
