@@ -5,6 +5,7 @@
  */
 
 export * from './browser';
+export * from './chart';
 export * from './config';
 export * from './diff';
 export * from './events';

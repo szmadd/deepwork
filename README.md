@@ -69,7 +69,7 @@ npm run dev          # 启动 Electron（Vite 开发服务器 + 桌面窗口）
 
 ```bash
 npm run verify       # 全套无 GUI 自检（差异 / 写工具 / 回放 / IPC / 终端 / ACP / 技能 /
-                     # 记忆 / 调度 / 连接器 / 用量 / 浏览器 / Office / 模型端点 / 沙箱等）
+                     # 记忆 / 调度 / 连接器 / 用量 / 浏览器 / Office / 图表 / 模型端点 / 沙箱等）
 npm run demo
 ```
 
@@ -115,7 +115,8 @@ DEEPWORK_ADAPTER=harness npm run dev
   一体化离线安装包、内网自定义模型配置链路）
 - **需求矩阵漏项**：🔶 进行中（FR-10.2 模型路由主干已落地；**FR-3.5 沙箱二期已完成**——
   内核沙箱接出到界面，真内核端到端证明越界写入被拦且拒绝在界面上说人话；
-  剩 FR-3.8 图表与沙箱模式切换入口）
+  **FR-3.8 图表可视化已完成**——生成自包含 HTML 图表并在预览中默认渲染；
+  剩沙箱模式切换入口）
 
 逐项清单与判据见 [docs/ROADMAP.md](docs/ROADMAP.md)，逐次开发记录见
 [docs/DEVLOG.md](docs/DEVLOG.md)（顶部有里程碑状态快照）。

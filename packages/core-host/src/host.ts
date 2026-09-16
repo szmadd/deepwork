@@ -55,6 +55,7 @@ import { buildMemoryContext } from './memory/context';
 import { MemoryStore } from './memory/store';
 import {
   buildBrowserMcpPatch,
+  buildChartMcpPatch,
   buildRuntimePatch,
   serializeRuntimePatchYaml,
   type ConnectorPatchEntry,
@@ -236,6 +237,7 @@ export class DeepworkHost {
       this.connectors.list(),
       modelEndpointOverride(endpoint),
       this.browserMcpPatch(),
+      this.chartMcpPatch(),
     );
     const file = path.join(homeDir(), 'runtime', 'kernel.patch.yml');
     if (!patch) {
@@ -275,6 +277,32 @@ export class DeepworkHost {
     }
     // 与我们自己被拉起的方式保持一致：谁跑起了宿主，就用同一个运行时跑 MCP 服务
     return buildBrowserMcpPatch({ command: process.execPath, entry, env });
+  }
+
+  /**
+   * 内置图表服务的补丁条目。
+   *
+   * 与浏览器那一条同源：宿主工具注册表只在 mock 下被执行，真实内核看不到
+   * `chart.render`，因此必须把同一份实现（chart/plan.ts）以 MCP 服务的形式
+   * 提供给内核。入口找不到时**不注入**（不阻断内核启动）—— 缺的只是画图能力，
+   * 比内核起不来轻得多。
+   *
+   * env 里的 `DEEPWORK_WORKSPACE` 就是内核自己被启动时拿到的那个 workspace：
+   * 图表是写文件的能力，边界必须与内核一致，否则会出现「图写到别的目录去了」
+   * 这种不报错的错位。
+   */
+  private chartMcpPatch(): { insert: ConnectorPatchEntry[] } | null {
+    const entry = path.join(__dirname, 'cli', 'chart-mcp.js');
+    if (!fs.existsSync(entry)) {
+      log.warn(`未找到图表 MCP 服务入口（${entry}），本次不注入该能力`);
+      return null;
+    }
+    const env: Record<string, string> = {
+      DEEPWORK_HOME: homeDir(),
+      DEEPWORK_WORKSPACE: this.workspace,
+    };
+    if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = '1';
+    return buildChartMcpPatch({ command: process.execPath, entry, env });
   }
 
   /**

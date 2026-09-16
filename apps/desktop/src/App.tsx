@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   AGENT_MODE_LABEL,
   APP_VIEW_LABEL,
+  CHART_HTML_MARKER,
   type AgentMode,
   type AppView,
   type AttachmentPreview,
@@ -546,6 +547,7 @@ export default function App() {
 
       {agent.preview ? (
         <FilePreviewModal
+          key={agent.preview.path}
           path={agent.preview.path}
           size={agent.preview.size}
           text={agent.preview.text}
@@ -559,6 +561,7 @@ export default function App() {
 
       {previewAttachment ? (
         <FilePreviewModal
+          key={previewAttachment.path}
           path={previewAttachment.path}
           size={previewAttachment.size}
           text={previewAttachment.text}
@@ -601,6 +604,18 @@ interface FilePreviewModalProps {
  * 有意不做编辑、不做语法高亮、不做富文本 —— 它要回答的问题只有一个：
  * 「Agent 刚改的那个文件，现在到底长什么样」。任何额外能力都会让这个视图
  * 从「事实的窗口」变成「又一个可能出错的编辑器」。
+ *
+ * 唯一的例外是**图表产物**（FR-3.8）：HTML 源码回答不了「图长什么样」，
+ * 所以带图表标记的文件默认渲染。渲染走 `sandbox=""` 的 iframe ——
+ * 空 sandbox 等于「不给脚本、不给表单、不给顶层跳转、不给同源」，
+ * 而产物本身也正是无脚本的（CSP `default-src 'none'`），
+ * 于是「预览里看到的」与「浏览器里打开看到的」是同一张图。
+ *
+ * 为什么只对**带标记**的文件渲染，而不是给任意 .html 一个渲染视图：
+ * 渲染这个动作的语义是「我刚才生成的东西长什么样」，它的可信度来自
+ * 「这份 HTML 是我们自己按行拼出来的」。把任意工作区页面也拉进来渲染，
+ * 收益（用户想看可以用系统浏览器）远小于「往应用进程里引入未知页面的加载行为」
+ * 这一点风险。这不是安全边界，是范围划分。
  */
 function FilePreviewModal({
   path,
@@ -623,6 +638,11 @@ function FilePreviewModal({
           ? `文件体积 ${formatBytes(size)}，超出预览上限`
           : null;
 
+  const renderable = !loading && !problem && text.includes(CHART_HTML_MARKER);
+  /** 默认渲染；渲染不可用时无所谓取值 */
+  const [source, setSource] = useState(false);
+  const showRendered = renderable && !source;
+
   return (
     <div className="modal-mask" onClick={onClose}>
       <div className="modal modal-wide" onClick={(event) => event.stopPropagation()}>
@@ -632,6 +652,16 @@ function FilePreviewModal({
             {path}
           </code>
           <span className="panel-spacer" />
+          {renderable ? (
+            <button
+              type="button"
+              className={`chip-toggle${showRendered ? ' chip-toggle-on' : ''}`}
+              onClick={() => setSource((value) => !value)}
+              title="图表产物默认渲染；源码视图可以看到它到底写了什么"
+            >
+              {showRendered ? '渲染' : '源码'}
+            </button>
+          ) : null}
           <span className="preview-size">{formatBytes(size)}</span>
           <button type="button" className="icon-btn" onClick={onClose}>
             ×
@@ -640,7 +670,10 @@ function FilePreviewModal({
         <div className="modal-body">
           {loading ? <div className="empty-hint">读取中…</div> : null}
           {problem ? <div className="modal-hint modal-hint-warn">{problem}</div> : null}
-          {!loading && !problem ? <pre className="preview-text">{text || '(空文件)'}</pre> : null}
+          {showRendered ? (
+            <iframe className="chart-frame" sandbox="" srcDoc={text} title={path} />
+          ) : null}
+          {!loading && !problem && !showRendered ? <pre className="preview-text">{text || '(空文件)'}</pre> : null}
         </div>
       </div>
     </div>

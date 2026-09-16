@@ -5,23 +5,30 @@ import { exec } from 'node:child_process';
 import {
   BROWSER_ACTIONS,
   BROWSER_TOOL_RISK,
+  CHART_EXTENSION,
+  CHART_TOOL,
+  CHART_TOOL_RISK,
   OFFICE_DOCX_TOOL,
   OFFICE_READ_TOOL,
   OFFICE_TOOL_RISK,
   OFFICE_XLSX_TOOL,
   browserToolName,
+  chartParameterDescriptions,
+  chartToolDescription,
   officeNativeExtensionList,
   type BrowserAction,
   type FileDiff,
 } from '@deepwork/protocol';
 import type { BrowserManager } from '../browser/manager';
+import { chartOutputText, planChart, type ChartPlan } from '../chart/plan';
 import { applySelectedHunks, buildFileDiff, selectionStat, splitLines } from '../diff';
 import { buildDocx } from '../office/docx';
 import { formatBytes, readOfficeDocument, textViewOfBytes } from '../office/read';
-import { buildXlsx, rowsFromMarkdownTable, type CellValue } from '../office/xlsx';
+import { buildXlsx } from '../office/xlsx';
 import { isInsideWorkspace } from '../security/guard';
 import { IGNORED_DIRS } from '../workspace/tree';
 import { truncate, type ToolContext, type ToolExecution, type ToolRegistry } from './registry';
+import { ensureExtension, normalizeRows, requireString } from './args';
 
 /**
  * 内置工具集。
@@ -41,14 +48,6 @@ import { truncate, type ToolContext, type ToolExecution, type ToolRegistry } fro
 const MAX_READ_BYTES = 200_000;
 /** 超过该体积的文件不做行级差异预览（仍会走审批，只是看不到 diff） */
 const MAX_DIFF_BYTES = 2_000_000;
-
-function requireString(args: Record<string, unknown>, key: string): string {
-  const value = args[key];
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`缺少必需参数: ${key}`);
-  }
-  return value;
-}
 
 function resolveInWorkspace(target: string, ctx: ToolContext): string {
   const abs = path.resolve(ctx.workspace, target);
@@ -475,6 +474,7 @@ export function registerBuiltinTools(registry: ToolRegistry, deps?: { browser?: 
 
   if (deps?.browser) registerBrowserTools(registry, deps.browser);
   registerOfficeTools(registry);
+  registerChartTools(registry);
 }
 
 // ── 浏览器工具（六个动作）──────────────────────────────────────
@@ -612,47 +612,7 @@ interface OfficeWritePlan {
   summary: string;
 }
 
-/**
- * 扩展名对齐。
- *
- * 无扩展名 → 补上（模型常写 `报告` 而不是 `报告.docx`，补全符合意图）；
- * 但**给了别的扩展名就报错**（`office.docx` 写 `报告.txt` 会得到一个
- * 「名字说它是文本、内容其实是 Word 包」的文件，那是最糟糕的产物）。
- */
-function ensureExtension(abs: string, tool: string, expected: string): string {
-  const ext = path.extname(abs);
-  if (!ext) return `${abs}${expected}`;
-  if (ext.toLowerCase() === expected) return abs;
-  throw new Error(
-    `${tool} 的 path 必须以 ${expected} 结尾（收到的是「${ext}」）—— 名字与内容不符的文件会误导之后所有读它的人`,
-  );
-}
-
-/** 单元格取值：对象/数组用 JSON 落地，总比丢掉内容好 */
-function toCellValue(value: unknown): CellValue {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
-  if (typeof value === 'object') return JSON.stringify(value);
-  return String(value);
-}
-
-function normalizeRows(input: unknown): CellValue[][] {
-  if (typeof input === 'string') {
-    const parsed = rowsFromMarkdownTable(input);
-    if (parsed.length === 0) {
-      // 「传了一段文字但解析不出表格」与「传了个对象」是两种错误，得分别说 ——
-      // 笼统报一句「rows 不合法」，模型不知道是该改格式还是该补内容
-      throw new Error(
-        'rows 是一段解析不出表格的文本（Markdown 管道表格至少要有一行含「|」的表头），也可以直接传二维数组',
-      );
-    }
-    return parsed;
-  }
-  if (!Array.isArray(input)) {
-    throw new Error('rows 需要是二维数组（数组的数组），或一段 Markdown 管道表格');
-  }
-  return input.map((row) => (Array.isArray(row) ? row.map(toCellValue) : [toCellValue(row)]));
-}
+/** 扩展名对齐与单元格取值见 tools/args.ts（与 chart.render 共用一份，错误措辞必须一致） */
 
 async function buildOfficePlan(
   tool: OfficeWriteTool,
@@ -831,6 +791,134 @@ function registerOfficeTools(registry: ToolRegistry): void {
         return { ok: false, output: error instanceof Error ? error.message : String(error) };
       }
     },
+  });
+}
+
+// ── 图表工具（FR-3.8）──────────────────────────────────────────
+
+/**
+ * 与 Office 的两个写工具同构（计划 → 预览 → 审批 → 落盘），但有一条前提不同：
+ * **产物本身就是文本**（HTML），所以审批差异不需要另造一份视图 ——
+ * 直接对源码做行级差异，改一个数字就只动那一行。
+ * 见 `chart/plan.ts` 顶部关于「为什么不另做文本视图」的说明。
+ *
+ * 数据来源与 Office 同一条纪律：预检与执行**共享同一份计划快照**，
+ * 因此审批里展示的差异与实际写下去的字节来自同一次生成。
+ */
+const CHART_PLAN_KEY = 'chart.plan';
+
+interface ChartWritePlan {
+  abs: string;
+  rel: string;
+  created: boolean;
+  plan: ChartPlan;
+  diff: FileDiff | null;
+  /** 旧文件过大，读不出内容视图（不阻断写入，但要如实说） */
+  beforeUnreadable: boolean;
+}
+
+async function buildChartWritePlan(
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ChartWritePlan> {
+  const abs = ensureExtension(
+    resolveInWorkspace(requireString(args, 'path'), ctx),
+    CHART_TOOL,
+    CHART_EXTENSION,
+  );
+  const rel = displayPath(abs, ctx);
+  // 这一行会抛「可行动」的错误（饼图多列、没有数值列、超上限……），措辞由 chart/spec.ts 统一维护
+  const plan = planChart(args);
+
+  let exists = false;
+  let before: string | null = null;
+  let beforeUnreadable = false;
+  try {
+    const stat = await fs.stat(abs);
+    exists = true;
+    if (stat.isDirectory()) throw new Error(`${rel} 是目录，不能作为文件写入`);
+    if (stat.size > MAX_DIFF_BYTES) {
+      beforeUnreadable = true;
+    } else {
+      before = await fs.readFile(abs, 'utf8');
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+
+  const diff = beforeUnreadable ? null : buildFileDiff({ path: rel, oldText: before, newText: plan.html });
+  return { abs, rel, created: !exists, plan, diff, beforeUnreadable };
+}
+
+async function planForChart(args: Record<string, unknown>, ctx: ToolContext): Promise<ChartWritePlan> {
+  const cached = ctx.cache.get(CHART_PLAN_KEY) as ChartWritePlan | undefined;
+  if (cached) return cached;
+  const plan = await buildChartWritePlan(args, ctx);
+  ctx.cache.set(CHART_PLAN_KEY, plan);
+  return plan;
+}
+
+async function runChartWrite(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolExecution> {
+  let planned: ChartWritePlan;
+  try {
+    planned = await planForChart(args, ctx);
+  } catch (error) {
+    return { ok: false, output: error instanceof Error ? error.message : String(error) };
+  }
+
+  // 源码逐字相同 = 图表没变。此时不落盘、不打扰用户：模型重试、或用户再点一次，
+  // 不该产生一次写入与一次审批（与 office 同一判据，只是这里的「内容」就是源码本身）
+  const unchanged =
+    planned.diff !== null && !planned.created && planned.diff.added === 0 && planned.diff.removed === 0;
+  if (unchanged) return { ok: true, output: `${planned.rel} 的图表内容无变化，未写入` };
+
+  const assessment = ctx.guard.assess(`${CHART_TOOL} ${planned.rel}`);
+  if (assessment.blocked) return { ok: false, output: `写入被策略阻断：${assessment.reason}` };
+
+  const risk = CHART_TOOL_RISK[CHART_TOOL];
+  if (risk !== 'safe' && ctx.requestApproval) {
+    const note = planned.beforeUnreadable ? '；旧文件过大，不展示差异' : '';
+    const outcome = await ctx.requestApproval({
+      tool: CHART_TOOL,
+      subject: planned.rel,
+      reason: `${assessment.reason}（内容：${planned.plan.summary}${note}；差异是产物的源码，数据表在图下方的折叠区里）`,
+      diff: planned.diff ?? undefined,
+    });
+    if (!outcome.approved) return { ok: false, output: `用户拒绝了本次写入，${planned.rel} 未被修改` };
+  }
+
+  await fs.mkdir(path.dirname(planned.abs), { recursive: true });
+  // 写的是预检时算好的字节（同一份快照）：不会出现「批准的是 A、写下去的是 B」
+  await fs.writeFile(planned.abs, planned.plan.bytes);
+
+  const verb = planned.created ? '已新建' : '已更新';
+  return { ok: true, output: chartOutputText(planned.plan, verb, planned.rel) };
+}
+
+/**
+ * 注册图表工具。
+ *
+ * 与浏览器工具不同，这里没有 deps 开关：画图不需要进程级资源（不像浏览器要拉
+ * 一个真实进程），永远可用。理由与 Office 一致 —— 只有「依赖外部条件才成立」
+ * 的能力才需要条件注册。
+ *
+ * 但**只注册进这张表是不够的**：注册表只在 mock 适配器下被执行，
+ * 真实内核看不到它。所以另有一个内置 MCP 服务（chart/mcp-server.ts）由宿主
+ * 写进内核 `--patch`。两条入口共用 chart/plan.ts 这一份实现。
+ */
+function registerChartTools(registry: ToolRegistry): void {
+  registry.register({
+    name: CHART_TOOL,
+    description: chartToolDescription(),
+    parameters: chartParameterDescriptions(),
+    preview: async (args, ctx) => {
+      try {
+        return (await planForChart(args, ctx)).diff;
+      } catch {
+        return null; // 预览失败不阻断：真正的问题会在执行阶段以同样的措辞报出
+      }
+    },
+    handler: (args, ctx) => runChartWrite(args, ctx),
   });
 }
 

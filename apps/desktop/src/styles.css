@@ -1791,6 +1791,25 @@ pre {
   white-space: pre;
 }
 
+/*
+ * 图表产物的渲染视图（FR-3.8）。
+ *
+ * 底色写白而不是 var(--bg)：iframe 内部的页面自带 `prefers-color-scheme`
+ * 分支，跟随的是**操作系统**而不是本应用的配色变量。父窗口若先用应用底色
+ * 打底，深色系统下会出现一条「白底淡字」的闪边 —— 让 iframe 自己负责底色。
+ *
+ * 高度给视口比例而不是固定像素：图表是宽高比固定的 960×560 画布，
+ * 窄窗口下它会自己在 iframe 里横向滚动，不需要父窗口配合。
+ */
+.chart-frame {
+  display: block;
+  width: 100%;
+  height: 62vh;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
 /* ── 技能面板 ─────────────────────────────────── */
 
 .skill-item {

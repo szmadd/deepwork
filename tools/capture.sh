@@ -140,7 +140,7 @@ run_scene() {
 # 「点不到就返回 no-rail」必须存在的原因。
 RAIL_HELPER='const openRail=async(label)=>{const b=[...document.querySelectorAll(".rail-item")].find(x=>x.getAttribute("title")===label);if(!b)return "no-rail:"+label;b.click();await new Promise(r=>setTimeout(r,1600));return "ok";};'
 
-SCENES="${*:-chat tree terminal preview hunk settings settings-security sandbox-denial skills memory schedule connectors usage browser office}"
+SCENES="${*:-chat tree terminal preview hunk settings settings-security sandbox-denial skills memory schedule connectors usage browser chart office}"
 
 for scene in $SCENES; do
   case "$scene" in
@@ -275,6 +275,20 @@ for scene in $SCENES; do
         "$RAIL_HELPER await openRail('浏览器'); const i=document.querySelector('.browser-url'); if(!i) return 'no-url-input'; const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; s.call(i,'$BROWSER_URL'); i.dispatchEvent(new Event('input',{bubbles:true})); await new Promise(r=>setTimeout(r,300)); const b=[...document.querySelectorAll('.browser-bar .btn')].find(x=>x.textContent.trim()==='打开'); if(!b) return 'no-open-btn'; b.click(); await new Promise(r=>setTimeout(r,7000)); const t=document.querySelector('.browser-current-title'); const shots=document.querySelectorAll('.browser-shot').length; return (t ? 'title:'+t.textContent : 'no-title') + ' shots:' + shots;" \
         "0" \
         "DEEPWORK_HOME='$HOME_WIN' node '$REPO/tools/fixtures/seed-browser.js' '$BROWSER_PAGE_WIN'"
+      ;;
+    chart)
+      # 图表场景（FR-3.8）：产物必须走**真实生成器**预置（planChart + 真实落盘），
+      # 而不是把一段 HTML 摆进工作区 —— 后者画面证明的只是「预览弹窗会渲染我塞的 HTML」，
+      # 证不了「生成器写出的东西，界面认得（产物标记对得上）并画得出来」。
+      #
+      # 这一场要证的是**渲染路径可达**：预览弹窗对带产物标记的 .html 默认走 iframe 渲染。
+      # 「图形画得对不对、数据准不准」由 tools/chart-test.js 的字面断言负责，不在这张图上。
+      # 末尾回读 iframe 的实际高度当回执：图上分不清「渲染成空白」与「压根没渲染」，
+      # 高度塌成 0 恰好是最该被看见的那种失败。
+      run_scene "ui-chart" ".chart-frame" \
+        "$RAIL_HELPER await openRail('文件'); const rows=[...document.querySelectorAll('.tree-row.tree-file')]; const f=rows.find(x=>(x.querySelector('.tree-name')||{}).textContent==='营收图表.html'); if(!f) return 'no-chart-file:'+rows.length; f.click(); await new Promise(r=>setTimeout(r,2600)); const fr=document.querySelector('.chart-frame'); if(!fr) return 'no-frame'; const h=Math.round(fr.getBoundingClientRect().height); return 'frame-height:'+h+(h>80?' ok':' 塌了');" \
+        "0" \
+        "DEEPWORK_HOME='$HOME_WIN' node '$REPO/tools/fixtures/seed-chart.js' '$WORKSPACE_WIN'"
       ;;
     office)
       # Office 场景**不走应用界面**：M2-I 的验收判据是「写出的文件能被真实办公软件

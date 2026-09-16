@@ -2658,3 +2658,105 @@ README 只留「这是什么 / 怎么跑 / 去哪看」，把设计细节、验�
 **下一步**
 
 同上轮：模型升级路径取证（沙箱拒绝 → `sandbox_permissions` 重试 → 审批）、FR-3.8 图表。
+
+---
+
+## 2026-09-16（第二轮）· FR-3.8 图表与可视化：自包含 HTML + 无脚本交互 + 界面默认渲染
+
+**目标**
+
+清掉需求矩阵漏项里**最后一条不依赖后端平台**的项（FR-3.8，见 ROADMAP §七）。
+上轮留的口径问题——「生成 HTML 图表并预览」还是「面板内可视化」——本轮先定契约定死：
+**产物是一份自包含 HTML（内联 SVG + 数据表），界面内的「渲染」只是它的一种查看方式。**
+
+三条产品判断（写在 `packages/protocol/src/chart.ts` 顶部，改实现前先读）：
+
+1. **口径以「数据 → 自包含 HTML」为主。** 产物能双击打开、能发给别人、能进版本库。
+   反过来做（数据只存在会话里、图只活在应用内）会让图表变成第二类事实。
+2. **交互 = 无脚本的交互。** 需求原文说「可交互视图」，这里**不生成任何脚本**：
+   悬停提示用 SVG 原生 `<title>`、数据表用 `<details>` 折叠、强调用 CSS `:hover`。
+   因为应用内预览走 `sandbox=""` 的 iframe（禁脚本），若图靠 JS 渲染，
+   「界面里看到的」与「浏览器里打开的」就是两张不同的图。
+3. **零第三方依赖、不引图表库。** 手写 SVG 生成器（与 `office/zip.ts` 手写 zip 同源）。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/chart.ts`（新） | 契约：工具名 `chart.render`、MCP 服务名 `deepwork_chart`（不含点号，内核全名 `mcp__deepwork_chart__chart_render`）、三图型、产物标记 `<!-- generated-by: deepwork-chart v1 -->`、按图型分档的规模上限（折线 1200 点 / 柱饼 60 类别 / 12 系列）、风险档 confirm。**入参表 `CHART_ARGS` 是单一事实来源**，宿主工具的中文描述与 MCP 的 JSON Schema 都从它派生（`chartParameterDescriptions` / `chartInputJsonSchema`） |
+| `packages/core-host/src/chart/spec.ts`（新） | 表格 → 图表规格归一化：首列若全非数字则判为类别轴（**否则会把第一列数据吃掉**）、非数字单元格记为**缺测**（不是 0）并计数回报、整列无数值则跳过并说明、重复列名加序号、超限即报错。每一条拒绝都是**可行动**的措辞 |
+| `packages/core-host/src/chart/svg.ts`（新） | 纯函数 spec → SVG。柱/线/饼三型；坐标轴、图例（含折行排布与宽度估算）、原生 tooltip；缺测把折线**切断**（孤立点只画点不画线）；饼图单扇区走整圆分支（弧线会退化成直线）；刻度落在 1/2/2.5/5×10ⁿ 的人读得顺的数上；数据颜色内联、结构色走样式表 |
+| `packages/core-host/src/chart/html.ts`（新） | 自包含 HTML：CSP `default-src 'none'; style-src 'unsafe-inline'`、`prefers-color-scheme` 深浅色、数据表随产物进 `<details>`、脚注说明「本页不含任何脚本」 |
+| `packages/core-host/src/chart/plan.ts`（新） | 入参 → 计划（字节 + 摘要）。**不在别处再算一遍文本视图**：产物本身就是我们按行生成的文本，审批差异直接对源码做行级比对 —— 改一个数字只动那一行 |
+| `packages/core-host/src/chart/mcp-server.ts` + `cli/chart-mcp.ts`（新） | 内核侧 MCP 服务（stdio）：initialize / tools/list / tools/call / ping；数据不合规按 **isError 内容**返回而不是 JSON-RPC error（否则模型看不到原因）；未实现方法明确 -32601；**自己守工作区边界**，不假设内核会替它守 |
+| `packages/core-host/src/tools/args.ts`（新） | 从 builtin.ts 抽出的共享入参助手（`requireString` / `toCellValue` / `normalizeRows` / `ensureExtension`），xlsx 与 chart 共用一份 —— 「rows 解析不出表格」的措辞两处必须一致 |
+| `packages/core-host/src/tools/builtin.ts` | 注册 `chart.render`：复用 office 的「预检 → 无变化短路 → 带差异审批 → 落盘」四段（审批与执行共享同一份计划快照） |
+| `packages/core-host/src/mcp/patch.ts` | 抽出通用 `buildBuiltinMcpPatch`，浏览器与图表两个内置服务共用构造逻辑（只有 id/serverName/env 不同）；`buildRuntimePatch` 并入图表补丁，顺序为「连接器 → 端点覆盖 → **图表 → 浏览器**」（浏览器恒为最后一项是既有断言） |
+| `packages/core-host/src/host.ts` | 常驻注入 `chartMcpPatch()`（与浏览器服务同一形态） |
+| `apps/desktop/src/App.tsx` + `styles.css` | 预览弹窗对**带产物标记**的 `.html` 默认走 `sandbox=""` iframe 渲染，并提供「渲染 / 源码」切换；补 `.chart-frame` 样式（不给高度 iframe 会塌成 0，看起来像「没渲染出来」） |
+| `tools/chart-test.js`（新） | 126 项断言，见下 |
+| `tools/fixtures/seed-chart.js`（新） | 截图场景的产物预置 —— **走真实生成器**（planChart + 真实落盘），不是手摆 HTML |
+| `tools/capture.sh` | 新增 `chart` 场景（焦点 `.chart-frame`，末尾回读 iframe 实际高度当回执） |
+| `package.json` | 新增 `test:chart`，并插进 `verify`（office 之后、modelcfg 之前 —— 链尾那套易红的仍留在最后） |
+
+**验证**
+
+新增 `tools/chart-test.js` **126 项全绿**，断言全部落在**产物的字面内容**上，分七节：
+
+| 节 | 关键断言（举要） |
+|---|---|
+| 契约层（11） | 工具名/风险档/三图型/扩展名；**描述与 schema 来自同一张入参表**；`rows` 同时接受字符串与数组 |
+| 规格层（23） | 首列判定（全非数字才当类别轴，否则会把第一列吃掉）；缺测记为 null 并计数回报；`42.9%` 不算数字（不替用户在 42.9 与 0.429 之间选）；重复列名加序号；六类拒绝各自的措辞 |
+| 渲染层（30） | 柱数 = 类别 × 系列；**缺测把折线切成两段**且孤立点不连线；饼图扇区数/占比/单扇区整圆；负值柱向下画 + 零线；标签转义成实体；无 `script`、CSP、无外链；**同一输入两次生成逐字节相同**（否则无变化短路会静默失效）；产物里没有生成时间 |
+| 工具层（17） | 拒绝后**文件确实没落盘**（不只看返回值）；预检差异显示数据行（`>320<`）；重复生成报「无变化」且**不再弹审批**；改一个数字差异有增有删；扩展名/越界/非法图型/缺参四类边界 |
+| MCP 层（14） | 按 stdio **真拉进程、真握手、真落盘**；同一份实现的无变化短路；越界拒绝；数据不合规走 isError 内容；未知工具 -32602、未实现方法 -32601 |
+| 内核补丁（13） | 补丁形状、入口文件真实存在、env 带 `DEEPWORK_WORKSPACE`（**否则图会写到 MCP 进程的 cwd 且不报错**）；两种内置服务共用构造逻辑；四项合并与顺序；YAML 可序列化；内核侧 `mcp__…` 风险档 = confirm |
+| 独立校验（6） | 把 6 份产物交给 **Python 的 ElementTree / html.parser**（本项目无关的第二个实现）：SVG 必须良构 XML（坏 XML 在浏览器里是「安静地不画」）、**零脚本、零外链**、每条数据点至少有一个元素承载、数据表与折叠区齐备 |
+| 界面接线（7） | 预览引用产物标记、`sandbox=""` iframe、保留源码视图、渲染容器有样式、**图表实现里没有第三方依赖** |
+
+配套：`npm run typecheck`（protocol / core-host / desktop）全过；
+`tools/capture.sh` 新增 chart 场景并挂上 `seed-chart.js`。
+
+本轮实测（**逐条来自当场命令输出**）：`office 130/130` · **`chart 126/126`** ·
+`sandbox 32/32` · `sandbox-e2e 17/17`；整链跑到 `browser-test` 前**全绿**
+（diff / tools 19 / replay 29 / smoke 30 / partial 13 / terminal 22 / acp 40 / real-dsh 15 /
+skills 59 / skillctx 24 / memory 38 / schedule 68 / connectors 42 / usage 35）。
+`real-dsh-mcp` 3/8 —— 与既有记录的环境性基线一致（已用 `git stash` 在改动前的基线上复现同样的 3 PASS / 5 FAIL）。
+
+**踩坑与修复**
+
+1. **折线断段的用例本身写错了（不是实现错了）。** 最初用 `[10, N/A, 30]` 验「缺测把线切断」，
+   断言「两段 polyline」→ 红。查下来是**实现正确**：两侧都是缺测的孤立点本来就只画点、
+   不连线（单点连不成趋势，硬连等于凭空造出趋势）。改用每段 ≥2 点的数据
+   （`[10,20,N/A,40,50]`）后两段线正常；**并把「孤立点只画点不画线」补成一条独立断言** ——
+   原来那条测试的表达力不足，才让它把正确行为判成失败。
+2. **`chartOutputText` 收的是 plan 不是 spec。** 测试里先入为主地传了 spec，触发
+   `Cannot read properties of undefined (reading 'categories')` 崩溃。签名以源码为准，改测试。
+3. **「SVG 元素数 > 20」是脆弱断言。** 单扇区饼图只有 7 个元素（本就正常），
+   钉死阈值等于「一改实现就要改测试」。改成**用数据点数当下界**
+   （`categories × series`，每个数据点至少一个元素承载）——它表达的是「图不是空的」这个真正的不变量。
+4. **并行编辑同一文件会互相覆盖。** 两条 `Edit` 同时发给同一个 `chart-test.js`，
+   第一条的改动被第二条覆盖（工具都报成功）。此后**同一文件的改动一律串行**。
+5. **`real-dsh-e2e` 偶发 `initialize 超时`（整链首次跑到它时红，单跑 15/15）** ——
+   判定为连跑时的资源/残留进程竞争，非本轮回归（该套件根本不构造 runtime patch）。
+   已记入 CONVENTIONS 的「本机环境性阻塞」。
+
+**遗留**
+
+- **`artifacts/ui-chart.png` 未产出**：本机 `node_modules/electron/dist` 缺失（包在、二进制没下），
+  `capture.sh` 按设计拒绝启动。**界面渲染的证据本轮只到「读源码断言」这一层**，
+  不当作已验收 —— 装了 Electron 后跑 `bash tools/capture.sh chart` 即可补。
+- 图表类型只做了 bar / line / pie：散点、堆叠、双轴未做。
+- 数据源只能经 `rows` 传（二维数组 / Markdown 表）：还不能直接吃工作区里的 `.xlsx`/`.csv`。
+- 不能单独导出 PNG/SVG（产物只有 HTML 一种形态）。
+- **内核侧端到端未取证**：`mcp__deepwork_chart__chart_render` 真的被 dsh 注册给模型这件事，
+  在本机受 `real-dsh-mcp` 的环境性问题所限证不了（与浏览器服务同一处境）。
+  本轮的替代证据是「补丁形状断言 + MCP 服务按 stdio 真进程往返」。
+
+**下一步**
+
+1. **沙箱升级路径取证**（沿袭上轮，仍是最该做的）：扩 `openai-stub-llm` 剧本，
+   观测「被拒 → `sandbox_permissions` 重试 → 弹审批」整条链路，把界面上那句
+   「此时才会弹审批」从引用内核文档变成本机观测。结论可能为「模型不会重试」。
+2. 补 `artifacts/ui-chart.png`（装 Electron 后跑 `capture.sh chart`）。
+3. 遗留债插空（§五）：主题切换器、Composer `/` 补全、桌面通知、Trajectory 逐事件分叉等。

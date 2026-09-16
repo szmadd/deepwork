@@ -51,6 +51,7 @@ env DEMO_DENY=1 npm run demo   # Windows cmd: set DEMO_DENY=1 && npm run demo
 | `npm run test:browser` | 浏览器自动化（M2-H 起新增）：内置 MCP 补丁条目形状与入口文件真实存在、六个动作的 CDP 报文、真实 Edge 驱动 fixture 页面（导航 / 读文本 / 点击 / 输入 / 求值 / 截图 PNG magic bytes）、`evaluate` 落 danger 档、审批链（拒绝即不执行）、跨进程单实例复用与「借用人不越权杀进程」、MCP 协议端到端、进程清理；系统无浏览器时优雅 SKIP |
 | `npm run test:office` | Office 生成与文档读取（M2-I 起新增）：零依赖 zip 编解码（CRC32 校验、zip-bomb 上限、固定时间戳可复现）、docx 8 个必备部件与 Markdown 子集（标题/列表/引用/代码/表格）、xlsx 共享字符串与冻结表头、`office.read` 对 docx/xlsx/ofd/纯文本四类的分发与体积上限；**OFD 原生读取**按坐标排序（Y 聚行 → 行内 X 升序 → 中英混排拼接）而非 XML 顺序；审批链（二进制输出走「文本视图」预览、拒绝即不落盘、预览与落盘同源）；另起 **Python 进程做独立实现校验**（`zipfile` + `ElementTree` 复核 CRC / XML 良构 / Content_Types / rels 目标），OFD 样本由 Python 侧生成 |
 | `npm run test:modelcfg` | 模型配置：端点覆盖补丁形状与 YAML 序列化、凭据 refs 合并（不丢其它键）、secrets 按模式分存、apiKey RPC 只回掩码；host 链路上配置写入即出补丁文件、custom 会话默认端点模型；真实 dsh 端到端断言**自定义模型名真的到达端点**（连跑两轮防 settings.yaml 竞态回归） |
+| `npm run test:chart` | 图表与可视化（FR-3.8 起新增）：契约层（入参表是单一事实来源，宿主描述与 MCP schema 都从它派生）、表格 → 规格归一化（首列判定 / 缺测记 null 而非 0 / 重复列名加序号 / 按图型分档的规模上限 / 每类拒绝都可行动）、渲染**字面量**断言（柱数 = 类别 × 系列、缺测把折线切断且孤立点不连线、饼图扇区与占比、单扇区整圆、负值柱与零线、标签转义、CSP、无脚本无外链、**逐字节可复现**）、工具层审批链（拒绝即不落盘 / 无变化短路不再弹审批 / 越界与扩展名边界）、**MCP 服务按 stdio 真进程往返**（真握手、真落盘、数据不合规走 isError 内容、未实现方法 -32601）、内核补丁形状与合并顺序、**Python 独立实现复核 SVG 良构与零脚本**、界面接线与「图表实现零第三方依赖」。界面渲染本身由 `artifacts/ui-chart.png` 取证（不在本套件里，理由见文件头） |
 | `npm run test:sandbox` | 沙箱后端（FR-3.5）：runner 真帧对照（先证命令不套沙箱能跑）、模式解析优先级与非法值回落、内核装配真帧（`--dump-config`）、宿主 status 调用点、拒绝方言解析与防漂移（mock 模拟帧 === 解析层真帧副本逐字相同） |
 | `npm run test:sandbox-e2e` | 沙箱端到端（FR-3.5 第二期）：真内核 + 真 ACP + 真工具 + 真落盘，5 场景矩阵（内核默认 / workspace-write / 答复放行 / read-only / danger-full-access），含对照组与反证组、fixture 现场自检（「工作区外」不得落在临时根目录下） |
 | `npm run test:real-dsh-mcp` | 真实 dsh + 真实 MCP server 端到端：`--patch` 叠加连接器补丁 → dsh-mcp-client 拉起 fixture MCP server → 工具注册为 `mcp__fake__echo` → 模型替身精确名调用 → 回显经 ACP 事件流带回；dsh 缺席时优雅 SKIP。**排在 verify 链尾**——它在已知环境性失败下 exit=1，排中间会中断 `&&` 链，其后的套件会静默不跑 |
@@ -73,8 +74,9 @@ npx electron apps/desktop
 ```bash
 bash tools/capture.sh                  # 全部场景：chat / tree / terminal / preview / hunk / settings /
                                        # skills / memory / schedule / connectors / usage / browser /
-                                       # office / sandbox-denial 等
+                                       # chart / office / sandbox-denial 等
 bash tools/capture.sh preview hunk     # 只跑指定场景
+bash tools/capture.sh chart            # 只补图表场景（产物由 seed-chart.js 走真实生成器预置）
 ```
 
 > `office` 场景依赖系统里真的装了 WPS / Office：它先用真实生成器写出 `report.docx` / `budget.xlsx`，
@@ -98,6 +100,12 @@ bash tools/capture.sh preview hunk     # 只跑指定场景
 - **复用上一次运行的痕迹会让画面不可复现。** 演示脚本是「新建 → 精确替换 → 补全」三步，
   第二步要求文件里还存在 `待复核` 那一行；不重置的话第二场必然在第二步失败，画面就和第一场不同了。
   会话数据同理：留着上一次的运行记录，从图上分不出哪一段是这次代码跑出来的。
+
+还有一个**前置条件**（不是脚本能处理的）：`node_modules/electron/dist/electron.exe` 必须真的存在。
+`node_modules/electron/` 的包体在、二进制没下（install 脚本的下载被网络挡住）时，脚本**按设计拒绝启动**
+（`exit=1`）—— 这比产出一张「未启动」的空白图好，但意味着**没有截图就等于该项未验收**。
+2026-09-16 的 FR-3.8 轮次就撞上这个：`artifacts/ui-chart.png` 未产出，界面渲染的证据只到
+`test:chart` 的「界面接线与依赖纪律」一节（读源码断言），不当作已验收。
 
 ## 打包产物的验收
 

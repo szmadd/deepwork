@@ -18,7 +18,7 @@
  * `$DSH_HOME/profiles/node_modules`），所以补丁里写包名即可，不需要绝对路径。
  */
 
-import { BROWSER_MCP_SERVER_NAME, type ConnectorConfig } from '@deepwork/protocol';
+import { BROWSER_MCP_SERVER_NAME, CHART_MCP_SERVER_NAME, type ConnectorConfig } from '@deepwork/protocol';
 
 /** dsh 插件补丁条目（cordis loader 的 insert 条目形状） */
 export interface ConnectorPatchEntry {
@@ -119,53 +119,106 @@ export interface RuntimePatchOverride {
 export type RuntimePatchItem = { insert: ConnectorPatchEntry[] } | RuntimePatchOverride;
 
 /**
- * 内置浏览器 MCP 服务的补丁条目。
+ * 内置 MCP 服务的补丁条目（**一个形状，两处使用**）。
  *
- * 为什么浏览器能力要以内置 MCP 服务的形式进内核，而不是只在宿主工具注册表里：
- * 注册表只在 mock 适配器下被执行，真实内核（dsh）有自己的一套模型可见工具 ——
- * 只注册进注册表的话，模型永远看不到这六个工具（开发期用 mock 完全看不出来）。
- * 内核原生支持 MCP，所以把它做成 MCP 服务是最短的、且不需要改内核的路径。
+ * 为什么浏览器与图表能力都要以内置 MCP 服务的形式进内核，而不是只放在宿主的
+ * 工具注册表里：注册表**只在 mock 适配器下被执行**，真实内核（dsh）有它自己的
+ * 一套模型可见工具 —— 只注册进注册表的话，模型永远看不到这些工具，
+ * 而开发期用 mock 完全看不出来。内核原生支持 MCP，所以这是最短、
+ * 且不需要改内核的路径。
  *
- * 条目形状与用户连接器完全一致（同一个 dsh-mcp-client 插件），
- * 区别只在 id / serverName / env 由我们生成。
+ * 两个服务的条目形状与用户连接器完全一致（同一个 dsh-mcp-client 插件），
+ * 区别只在 id / serverName / env —— 因此这里只有一份构造逻辑，
+ * 免得「加了一个内置服务却漏了某个字段」这种错要在两处各查一遍。
  */
-export function buildBrowserMcpPatch(options: {
+export interface BuiltinMcpService {
+  /** 补丁条目的 id（`deepwork-<name>`），同名会与既有条目冲突 */
+  id: string;
+  /** MCP serverName：模型侧工具名的中段（`mcp__<serverName>__<tool>`），不含点号 */
+  serverName: string;
   /** 拉起 MCP 服务的可执行文件（node / electron-in-node-mode） */
   command: string;
   /** MCP 服务的入口脚本绝对路径 */
   entry: string;
-  /** 传给子进程的环境变量（至少要有 DEEPWORK_HOME，否则两个进程会各拉一个浏览器） */
+  /** 传给子进程的环境变量 */
   env: Record<string, string>;
-}): { insert: ConnectorPatchEntry[] } {
+}
+
+export function buildBuiltinMcpPatch(service: BuiltinMcpService): { insert: ConnectorPatchEntry[] } {
   return {
     insert: [
       {
-        id: 'deepwork-browser',
+        id: service.id,
         name: '@deepseek-ai/dsh-mcp-client',
         config: {
           transport: 'stdio',
-          serverName: BROWSER_MCP_SERVER_NAME,
-          command: options.command,
-          args: [options.entry],
-          env: options.env,
+          serverName: service.serverName,
+          command: service.command,
+          args: [service.entry],
+          env: service.env,
         },
       },
     ],
   };
 }
 
-/** 合并连接器补丁、模型端点覆盖与内置浏览器服务；三者皆空返回 null（内核零改动启动） */
+/** 内置浏览器服务（六动作）：env 至少要有 DEEPWORK_HOME，否则两个进程会各拉一个浏览器 */
+export function buildBrowserMcpPatch(options: {
+  command: string;
+  entry: string;
+  env: Record<string, string>;
+}): { insert: ConnectorPatchEntry[] } {
+  return buildBuiltinMcpPatch({
+    id: 'deepwork-browser',
+    serverName: BROWSER_MCP_SERVER_NAME,
+    command: options.command,
+    entry: options.entry,
+    env: options.env,
+  });
+}
+
+/**
+ * 内置图表服务（chart.render）。
+ *
+ * env 里多一个 `DEEPWORK_WORKSPACE`：图表是**写文件**的能力，必须知道写到哪个
+ * 工作区。这个值取自宿主启动内核时用的那个 workspace，与内核自己的边界同源 ——
+ * 缺了它，MCP 服务只能退到自己的 cwd，而那与内核的边界是两回事
+ * （症状是「图写到别的目录去了」，而且不报错）。
+ */
+export function buildChartMcpPatch(options: {
+  command: string;
+  entry: string;
+  env: Record<string, string>;
+}): { insert: ConnectorPatchEntry[] } {
+  return buildBuiltinMcpPatch({
+    id: 'deepwork-chart',
+    serverName: CHART_MCP_SERVER_NAME,
+    command: options.command,
+    entry: options.entry,
+    env: options.env,
+  });
+}
+
+/** 合并连接器补丁、模型端点覆盖与内置服务；三者皆空返回 null（内核零改动启动） */
 export function buildRuntimePatch(
   connectors: ConnectorConfig[],
   endpointOverride: RuntimePatchOverride | null,
   browserPatch?: { insert: ConnectorPatchEntry[] } | null,
+  chartPatch?: { insert: ConnectorPatchEntry[] } | null,
 ): RuntimePatchItem[] | null {
   const items: RuntimePatchItem[] = [];
   const connectorPatch = buildConnectorPatch(connectors);
   if (connectorPatch) items.push(...connectorPatch);
   if (endpointOverride) items.push(endpointOverride);
-  // 浏览器服务放最后：它排在前面的 insert 之后被追加进内核的条目列表，
-  // 与「用户清单优先」的直觉一致（出问题时先怀疑内置的那一项）
+  /*
+   * 内置服务的顺序：**图表在前、浏览器在后**。
+   *
+   * 浏览器恒为最后一项是一条被断言钉住的约定（browser-test 段 2：
+   * 「出问题时先怀疑内置项」），所以新加的内置服务插在它前面，
+   * 而不是顺手追加到末尾 —— 追加会让那条断言红，而它红的原因
+   * 与「浏览器服务坏了」完全无关，属于最费时间的那类失败。
+   */
+  if (chartPatch) items.push(chartPatch);
   if (browserPatch) items.push(browserPatch);
   return items.length > 0 ? items : null;
 }
