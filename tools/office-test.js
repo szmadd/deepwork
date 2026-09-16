@@ -56,6 +56,8 @@ const { registerBuiltinTools } = require('../packages/core-host/dist/tools/built
 const root = path.resolve(__dirname, '..');
 const fixtures = path.join(root, 'tools', 'fixtures');
 const results = [];
+/** findPython 解析出的来源说明（哪一档命中的），打出来才知道测的是随包那份还是系统那份 */
+let pythonSource = null;
 const FIXED = new Date('2026-09-13T12:00:00Z');
 
 function check(name, ok, detail) {
@@ -455,24 +457,22 @@ async function toolSection() {
 // ══════════════════════════════════════════════════════════
 // 7. 独立校验（Python 标准库：另一个实现的 zip + XML 解析器）
 // ══════════════════════════════════════════════════════════
+/**
+ * 找可用的 Python —— 走产品自己的统一出口（`core-host/dist/runtime/python`），
+ * 而不是在测试里另写一套探测。
+ *
+ * 为什么非要用同一个出口：测试用一套解析规则、产品用另一套，那「测试通过」
+ * 就说明不了「产品上能用」—— 两条规则只是碰巧都叫 findPython 而已。
+ * 顺带，本文件此前自己维护的候选清单（含一条写死的本机路径）也可以退休了。
+ *
+ * 找不到时返回 null，调用方 SKIP：本机没装 Python 是**环境事实**，不是失败。
+ */
 function findPython() {
-  const candidates = [
-    process.env.DEEPWORK_PYTHON,
-    'python3',
-    'python',
-    'py',
-    // 本机托管运行时的兜底路径（与 tools/capture.sh 的写法同源：写死路径但可被环境变量覆盖）
-    'C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.exe',
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    try {
-      const probe = spawnSync(candidate, ['-c', 'import zipfile, xml.etree.ElementTree'], { stdio: 'ignore' });
-      if (probe.status === 0) return candidate;
-    } catch {
-      // 试下一个
-    }
-  }
-  return null;
+  const { resolvePythonRuntime } = require('../packages/core-host/dist/runtime/python');
+  const resolution = resolvePythonRuntime();
+  if (!resolution) return null;
+  pythonSource = resolution.label;
+  return resolution.bin;
 }
 
 /** 独立校验脚本：zip 完整性 + 每个 XML 部件良构 + 内容类型覆盖 + 关系目标可解析 */
@@ -522,6 +522,9 @@ function independentSection() {
     skippable('Python 独立校验（zip 完整性 / XML 良构 / 内容类型覆盖 / 关系目标）', false, '本机没有可用的 python');
     return;
   }
+  // 把用的是哪一档解释器打出来：随包那份与系统那份跑出的结论应当一致，
+  // 但这个前提值得**看得见**，而不是靠猜
+  console.log(`  （解释器来源：${pythonSource}）`);
 
   const checker = path.join(home, 'check.py');
   fs.writeFileSync(checker, PY_CHECKER, 'utf8');
