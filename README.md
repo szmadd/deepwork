@@ -10,6 +10,7 @@
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 设计决策：界面布局、差异审阅、终端、浏览器、分叉回放、沙箱安全模型 |
 | [docs/VERIFICATION.md](docs/VERIFICATION.md) | 验证与验收：自检套件清单、demo / smoke、UI 截图验收 |
 | [docs/PACKAGING.md](docs/PACKAGING.md) | 打包与分发：产物、硬约束、内网部署后的模型配置 |
+| [docs/DEPLOY.md](docs/DEPLOY.md) | 部署与运行时：随包 Node/Python/dsh、内网 pip 源、安装体检、已装组件处置策略 |
 | [docs/REAL-HARNESS.md](docs/REAL-HARNESS.md) | 接入真实内核（dsh / ACP）的方式与协议验证 |
 | [docs/REFERENCE.md](docs/REFERENCE.md) | 参考：环境变量全表、数据存放布局 |
 | [docs/DEVLOG.md](docs/DEVLOG.md) | 逐次开发记录（目标 / 改动 / 验证 / 踩坑 / 遗留 / 下一步）与里程碑快照 |

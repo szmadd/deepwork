@@ -76,12 +76,15 @@ Ollama `:11434` / LM Studio `:1234` 一类的本机端点当作主路径，并�
 **需求矩阵漏项**：4 条（FR-3.5 沙箱 / FR-3.8 图表 / FR-10.2 模型路由降级 / FR-10.5 崩溃上报）
 **既不在 M2 剩余、也不在 M3** —— 已补录于第七节。其中 **FR-10.2 的「模型 × 思考档」一半已落地**（见下）。
 
-验证基线：`npm run verify` **21 套中 20 套全绿**（diff / tools 19 / replay 29 / smoke **30** / partial 13 /
+验证基线：`npm run verify` **25 套**（diff / tools 19 / replay 29 / smoke **30** / partial 13 /
 terminal 22 / acp **40** / real-dsh 15 / skills 59 / skillctx 24 / memory 38 / schedule 68 /
 connectors 42 / usage **35** / browser 76 / office 130 / chart 126 / modelcfg 124 /
-**sandbox 39** / **sandbox-e2e 31**）；
-`real-dsh-mcp` 2026-09-16 复测 **8/8**（改动前后两棵树皆然）—— 此前记的「本机 3/8」已不再复现，
-原因未定，**不要再拿它当基线引用**（见 `docs/CONVENTIONS.md`）。
+**sandbox 41** / **sandbox-e2e 31** / **runtime 21** / **installer 29** / **pip 31** / **preflight 28**）；
+`browser-test` 在本会话环境里起不来 Edge 无头实例（`提前退出（code=0）`），属既有环境问题，
+其后的套件按上面清单单独跑过。
+`real-dsh-mcp` 的**结果不稳定**：2026-09-16 两轮实测分别是 8/8 与 3/8，而 3/8 那轮在
+**改动前的基线树（`bfd0710`）上同样复现** —— 所以**绝不拿它的单次结果当回归判据**，
+要判断回归必须改动前后各跑一次（见 `docs/CONVENTIONS.md`）。
 **它已被排到 verify 链尾** —— 它 exit=1 会中断 `&&` 链，排中间会让其后的套件（如 modelcfg）
 静默不跑（M2-H 轮发现并修正，见 DEVLOG）。**新增套件一律插在它之前。**
 
@@ -432,3 +435,31 @@ M2 的剩余清单（H/J/I/K）里没有，M3 的 A/B 两档里也没有。此�
 3. **8.2** 依赖 8.1 的形态结论。
 4. **8.3 最后做全量**（检查项里要覆盖 8.1/8.2 引入的新前提），但检查模块的骨架
    可以与 8.1 并行先建。
+
+### 8.6 落地结果（2026-09-16）
+
+四节按上面的顺序做完，逐节的落地物与验收：
+
+| 节 | 落地物 | 验收（进 verify） |
+|---|---|---|
+| 8.4 | `deploy.ts` 的 `INSTALL_POLICY` + electron-builder.yml 的 nsis 显式配置（`allowDowngrade: false` / `deleteAppDataOnUninstall: false`） | `tools/installer-test.js` **29 项** |
+| 8.1 | `core-host/src/runtime/python.ts` 的 `resolvePythonRuntime()` + 随包 Python 3.12.10 + extraResources 落位 + 设置页「随包 Python 运行时」 | `tools/runtime-test.js` **21 项** |
+| 8.2 | `deploy.ts` 的 `PipSource` / `validatePipSource` / `pipSourceArgs` + `runtime/pip.ts` 的 `pipArgv`/`pipEnv`/`runPip` + 设置页表单 | `tools/pip-test.js` **31 项** |
+| 8.3 | `runtime/preflight.ts` 的 `runPreflight()` + `runtime.preflight` RPC + 设置页「运行环境体检」 | `tools/preflight-test.js` **28 项** |
+
+**取证修正了原计划里的一个隐含假设**：「随包 Python 3.12」不等于「3.12 系列最新」——
+3.12.11 起 python.org **不再发布 Windows 二进制产物**，拿不到可解压的形态。
+版本因此钉在 3.12.10，理由写在 `BUNDLED_RUNTIMES` 注释与 `docs/DEPLOY.md`。
+
+**形态结论**：选 nuget 完整发行版（压缩 14.5MB / 解压后 37.4MB，自带 pip 25.0.1），
+不选 embeddable（11.1MB，无 pip，要魔改 `._pth`）—— 判据是 §8.2 的 pip 源需求。
+
+**未做（如实记）**：NSIS 安装脚本内嵌体检（本机没有 NSIS 工具链）、
+卸载向导里的「清数据」勾选项、真机装/卸验收。
+理由与替代路径见 `docs/DEPLOY.md` §五。
+
+### 8.7 下一批（§八 之外，仍不依赖后端平台）
+
+第八节做完后，ROADMAP 里「不依赖后端平台」的存量还剩三块，见 §七 与 §五：
+FR-3.5 的模式切换入口、FR-10.2 后半（自动路由与降级提示）、§五 的八项遗留债。
+运维债（CI / 推远端 / 打 tag）与跨平台打包仍按原判据挂着。
