@@ -7,6 +7,7 @@
 export * from './browser';
 export * from './chart';
 export * from './config';
+export * from './deploy';
 export * from './diff';
 export * from './events';
 export * from './memory';
@@ -21,9 +22,6 @@ export * from './skills';
 export * from './terminal';
 export * from './usage';
 export * from './workspace';
-
-/** 运行时数据根目录名（位于用户主目录下） */
-export const DATA_DIR_NAME = '.deepwork';
 
 export const APP_NAME = '深边AI Work';
 export const APP_ID = 'com.deepwork.desktop';

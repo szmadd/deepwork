@@ -10,6 +10,7 @@
  * 因此旧版本写下的 config.json 少字段也能正常读出，不需要迁移脚本。
  */
 
+import type { PipSource } from './deploy';
 import type { AgentMode } from './session';
 import type { ModelPrice } from './usage';
 
@@ -143,6 +144,14 @@ export interface AppConfig {
    * 默认空：估算显示为「未定价」而不是 0，因为 0 会被读成「免费」。
    */
   modelPrices: Record<string, ModelPrice>;
+  /**
+   * 内网 pip 源（§8.2）。**不设默认值** —— 缺省就是「未配置」，
+   * 此时 pip 走它自己的默认源，离线机器上如实报错。
+   *
+   * 刻意不放进 CONFIG_FIELDS：它是个嵌套对象，设置页有专门的表单与
+   * 「测试连通」动作，塞进通用渲染器只会得到一个渲染不出来的输入框。
+   */
+  pipSource?: PipSource;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {

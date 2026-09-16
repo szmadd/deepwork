@@ -8,6 +8,7 @@
 
 import type { AppConfig, EndpointTestResult } from './config';
 import type { BrowserShotImage, BrowserShotInfo, BrowserState } from './browser';
+import type { PreflightReport, RuntimeStatus } from './deploy';
 import type { AgentEvent } from './events';
 import type { MemoryEntry, MemoryLayer, MemoryLayerStat } from './memory';
 import type { ConnectorConfig, ConnectorState } from './mcp';
@@ -272,6 +273,19 @@ export interface RpcContract {
    * 那条一致性等式就此失效（见 usage.ts 顶部注释）。
    */
   'usage.summary': { params: Record<string, never>; result: UsageSummary };
+
+  /**
+   * 部署与运行时（ROADMAP §八）。
+   *
+   * `runtime.preflight` 用的就是安装体检那一份实现（core-host/src/runtime/preflight.ts）——
+   * 设置页里的报告与安装器里的报告**必须是同一个东西**，否则「装的时候说没事、
+   * 用起来才发现缺东西」会变成常态，而两份实现的分歧没有任何机制能发现。
+   *
+   * `runtime.python` 如实回报当前解析到哪个 Python（随包 / 系统 / 显式指定），
+   * 与 `runtimeSource` 同一条纪律：界面显示「用的是哪一个」，不让人去猜。
+   */
+  'runtime.preflight': { params: { writeDir?: string }; result: PreflightReport };
+  'runtime.python': { params: Record<string, never>; result: RuntimeStatus };
 }
 
 export type RpcMethod = keyof RpcContract;
