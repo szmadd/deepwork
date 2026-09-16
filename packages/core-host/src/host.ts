@@ -26,7 +26,9 @@ import {
   type MemoryLayerStat,
   type ModelCatalog,
   type ModelDescriptor,
+  type PreflightReport,
   type RunStatus,
+  type RuntimeStatus,
   SANDBOX_MODES,
   type SandboxEscalation,
   type SandboxStatus,
@@ -48,6 +50,8 @@ import { clearApiKey, endpointRestartMessage, endpointRoutingFingerprint, getApi
 import { testEndpoint } from './models/endpoint-test';
 import { DEFAULT_MODE, DEFAULT_MODEL, catalogUnavailable, mockCatalog } from './models';
 import { configPath, ensureDirs, guardPath, homeDir, readJson, writeJson } from './paths';
+import { runPreflight } from './runtime/preflight';
+import { defaultBundledDirs, resolvePythonRuntime } from './runtime/python';
 import { SchedulerEngine } from './scheduler/engine';
 import { ScheduleStore } from './scheduler/store';
 import { Guard } from './security/guard';
@@ -1075,6 +1079,41 @@ export class DeepworkHost {
   // 这里只有面板用的三个方法，都是「用户自己的动作」，不走审批。
   // 模型侧的六个动作走工具注册表与内核加载的 MCP 服务，那条路径必须过审批。
   // 两条入口的授权语义不同，不能合并 —— 合并等于给模型留一条绕过审批的旁路。
+
+  /**
+   * 环境体检（ROADMAP §8.3）。
+   *
+   * 与安装器用的是**同一份实现** —— 设置页里跑出来的报告与安装时跑出来的报告
+   * 必须是同一个东西。两份实现一旦分叉（比如一边多查一项），分歧不会有任何报错，
+   * 只会在「装的时候说没事、用起来才发现缺东西」时暴露出来。
+   *
+   * writeDir 默认取用户数据目录：那是应用**自己**要持续写入的地方，
+   * 比安装目录更贴近「写不进去就真的用不了」这个语义。安装目录的写权限
+   * 由安装器在装之前判断（那时应用还没跑起来），两者互补而不是重复。
+   */
+  preflight(writeDir?: string): PreflightReport {
+    return runPreflight({
+      writeDir: writeDir ?? homeDir(),
+      pipSource: this.getConfig().pipSource,
+    });
+  }
+
+  /**
+   * 当前解析到的 Python 运行时（ROADMAP §8.1）。
+   *
+   * 找不到时 `found: false` 且带上找过的位置 —— 与 `runtimeSource` 同一条纪律：
+   * 界面显示「用的是哪一个」，而不是让人去猜为什么没生效。
+   */
+  pythonRuntime(): RuntimeStatus {
+    const resolution = resolvePythonRuntime();
+    return {
+      found: resolution !== null,
+      source: resolution?.source ?? null,
+      label: resolution?.label ?? '未找到可用的 Python',
+      bin: resolution?.bin ?? null,
+      bundledDirs: defaultBundledDirs(),
+    };
+  }
 
   browserState(): BrowserState {
     return this.browser.state();

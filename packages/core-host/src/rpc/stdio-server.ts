@@ -145,6 +145,12 @@ export function buildHandlers(host: DeepworkHost): Record<RpcMethod, Handler> {
     'browser.close': () => host.browserClose(),
 
     'usage.summary': () => host.usageSummary(),
+
+    // 部署与运行时（§8）：体检与 Python 来源。两者都是只读查询，
+    // 不改任何状态 —— 与 fs.* 同一类，界面可以放心在加载时调用。
+    'runtime.preflight': (p) =>
+      host.preflight(typeof p.writeDir === 'string' && p.writeDir ? p.writeDir : undefined),
+    'runtime.python': () => host.pythonRuntime(),
   };
 }
 
