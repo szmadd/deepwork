@@ -28,6 +28,7 @@ import {
   type ModelDescriptor,
   type RunStatus,
   SANDBOX_MODES,
+  type SandboxEscalation,
   type SandboxStatus,
   type ScheduleSpec,
   type ScheduleTask,
@@ -1124,6 +1125,8 @@ export class DeepworkHost {
       reason: string;
       diff?: FileDiff;
       selectable?: boolean;
+      /** 模型在申请放宽沙箱档位时带上（见 protocol 的 SandboxEscalation） */
+      escalation?: SandboxEscalation;
     },
   ): Promise<ApprovalOutcome> {
     const request: ApprovalRequest = {
@@ -1138,6 +1141,8 @@ export class DeepworkHost {
       // 中间任何一层「顺手裁剪」都会让审批退化成盲签
       diff: input.diff,
       selectable: input.selectable,
+      // 升级申请同样原样带过去 —— 它是「用户凭什么判断该不该点头」的全部信息
+      escalation: input.escalation,
       createdAt: Date.now(),
       expiresAt: Date.now() + 5 * 60_000,
     };

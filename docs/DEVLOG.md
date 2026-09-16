@@ -2760,3 +2760,93 @@ skills 59 / skillctx 24 / memory 38 / schedule 68 / connectors 42 / usage 35）�
    「此时才会弹审批」从引用内核文档变成本机观测。结论可能为「模型不会重试」。
 2. 补 `artifacts/ui-chart.png`（装 Electron 后跑 `capture.sh chart`）。
 3. 遗留债插空（§五）：主题切换器、Composer `/` 补全、桌面通知、Trajectory 逐事件分叉等。
+
+## 2026-09-16（第三轮）· 沙箱升级路径取证：从「引用内核文档」到本机观测，并把模型的理由捞回审批弹窗
+
+**目标**
+
+清掉上轮留下的取证型遗留项：界面上那句「模型可以带 `sandbox_permissions` 重试，
+**那时才会**出现审批弹窗」当时是**引用 `dsh-fs-sandbox` 的 README**，不是本机观测。
+这一轮要回答两个问题，并把答案落到产品上：
+
+1. 模型带升级参数重试时，链路上究竟发生什么？（审批弹窗真会出现吗？批准/拒绝分别怎样？）
+2. 用户在那个弹窗里，**有没有足够信息**做判断？
+
+问题 2 是问之前没意识到的 —— 它决定了这一轮不只是「写个测试」。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/security.ts` | 新增 `SandboxEscalation`（档位 / `knownMode` / 理由）与 `parseSandboxEscalation(rawInput)`；`SANDBOX_JUSTIFICATION_ARG` 常量；`ApprovalRequest.escalation?` |
+| `packages/core-host/src/adapter/harness-sidecar.ts` | `tool.started` 那一帧把 `parseSandboxEscalation(rawInput)` 存进 `toolCalls`（权限请求帧里没有它，只有这一帧有）；`handlePermission` 把它带进审批请求，并换掉说法（「模型在申请放宽沙箱档位」而不是「内核请求授权」） |
+| `packages/core-host/src/tools/registry.ts` · `host.ts` | `ApprovalInput.escalation` 与 `ApprovalRequest.escalation` 透传（与 `diff` 同级：都是「用户凭什么判断」的信息） |
+| `apps/desktop/src/components/ApprovalDialog.tsx` · `styles.css` | 新增 `EscalationBlock`：档位（`<code>` 突出）+ **模型给的理由原文引用** + 「批准与拒绝都只作用于这一次调用，沙箱档位本身不变」。琥珀色系，与「被沙箱拦下」卡片同源 |
+| `tools/fixtures/openai-stub-llm.js` | ①剧本步进从 `hasToolResult ? 1 : 0` 改成**「已跑完的工具结果数」**（2 步剧本下完全等价，3 步以上才推得动 —— E 组需要「被拒 → 重试 → 收尾」）；②新增 `entry.toolParams` 记录内核发来的工具 schema（升级参数是按「有没有挂限制性后端」门控广告的，这是个**可观测量**，只能从真请求里读） |
+| `tools/sandbox-e2e.js` | 场景矩阵 5 → **8**（新增 E1 / E2 / F）；`runScenario` 支持「带升级参数重试」的剧本；记录改成**逐次 write 尝试**（升级场景里有两次）；新增 `escalationSchema`（内核有没有广告那两个参数）与 `escalationAsked`（宿主收到的升级申请） |
+| `tools/sandbox-test.js` | 新增第 9 节「升级申请解析」9 项 + mock 帧字面量防漂移 2 项（不依赖真内核也要跑） |
+| `packages/core-host/src/adapter/mock-harness.ts` | 新增 `MOCK_SANDBOX_ESCALATION` / `MOCK_ESCALATION_REJECTED` 与 `simulateEscalation`（走**真实的** `ctx.requestApproval` 通道，不伪造事件），由 `DEEPWORK_MOCK_SANDBOX_ESCALATION=1` 开闸 |
+| `apps/desktop/electron/main.js` · `tools/capture.sh` | 截图驱动把「升级弹窗」也列入要留在画面上的审批；新增 `sandbox-escalation` 场景 |
+
+**验证**
+
+真内核端到端（`test:sandbox-e2e`，31/31，8 场景真 ACP + 真工具 + 真落盘）：
+
+| 断言 | 当场输出 |
+|---|---|
+| 内核把升级参数广告给了模型 | `{"hasMode":true,"hasJustification":true,"modes":["workspace-write","danger-full-access"]}` |
+| **B1（被拒但没重试）审批请求数 = 0** | `审批请求数=0`（「此时才会弹」里那个「才」字的负对照） |
+| **E1 重试 → 出现审批请求** | `write 次数=2 审批请求=1`；重试那次 `tool.completed ok=true`；文件**落盘** |
+| E1 升级申请逐字到宿主 | 宿主解析出的理由 === 替身发给内核那一句（不是「非空」就算过） |
+| E2 同样弹审批、拒绝后不落盘 | 内核原话 `Error: the user rejected escalating this operation to "danger-full-access"` |
+| **F 同级申请不问人** | `not strictly wider` 且 `审批请求数=0`（fail-closed，不是「先问再说」） |
+
+其余：`sandbox-test 41/41`（原 32）· `office 130/130` · `chart 126/126` · `modelcfg 124/124` ·
+`real-dsh-e2e 15/15` · **`real-dsh-mcp 8/8`** · `typecheck` 三包 + 渲染层通过 · `build:renderer` 通过。
+整链 `verify` 跑到 `browser-test`（Edge 在本会话拉不起无头实例，环境性）前全绿。
+
+mock 路径另用一次性探针验证过（**已删**，命令与结论留在这里）：开
+`DEEPWORK_MOCK_SANDBOX_ESCALATION=1` 跑一轮 mock，宿主收到的审批请求里确实带着
+`{"mode":"danger-full-access","knownMode":true,"justification":"…"}`，随后那帧工具结果按批准/拒绝如实分叉。
+
+**踩坑与修复**
+
+1. **一次误编辑把 `private toolCalls` 的声明换成了占位符。** 我想加字段时先删后加，第二步的
+   `old_string` 没对上，工具报「成功」但文件里留下一个 `private _unused_placeholder = null;`。
+   写测试之前先 `npm run build` 是唯一能发现它的动作 —— 类型检查会立刻报「找不到 toolCalls」。
+   **教训：同一处「删 + 加」要一次做完，别分两步。**
+2. **`sandbox-test.js` 结构被改坏过一次**（`denialDialectSection` 少一个闭括号，把文件后半截
+   全吞进函数体，`node --check` 报 `Unexpected end of input`）。原因同上：插入新函数时
+   把旧函数的收尾一块搬走了。**加新节时要先确认旧节的起止行，再动手。**
+3. **两个「Grep 超时」**（在整仓 `--include=*.md` 上搜中文词）—— 大仓里别用宽 glob 搜中文短词，
+   落到具体目录再搜。
+4. **文档里的 `real-dsh-mcp 3/8` 基线已失效。** 本轮在**改动前的干净树**（`615c394`）与改动后的
+   树上各跑一次，两次都是 **8/8 全绿**。也就是说 2026-09-13 记的那 5 项失败今天不成立，
+   归因未定（可能是当轮环境，也可能被后续某次改动顺带修掉）。已把该记录改成「不再复现，
+   不要当基线引用」，ROADMAP 与 CONVENTIONS 两处同步。
+5. **顺手发现一处文档笔误**：CONVENTIONS 里写「不是 `real-dsh-chart` 补丁注入引起」——
+   没有这个套件，应为「当轮的图表补丁注入」，已改。
+6. **复跑 `sandbox-e2e` 时它的现场清理失败了一次**，在 `%LOCALAPPDATA%` 下留了一个
+   `deepwork-sbx-e2e-out-*`。原因是本会话 shell 层有一道「按本轮累计删除数」的删除保护
+   （`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，阈值 50，这次报了 544）—— 上一轮 `capture.sh`
+   的注释里记过同一件事，当时以为 `fs.rmSync` 不受影响，**实测受影响**。已手工清掉。
+   脚本本身的行为是对的（清理失败时明确打印「工作区外现场未清理干净：<路径>」，
+   而不是静默留下垃圾），所以这一条不改代码，只留记录：**跑完沙箱 e2e 要顺手看一眼有没有这行**。
+
+**遗留**
+
+- **`artifacts/ui-sandbox-escalation.png` 未产出**：本机 `node_modules/electron/dist` 仍缺失
+  （二进制没下，install 脚本被网络挡住），`capture.sh` 按设计拒绝启动。场景与 mock 帧都已就绪，
+  **升级弹窗的渲染证据目前只到读源码断言**，如实记为未验收项（与上轮 `ui-chart.png` 同一处境）。
+- 升级弹窗里的「当前档位」没有显示（只显示要提到哪一档）。档位事实在 `status().sandbox`，
+  但审批请求构造时适配器没有读它 —— 下一轮可以把「从 A 提到 B」讲全。
+- `CONVENTIONS.md` 的 `npm run verify` 清单里，若干套件的项数（IPC / ACP / 用量 / 模型配置）
+  早已与实测不符（本轮只更新了自己改动的两行）。ROADMAP 有「基线项数变更史」一节在追这笔账，
+  建议下一轮找一次性机会把清单与实测对齐。
+
+**下一步**
+
+1. **沙箱模式切换入口**（FR-3.5 最后一块）：模式是**加载期**参数（同一进程内换不了，
+   见 DEVLOG 2026-09-15 第五轮），所以「切换」= 改配置 + 重启内核，界面上要把这件事说清楚。
+2. 补两张缺的截图（`ui-chart.png` / `ui-sandbox-escalation.png`）—— 需要先把 Electron 二进制装上。
+3. 遗留债插空（§五）：主题切换器、Composer `/` 补全、桌面通知、Trajectory 逐事件分叉等。

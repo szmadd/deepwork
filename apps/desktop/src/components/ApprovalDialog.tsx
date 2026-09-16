@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { ApprovalDecision, ApprovalRequest, FileDiff } from '@deepwork/protocol';
+import type { ApprovalDecision, ApprovalRequest, FileDiff, SandboxEscalation } from '@deepwork/protocol';
 import { DiffView } from './DiffView';
 
 interface ApprovalDialogProps {
@@ -71,6 +71,8 @@ export function ApprovalDialog({ request, onDecide }: ApprovalDialogProps) {
             </>
           ) : null}
 
+          {request.escalation ? <EscalationBlock escalation={request.escalation} /> : null}
+
           <div className="modal-label">判定依据</div>
           <div className="modal-reason">{request.reason}</div>
 
@@ -110,6 +112,38 @@ export function ApprovalDialog({ request, onDecide }: ApprovalDialogProps) {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * 升级申请块。
+ *
+ * ── 为什么它值得单开一块，而不是塞进「判定依据」一行 ────────────────────
+ * 内核发权限请求时只带两个选项（allow_once / reject_once），模型的升级理由
+ * 在过 ACP 时就丢了；宿主是从工具入参的 `rawInput` 里把它捞回来的。也就是说
+ * **这一段文字是靠适配器补的**，不是内核给的 —— 正因如此它必须显眼：
+ * 用户此刻要回答的不是「要不要跑这个操作」，而是「要不要为这一次调用放宽沙箱」。
+ * 把两件事混成一句话，用户会以为自己在批准一次普通操作。
+ *
+ * 措辞纪律：只陈述模型申请了什么、理由是什么，不做任何诱导。
+ * 「仅这一次」是事实（内核只给当次调用盖宽档位），不是安抚。
+ */
+function EscalationBlock({ escalation }: { escalation: SandboxEscalation }) {
+  return (
+    <>
+      <div className="modal-label">模型在申请放宽沙箱</div>
+      <p className="modal-escalation">
+        它请求把本次调用的沙箱档位提到 <code>{escalation.mode}</code>
+        {escalation.knownMode ? '' : '（内核新档位，本版本不认识）'}，仅这一次。
+      </p>
+      <div className="modal-label">模型给的理由</div>
+      <div className="modal-reason modal-reason-quoted">
+        {escalation.justification || '（这次申请没带理由）'}
+      </div>
+      <p className="modal-escalation modal-escalation-note">
+        批准与拒绝都只作用于这一次调用，沙箱档位本身不变。
+      </p>
+    </>
   );
 }
 

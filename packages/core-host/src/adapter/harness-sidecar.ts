@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AgentEventInput, ModelCatalog, RunStatus } from '@deepwork/protocol';
+import { parseSandboxEscalation, type SandboxEscalation } from '@deepwork/protocol';
 import { createLogger } from '../logger';
 import { applySelectedHunks, buildFileDiff } from '../diff';
 import {
@@ -112,7 +113,16 @@ export class HarnessSidecarAdapter implements HarnessAdapter {
   /** 当前轮次的上下文，供反向请求（权限/写文件）使用 */
   private activeRun: RunContext | null = null;
   /** 已见过的 tool_call：权限请求只带 id，要靠它还原「是哪个工具、要动什么」 */
-  private toolCalls = new Map<string, { name: string; title: string; subject: string }>();
+  /**
+   * 已见过的 tool_call：权限请求只带 id，要靠它还原「是哪个工具、要动什么」。
+   *
+   * `escalation` 也挂在这里，理由同上：权限请求帧里**没有**模型给的升级理由，
+   * 唯一能看到它的地方是 tool_call 的 `rawInput`，而那一帧先于权限请求到达。
+   */
+  private toolCalls = new Map<
+    string,
+    { name: string; title: string; subject: string; escalation: SandboxEscalation | null }
+  >();
   /** 累积的助手文本，轮次结束时发 message.completed */
   private assistantText = '';
   private abortedRuns = new Set<string>();
@@ -459,6 +469,8 @@ export class HarnessSidecarAdapter implements HarnessAdapter {
         // 权限请求里只有工具 id，没有入参。把路径留在这里，审批弹窗才有东西可看 ——
         // 否则用户面对的是「允许 unknown 吗」，等于盲批。
         subject: subjectOfInput(rawInput),
+        // 升级申请同理：权限请求帧不带理由，只能趁这一帧还在时把它取出来
+        escalation: parseSandboxEscalation(rawInput),
       });
     }
     ctx.emit(event);
@@ -491,7 +503,12 @@ export class HarnessSidecarAdapter implements HarnessAdapter {
     const outcome = await ctx.requestApproval({
       tool: known?.name ?? 'unknown',
       subject: known?.subject || known?.title || '内核请求权限',
-      reason: '内核在执行该操作前请求授权',
+      // 有升级申请时说法必须换：这时用户要拍板的不是「要不要执行」，
+      // 而是「要不要为这一次操作放宽沙箱」—— 两者是完全不同的决定。
+      reason: known?.escalation
+        ? '模型在申请放宽沙箱档位（仅这一次调用）'
+        : '内核在执行该操作前请求授权',
+      escalation: known?.escalation ?? undefined,
     });
 
     // 选项 id 的键名也不统一：规格写 `id`，dsh 实测给的是 `optionId`。两个都认。

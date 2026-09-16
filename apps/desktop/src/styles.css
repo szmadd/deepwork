@@ -860,6 +860,44 @@ pre {
   font-size: 12px;
 }
 
+/*
+ * 沙箱升级申请（模型在申请放宽本次调用的档位）。
+ *
+ * 用与「被沙箱拦下」同一支琥珀色系：两处说的是同一件事的两端
+ * （那边是「拦下了，还留了一跳」，这边是「模型踩上了那一跳」），
+ * 视觉上同类能让用户认出这是同一条线索。仍然不用红 —— 这不是错误，
+ * 是内核设计内的二次征询。
+ */
+.modal-escalation {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.modal-escalation code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #fdf8ec;
+  border: 1px solid rgba(210, 153, 34, 0.4);
+  color: #8a6a1a;
+}
+
+/* 模型的理由原样引用：它是「用户凭什么点头」的全部信息，不做归纳不改写 */
+.modal-reason-quoted {
+  border-left: 2px solid rgba(210, 153, 34, 0.55);
+  padding-left: 10px;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.modal-escalation-note {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
 .modal-check {
   display: flex;
   align-items: center;

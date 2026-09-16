@@ -1,4 +1,4 @@
-import type { FileDiff } from '@deepwork/protocol';
+import type { FileDiff, SandboxEscalation } from '@deepwork/protocol';
 import { createLogger } from '../logger';
 import type { Guard } from '../security/guard';
 
@@ -18,6 +18,14 @@ export interface ApprovalInput {
    * 界面只管按这个开关渲染，规则不在两处各写一遍。
    */
   selectable?: boolean;
+  /**
+   * 模型在申请放宽沙箱档位时带上。
+   *
+   * 这一条与上面几项不同：它不描述「要做什么」，而描述「这次授权是哪种授权」。
+   * 界面据此换说法 —— 用户要拍板的是「要不要为这一次调用放宽档位」，
+   * 而不是「要不要执行这个操作」。
+   */
+  escalation?: SandboxEscalation;
 }
 
 /**

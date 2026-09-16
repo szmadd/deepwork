@@ -32,6 +32,29 @@ export const MOCK_SANDBOX_DENIAL = [
 ].join('\n');
 
 /**
+ * 一次沙箱升级申请的演示内容（模型申请把本次调用提到最宽档位）。
+ *
+ * 与 `MOCK_SANDBOX_DENIAL` 配对：那张卡说明「被拦下了，还留了一跳」，
+ * 这一帧演示**模型踩上那一跳之后界面长什么样**。入参形状取自 sandbox-e2e 的
+ * E1 场景（替身端点照内核提示重试时真正发出去的那份 write 入参）。
+ */
+export const MOCK_SANDBOX_ESCALATION = {
+  path: '../shared/cache.json',
+  mode: 'danger-full-access',
+  justification: '这份缓存要在工作区外的共享目录里落地，否则下一次运行读不到它。',
+} as const;
+
+/**
+ * 用户拒绝升级时内核的原话 —— **真帧逐字副本，不要手改。**
+ *
+ * 来源：`node tools/sandbox-e2e.js` 的 E2 场景（2026-09-16）跑出的
+ * `tool.completed.output`。它与 `tools/sandbox-test.js` 第 9 节的
+ * REAL_ESCALATION_REJECTED 指同一份字面量，同样靠断言而不是注释来防漂移。
+ */
+export const MOCK_ESCALATION_REJECTED =
+  'Error: the user rejected escalating this operation to "danger-full-access"';
+
+/**
  * Mock 内核。
  *
  * 存在的意义有两个，都很重要：
@@ -281,6 +304,29 @@ export class MockHarnessAdapter implements HarnessAdapter {
         this.simulateSandboxDenial(ctx);
       }
 
+      /*
+       * 模拟「模型带 sandbox_permissions 重试，于是弹审批」。
+       *
+       * ── 为什么要有这一帧 ──────────────────────────────────────────────
+       * 与上面那帧同理，而且更迫切：升级审批弹窗的**全部内容**（档位、模型写的理由）
+       * 都是宿主从工具入参里补出来的，靠真实内核根本凑不齐一次可复现的画面 ——
+       * 得先把内核配成受限档位、诱导模型越界、再赌它真的照提示重试。
+       * 没有这一帧，这个弹窗在自动化路径上永远看不见，「显示了什么」只剩人工去试。
+       *
+       * ── 它证明什么、不证明什么 ────────────────────────────────────────
+       * 证明：**渲染路径可达**（档位与理由真的画得出来）。
+       * 不证明：真内核下模型会重试。那件事的取证在 tools/sandbox-e2e.js 的 E 组
+       * （真内核 + 真 ACP + 真落盘），那里同时给出了「模型不会自动重试」的对照。
+       *
+       * ── 为什么 await 它的结果 ─────────────────────────────────────────
+       * 因为它后面那一帧要如实反映用户点了什么。不给审批结论就编一个成功，
+       * 等于在演示链里放进一句没人负责的话。
+       */
+      if (process.env.DEEPWORK_MOCK_SANDBOX_ESCALATION === '1') {
+        await this.think(ctx, '工作区外那个目录写不进去 —— 按提示带 sandbox_permissions 申请一次更宽权限。');
+        await this.simulateEscalation(ctx);
+      }
+
       const completionTokens = Math.round(summary.length / 2);
       ctx.emit({
         type: 'usage',
@@ -422,6 +468,52 @@ export class MockHarnessAdapter implements HarnessAdapter {
       // 逐字真帧副本，与解析层的参照物是同一份字面量（见 MOCK_SANDBOX_DENIAL）
       output: MOCK_SANDBOX_DENIAL,
       durationMs: 3,
+    });
+  }
+
+  /**
+   * 造一次「带升级申请的审批」（只在 DEEPWORK_MOCK_SANDBOX_ESCALATION=1 时走到）。
+   *
+   * 注意它走的是**与真内核同一条**宿主审批通道（ctx.requestApproval），
+   * 而不是自己伪造一帧审批事件 —— 伪造的话，这个场景证明的只是
+   * 「弹窗会渲染我塞的字段」，证不了「适配器补出来的升级信息能到弹窗」。
+   * 真内核那条路已在 sandbox-e2e 的 E1 里验过（宿主收到的档位与理由与发出去的逐字相同）。
+   */
+  private async simulateEscalation(ctx: RunContext): Promise<void> {
+    const call: ToolCall = {
+      id: `call_${crypto.randomUUID().slice(0, 8)}`,
+      name: 'fs.write',
+      args: {
+        path: MOCK_SANDBOX_ESCALATION.path,
+        content: '{}\n',
+        sandbox_permissions: MOCK_SANDBOX_ESCALATION.mode,
+        justification: MOCK_SANDBOX_ESCALATION.justification,
+      },
+      summary: `写入工作区外的 ${MOCK_SANDBOX_ESCALATION.path}（申请放宽沙箱）`,
+      risk: 'confirm',
+    };
+    ctx.emit({ type: 'tool.started', runId: ctx.runId, call });
+
+    const outcome = await ctx.requestApproval({
+      tool: 'fs.write',
+      subject: MOCK_SANDBOX_ESCALATION.path,
+      reason: '模型在申请放宽沙箱档位（仅这一次调用）',
+      escalation: {
+        mode: MOCK_SANDBOX_ESCALATION.mode,
+        knownMode: true,
+        justification: MOCK_SANDBOX_ESCALATION.justification,
+      },
+    });
+
+    ctx.emit({
+      type: 'tool.completed',
+      runId: ctx.runId,
+      callId: call.id,
+      ok: outcome.approved,
+      output: outcome.approved
+        ? `已按升级后的档位写入 ${MOCK_SANDBOX_ESCALATION.path}（仅这一次调用生效）`
+        : MOCK_ESCALATION_REJECTED,
+      durationMs: 4,
     });
   }
 

@@ -423,6 +423,109 @@ function denialDialectSection(runnerOutputs = []) {
       ? ''
       : `mock=${JSON.stringify(MOCK_SANDBOX_DENIAL.slice(0, 80))}`,
   );
+
+  escalationArgsSection();
+}
+
+/**
+ * 升级申请入参的**逐字真帧副本** —— 不要手改它。
+ *
+ * 来源：`node tools/sandbox-e2e.js` 的 E1 场景（2026-09-16）—— 替换身端点照内核
+ * 拒绝提示重试时，实际发出去的那一份 write 入参。它是内核校验通过、并落到
+ * `tool_call.rawInput` 里的那份内容；宿主侧从它解析出档位与理由，已由 e2e 用
+ * 「与发出去的那句逐字相同」另行校验，两份互为独立参照。
+ *
+ * ── 为什么这一节必须有 ──────────────────────────────────────────────
+ * 升级申请的解析是**界面呈现的前提**：内核过 ACP 时把模型的理由丢了，
+ * 全靠这一层从入参捞回来。它一旦坏掉，界面上的表现不是「少一行字」，
+ * 而是用户面对一个「允许 / 拒绝」却不知道模型在申请什么 —— 版式上完全正常。
+ * 纯函数断言不依赖真实内核，任何环境都要跑。
+ */
+const REAL_ESCALATION_ARGS = {
+  path: 'C:/out/escape.txt',
+  content: 'probe E1\n',
+  sandbox_permissions: 'danger-full-access',
+  justification: '探针要写到工作区外的 C:/out',
+};
+
+/**
+ * 「用户拒绝了升级」时内核输出的**逐字真帧副本** —— 不要手改它。
+ *
+ * 来源：`node tools/sandbox-e2e.js` 的 E2 场景（2026-09-16）。
+ * 它与 mock 内核里那帧 MOCK_ESCALATION_REJECTED 指同一份字面量，靠下方断言防漂移。
+ */
+const REAL_ESCALATION_REJECTED =
+  'Error: the user rejected escalating this operation to "danger-full-access"';
+
+function escalationArgsSection() {
+  section('9) 升级申请解析（审批弹窗凭什么说清「模型在申请放宽档位」）');
+  const { parseSandboxEscalation, SANDBOX_JUSTIFICATION_ARG } = require(
+    path.join(ROOT, 'packages/protocol/dist/security.js'),
+  );
+
+  const parsed = parseSandboxEscalation(REAL_ESCALATION_ARGS);
+  check(
+    '真帧入参 → 认出升级申请，档位与理由逐字保真',
+    parsed !== null &&
+      parsed.mode === 'danger-full-access' &&
+      parsed.knownMode === true &&
+      parsed.justification === REAL_ESCALATION_ARGS.justification,
+    JSON.stringify(parsed),
+  );
+  check(
+    '配套理由的入参名与内核契约一致（justification）',
+    SANDBOX_JUSTIFICATION_ARG === 'justification',
+    SANDBOX_JUSTIFICATION_ARG,
+  );
+
+  // 没有升级参数时必须是 null，否则每一次普通写入的审批弹窗都会挂上「模型在申请放宽档位」
+  check(
+    '普通写入入参（无 sandbox_permissions）不被误判为升级申请',
+    parseSandboxEscalation({ path: 'a.txt', content: 'x' }) === null,
+  );
+  check('空值 / 非对象入参不被误判', parseSandboxEscalation(undefined) === null && parseSandboxEscalation('x') === null);
+  check(
+    'sandbox_permissions 是空串时不算申请（内核同样不认它）',
+    parseSandboxEscalation({ sandbox_permissions: '   ', justification: '理由' }) === null,
+  );
+
+  // 未知档位保真：与拒绝解析同一条纪律，不因为不认识就把申请抹掉
+  const unknown = parseSandboxEscalation({ sandbox_permissions: 'quantum-superuser', justification: '理由' });
+  check(
+    '未知档位仍被识别为升级申请，knownMode=false（界面照实说是新档位，而不是当作没有申请）',
+    unknown !== null && unknown.mode === 'quantum-superuser' && unknown.knownMode === false,
+    JSON.stringify(unknown),
+  );
+  check(
+    '缺 justification 时退化成空串而不是丢失整条申请（宿主仍有话可说）',
+    parseSandboxEscalation({ sandbox_permissions: 'danger-full-access' })?.justification === '',
+  );
+
+  /*
+   * 防漂移：mock 演示链演的那句拒绝原话，必须与真帧副本逐字相同。
+   *
+   * 与第 7 节最后一条同一条纪律：靠注释记住「两处一起改」是记不住的。
+   * 这一句是要出现在截图上的，漂了就会变成「界面上演的和内核说的是两回事」。
+   */
+  const { MOCK_ESCALATION_REJECTED, MOCK_SANDBOX_ESCALATION } = require(
+    path.join(ROOT, 'packages/core-host/dist/adapter/mock-harness.js'),
+  );
+  check(
+    'mock 的「用户拒绝升级」原话与真帧副本逐字相同（防漂移）',
+    MOCK_ESCALATION_REJECTED === REAL_ESCALATION_REJECTED,
+    MOCK_ESCALATION_REJECTED === REAL_ESCALATION_REJECTED
+      ? ''
+      : `mock=${JSON.stringify(MOCK_ESCALATION_REJECTED.slice(0, 80))}`,
+  );
+  check(
+    'mock 申请的档位与真帧副本一致，且解析层认得它（knownMode）',
+    MOCK_SANDBOX_ESCALATION.mode === 'danger-full-access' &&
+      parseSandboxEscalation({
+        sandbox_permissions: MOCK_SANDBOX_ESCALATION.mode,
+        justification: MOCK_SANDBOX_ESCALATION.justification,
+      })?.knownMode === true,
+    MOCK_SANDBOX_ESCALATION.mode,
+  );
 }
 
 /**

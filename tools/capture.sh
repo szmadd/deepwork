@@ -140,7 +140,7 @@ run_scene() {
 # 「点不到就返回 no-rail」必须存在的原因。
 RAIL_HELPER='const openRail=async(label)=>{const b=[...document.querySelectorAll(".rail-item")].find(x=>x.getAttribute("title")===label);if(!b)return "no-rail:"+label;b.click();await new Promise(r=>setTimeout(r,1600));return "ok";};'
 
-SCENES="${*:-chat tree terminal preview hunk settings settings-security sandbox-denial skills memory schedule connectors usage browser chart office}"
+SCENES="${*:-chat tree terminal preview hunk settings settings-security sandbox-denial sandbox-escalation skills memory schedule connectors usage browser chart office}"
 
 for scene in $SCENES; do
   case "$scene" in
@@ -212,6 +212,22 @@ for scene in $SCENES; do
       run_scene "ui-sandbox-denial" ".tool-card-sandboxed" \
         "$RAIL_HELPER await openRail('对话'); const c=document.querySelector('.tool-card-sandboxed'); if(c===null) return 'no-sandboxed-card'; const chip=c.querySelector('.tool-sandbox-chip'); const ex=c.querySelector('.tool-sandbox p'); const esc=c.querySelector('.tool-sandbox-escalation'); return 'chip:'+(chip?chip.textContent:'none')+' | open:'+(ex?'yes':'no')+' | esc:'+(esc?'yes':'no');" \
         "0" "" "DEEPWORK_MOCK_SANDBOX_DENIAL=1"
+      ;;
+    sandbox-escalation)
+      # 沙箱升级审批弹窗：模型带 sandbox_permissions 重试之后，用户要拍板的那一次。
+      #
+      # 这一帧同样**由 mock 模拟**（DEEPWORK_MOCK_SANDBOX_ESCALATION=1），理由与
+      # sandbox-denial 那段相同，而且更硬：这个弹窗的**全部内容**（档位、模型给的理由）
+      # 都是宿主从工具入参里补出来的（内核过 ACP 时会把它丢掉），靠真实内核要凑齐
+      # 「配窄档位 + 诱导越界 + 赌模型照提示重试」三步才有画面。
+      # 「真内核下这条路真的通」的取证在 tools/sandbox-e2e.js 的 E1/E2 组。
+      #
+      # HOLD_PARTIAL=1：升级弹窗不在「自动放行」之列，得让它留在画面上（见 main.js）。
+      # 末尾回读档位与理由两处文字作为回执：图上分不清「理由那一格是空的」与
+      # 「压根没渲染这一块」，回执能分。
+      run_scene "ui-sandbox-escalation" ".modal-escalation" \
+        "$RAIL_HELPER const m=document.querySelector('.modal-escalation'); const q=document.querySelector('.modal-reason-quoted'); const code=document.querySelector('.modal-escalation code'); return 'escalation:'+(m?'yes':'no')+' | mode:'+(code?code.textContent:'none')+' | reason:'+(q?q.textContent.slice(0,16):'none');" \
+        "1" "" "DEEPWORK_MOCK_SANDBOX_ESCALATION=1"
       ;;
     skills)
       # 技能必须走真实安装路径预置（含审计），而不是手工摆文件 ——

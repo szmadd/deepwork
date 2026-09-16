@@ -363,15 +363,21 @@ async function runCapturePrompt() {
   if (!prompt || !client) return;
 
   /**
-   * 把「可逐块取舍」的那次审批留着不应答，好让弹窗留在画面上。
+   * 把「值得留在画面上」的那次审批留着不应答，好让弹窗留在截图里。
    * 其余审批立即放行 —— 否则第一个弹窗就会挡住后面所有步骤，
    * 等到截图时画面上是空会话，什么也证明不了。
+   *
+   * 「值得留」有两类：
+   *  · 可逐块取舍的写审批（勾选框只在弹窗里出现，是本轮要拍的对象）；
+   *  · 沙箱升级申请 —— 它是**另一个**弹窗内容，且只靠真实内核凑不齐一次可复现的画面
+   *    （得先把档位配窄、诱导模型越界、再赌它照提示重试）。漏掉它就会变成
+   *    「这个弹窗谁也拍不到」。
    */
   const holdPartial = process.env.DEEPWORK_CAPTURE_HOLD_PARTIAL === '1';
 
   client.on('event', (event) => {
     if (event.type === 'approval.requested') {
-      if (holdPartial && event.request.selectable) return;
+      if (holdPartial && (event.request.selectable || event.request.escalation)) return;
       // 延迟放行，方便截图时把审批弹窗留在画面上
       const delay = Number(process.env.DEEPWORK_CAPTURE_APPROVE_DELAY ?? 0);
       setTimeout(() => {

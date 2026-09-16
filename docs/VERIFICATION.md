@@ -52,9 +52,9 @@ env DEMO_DENY=1 npm run demo   # Windows cmd: set DEMO_DENY=1 && npm run demo
 | `npm run test:office` | Office 生成与文档读取（M2-I 起新增）：零依赖 zip 编解码（CRC32 校验、zip-bomb 上限、固定时间戳可复现）、docx 8 个必备部件与 Markdown 子集（标题/列表/引用/代码/表格）、xlsx 共享字符串与冻结表头、`office.read` 对 docx/xlsx/ofd/纯文本四类的分发与体积上限；**OFD 原生读取**按坐标排序（Y 聚行 → 行内 X 升序 → 中英混排拼接）而非 XML 顺序；审批链（二进制输出走「文本视图」预览、拒绝即不落盘、预览与落盘同源）；另起 **Python 进程做独立实现校验**（`zipfile` + `ElementTree` 复核 CRC / XML 良构 / Content_Types / rels 目标），OFD 样本由 Python 侧生成 |
 | `npm run test:modelcfg` | 模型配置：端点覆盖补丁形状与 YAML 序列化、凭据 refs 合并（不丢其它键）、secrets 按模式分存、apiKey RPC 只回掩码；host 链路上配置写入即出补丁文件、custom 会话默认端点模型；真实 dsh 端到端断言**自定义模型名真的到达端点**（连跑两轮防 settings.yaml 竞态回归） |
 | `npm run test:chart` | 图表与可视化（FR-3.8 起新增）：契约层（入参表是单一事实来源，宿主描述与 MCP schema 都从它派生）、表格 → 规格归一化（首列判定 / 缺测记 null 而非 0 / 重复列名加序号 / 按图型分档的规模上限 / 每类拒绝都可行动）、渲染**字面量**断言（柱数 = 类别 × 系列、缺测把折线切断且孤立点不连线、饼图扇区与占比、单扇区整圆、负值柱与零线、标签转义、CSP、无脚本无外链、**逐字节可复现**）、工具层审批链（拒绝即不落盘 / 无变化短路不再弹审批 / 越界与扩展名边界）、**MCP 服务按 stdio 真进程往返**（真握手、真落盘、数据不合规走 isError 内容、未实现方法 -32601）、内核补丁形状与合并顺序、**Python 独立实现复核 SVG 良构与零脚本**、界面接线与「图表实现零第三方依赖」。界面渲染本身由 `artifacts/ui-chart.png` 取证（不在本套件里，理由见文件头） |
-| `npm run test:sandbox` | 沙箱后端（FR-3.5）：runner 真帧对照（先证命令不套沙箱能跑）、模式解析优先级与非法值回落、内核装配真帧（`--dump-config`）、宿主 status 调用点、拒绝方言解析与防漂移（mock 模拟帧 === 解析层真帧副本逐字相同） |
-| `npm run test:sandbox-e2e` | 沙箱端到端（FR-3.5 第二期）：真内核 + 真 ACP + 真工具 + 真落盘，5 场景矩阵（内核默认 / workspace-write / 答复放行 / read-only / danger-full-access），含对照组与反证组、fixture 现场自检（「工作区外」不得落在临时根目录下） |
-| `npm run test:real-dsh-mcp` | 真实 dsh + 真实 MCP server 端到端：`--patch` 叠加连接器补丁 → dsh-mcp-client 拉起 fixture MCP server → 工具注册为 `mcp__fake__echo` → 模型替身精确名调用 → 回显经 ACP 事件流带回；dsh 缺席时优雅 SKIP。**排在 verify 链尾**——它在已知环境性失败下 exit=1，排中间会中断 `&&` 链，其后的套件会静默不跑 |
+| `npm run test:sandbox` | 沙箱后端（FR-3.5）：runner 真帧对照（先证命令不套沙箱能跑）、模式解析优先级与非法值回落、内核装配真帧（`--dump-config`）、宿主 status 调用点、拒绝方言解析与防漂移（mock 模拟帧 === 解析层真帧副本逐字相同）、**升级申请解析**（`sandbox_permissions` + `justification` 逐字保真 / 无该参数时不得误判为申请 / 未知档位保真 / 缺理由退化成空串）与 mock 演示帧的字面量防漂移 |
+| `npm run test:sandbox-e2e` | 沙箱端到端（FR-3.5 第二期）：真内核 + 真 ACP + 真工具 + 真落盘，**8 场景矩阵**（A 内核默认对照 / B1 越界被拒 / B2 不重试时「允许」也无效 / C read-only / D 宽模式反证 / **E1 带 `sandbox_permissions` 重试 + 放行 → 弹审批且落盘** / **E2 同 E1 但拒绝 → 不落盘且说法是内核原话** / **F 同级申请 → 「严格更宽」判据失败且不弹审批**）、fixture 现场自检（「工作区外」不得落在临时根目录下）。E/F 组回答的是「被拒之后那一跳到底长什么样」——此前那句「此时才会弹审批」只是引用内核文档 |
+| `npm run test:real-dsh-mcp` | 真实 dsh + 真实 MCP server 端到端：`--patch` 叠加连接器补丁 → dsh-mcp-client 拉起 fixture MCP server → 工具注册为 `mcp__fake__echo` → 模型替身精确名调用 → 回显经 ACP 事件流带回；dsh 缺席时优雅 SKIP。**排在 verify 链尾**——排中间会中断 `&&` 链，其后的套件会静默不跑。（2026-09-16 复测 8/8；此前记的「本机 3/8」已不再复现，见 CONVENTIONS.md） |
 
 各套件的断言数与已知环境性失败以 [CONVENTIONS.md](CONVENTIONS.md) §三 为准。
 
@@ -74,10 +74,17 @@ npx electron apps/desktop
 ```bash
 bash tools/capture.sh                  # 全部场景：chat / tree / terminal / preview / hunk / settings /
                                        # skills / memory / schedule / connectors / usage / browser /
-                                       # chart / office / sandbox-denial 等
+                                       # chart / office / sandbox-denial / sandbox-escalation 等
 bash tools/capture.sh preview hunk     # 只跑指定场景
 bash tools/capture.sh chart            # 只补图表场景（产物由 seed-chart.js 走真实生成器预置）
+bash tools/capture.sh sandbox-escalation   # 只补沙箱升级审批弹窗（由 mock 造帧，见下）
 ```
+
+> `sandbox-denial` 与 `sandbox-escalation` 两场的关键帧**由 mock 内核模拟**
+> （`DEEPWORK_MOCK_SANDBOX_DENIAL=1` / `DEEPWORK_MOCK_SANDBOX_ESCALATION=1`）。
+> 它们证的是**渲染路径可达**；「沙箱真的会拦」「模型带升级重试时宿主的审批真的会弹」
+> 由 `tools/sandbox-e2e.js` 用真内核取证。两件事分清楚，是不让这两张图日后被当成沙箱生效的证据引用。
+> 升级那一场必须开 `HOLD_PARTIAL=1`：升级弹窗不在自动放行之列，否则截图时它已经被应答掉了。
 
 > `office` 场景依赖系统里真的装了 WPS / Office：它先用真实生成器写出 `report.docx` / `budget.xlsx`，
 > 再用**真实办公软件打开它们**并按**窗口标题**截取该文档窗口（不抓整屏，避免拍到别人家的界面）。

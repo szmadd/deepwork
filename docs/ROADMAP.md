@@ -78,10 +78,10 @@ Ollama `:11434` / LM Studio `:1234` 一类的本机端点当作主路径，并�
 
 验证基线：`npm run verify` **21 套中 20 套全绿**（diff / tools 19 / replay 29 / smoke **30** / partial 13 /
 terminal 22 / acp **40** / real-dsh 15 / skills 59 / skillctx 24 / memory 38 / schedule 68 /
-connectors 42 / usage **35** / browser 76 / office 130 / **chart 126** / **modelcfg 124** / **sandbox 32** /
-**sandbox-e2e 17**）；
-`real-dsh-mcp` 本机 3/8，已用 `git stash` 在改动前的基线上复现同样的失败，属环境性问题
-（见 `docs/CONVENTIONS.md` 的「已知的环境性失败」）。
+connectors 42 / usage **35** / browser 76 / office 130 / chart 126 / modelcfg 124 /
+**sandbox 39** / **sandbox-e2e 31**）；
+`real-dsh-mcp` 2026-09-16 复测 **8/8**（改动前后两棵树皆然）—— 此前记的「本机 3/8」已不再复现，
+原因未定，**不要再拿它当基线引用**（见 `docs/CONVENTIONS.md`）。
 **它已被排到 verify 链尾** —— 它 exit=1 会中断 `&&` 链，排中间会让其后的套件（如 modelcfg）
 静默不跑（M2-H 轮发现并修正，见 DEVLOG）。**新增套件一律插在它之前。**
 
@@ -303,7 +303,8 @@ B 档各项：契约草案 + DEVLOG 明确「为什么本地验不了、需要�
 | M2-H | 浏览器无等待条件 / 网络拦截 / 多标签；无元素级截图；不支持接入用户自己开的调试端口浏览器 |
 | M2-I | Markdown 子集不含图片 / 脚注 / 页眉页脚 / 页码；OFD 只读不写不渲染（印章签名未解析）；xlsx 单工作表、无公式图表、列宽固定 |
 | 界面 | 深浅主题切换器未接（`config.theme` 字段已在，只差切换器） |
-| 测试 | `real-dsh-mcp` 3/8 的环境性失败根因未定位（疑似 dsh 的 mcp-client 在隔离 `DSH_HOME` 下拉不起来）——**不要修、不要摘**，它是真实 MCP 通路唯一哨兵，须留在 verify 链尾 |
+| 测试 | ~~`real-dsh-mcp` 3/8 的环境性失败根因未定位~~ → **2026-09-16 复测 8/8**（改动前后两棵树皆然），旧记录不再复现、原因未定；该套件仍是真实 MCP 通路唯一哨兵，**不要摘**，须留在 verify 链尾 |
+| 界面 | **沙箱升级审批弹窗的渲染截图未产出**（`DEEPWORK_MOCK_SANDBOX_ESCALATION` 的 mock 帧与 capture 场景已就绪，缺 Electron 二进制跑不了 capture）；该弹窗的渲染证据目前只到读源码断言 |
 | 仓库 | `wip/m2-h` 半成品分支已并入 main，可删（未删，留给用户决定） |
 | 运维 | 已接：无。待补：**CI**（`npm run verify` 仍靠人工）、**远端推送**（`origin` 上 `main` 领先 17 个提交）、**版本 tag**（M0/M1 各阶段成果无回滚点） |
 

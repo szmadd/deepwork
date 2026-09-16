@@ -55,6 +55,21 @@ export interface ApprovalRequest {
   selectable?: boolean;
   createdAt: number;
   expiresAt?: number;
+  /**
+   * 这次授权其实是**模型在申请放宽沙箱档位**（有值时界面必须讲清楚）。
+   *
+   * ── 为什么不能只说「内核请求授权」────────────────────────────────────
+   * 内核走 ACP 发权限请求时，参数里只有 `toolCall.toolCallId` 与两个选项
+   * （allow_once / reject_once）—— 模型的升级理由在过 ACP 时**丢了**。
+   * 而用户此刻要判断的问题恰恰是「该不该为这一次操作放宽档位」，
+   * 只给一个「允许/拒绝」等于让他盲批：他既不知道这是在申请升级，
+   * 也不知道模型为什么要升级。
+   *
+   * 幸运的是入参没有丢：`tool_call` 通知里的 `rawInput` 带着
+   * `sandbox_permissions` 与 `justification` 两个字段（见 `parseSandboxEscalation`），
+   * 适配器据此把它补回审批请求里。
+   */
+  escalation?: SandboxEscalation;
 }
 
 export interface ApprovalRecord {
@@ -189,6 +204,55 @@ export interface SandboxDenial {
  * 它是内核契约的一部分，内核改名的那天，只有引用它的地方会一起被找出来。
  */
 export const SANDBOX_ESCALATION_ARG = 'sandbox_permissions';
+
+/**
+ * 与升级参数成对出现的「理由」入参名。
+ *
+ * 内核的 `validateEscalationArgs` 把它们绑成一对：缺一个就报
+ * `invalid escalation: sandbox_permissions requires a justification`。
+ * 也就是说这个字段不是可选的装饰 —— 它是模型**写给用户的那一句话**。
+ */
+export const SANDBOX_JUSTIFICATION_ARG = 'justification';
+
+/**
+ * 模型发起的沙箱升级申请（从工具入参里读出来的）。
+ *
+ * 与 `SandboxDenial` 是一对：那个是「结果里怎么说」，这个是「模型怎么申请」。
+ * 中间那一跳（被拒之后的那次重试）此前从未在本机被观测到过 ——
+ * 只有真的跑一遍才知道模型到底把申请写在哪。
+ */
+export interface SandboxEscalation {
+  /**
+   * 模型申请的档位。**原样保留**，理由与 `SandboxDenial.mode` 相同：
+   * 内核的档位词汇将来可能变宽，丢掉不认识的值等于把「它在申请什么」抹掉。
+   */
+  mode: string;
+  /** mode 是否落在当前已知词汇（`SANDBOX_MODES`）里 */
+  knownMode: boolean;
+  /** 模型写给用户的理由；内核要求它非空，但缺字段时这里退化成空串而不是拒绝 */
+  justification: string;
+}
+
+/**
+ * 从工具入参里识别「模型在申请放宽沙箱档位」。
+ *
+ * 判据是 `sandbox_permissions` 字段存在且为非空字符串 —— 只要有它，这次调用就是
+ * 一次升级申请（内核的校验保证它必然带理由）。不是升级申请就返回 `null`，
+ * 与 `parseSandboxDenial` 同样拒绝「看起来像」的兜底猜测：
+ * 把一次普通写入说成「模型在申请放宽权限」，会让用户在最该警惕的地方看到假警报。
+ */
+export function parseSandboxEscalation(rawInput: unknown): SandboxEscalation | null {
+  if (!rawInput || typeof rawInput !== 'object') return null;
+  const args = rawInput as Record<string, unknown>;
+  const mode = args[SANDBOX_ESCALATION_ARG];
+  if (typeof mode !== 'string' || !mode.trim()) return null;
+  const justification = args[SANDBOX_JUSTIFICATION_ARG];
+  return {
+    mode: mode.trim(),
+    knownMode: (SANDBOX_MODES as readonly string[]).includes(mode.trim()),
+    justification: typeof justification === 'string' ? justification.trim() : '',
+  };
+}
 
 /** 拒绝行的形状。`under <mode> mode` 里的 mode 允许未知值（见 SandboxDenial.mode）。 */
 const SANDBOX_DENIAL_RE = /\[sandbox:\s*file access denied under\s+([A-Za-z][A-Za-z0-9_-]*)\s+mode\]/;

@@ -11,6 +11,10 @@
  *   { "text": "..." }                                   纯文本
  *   { "tool": { "pick": "write", "args": {...} } }      按语义挑一个真实工具调用
  * pick 的取值：write / read / shell / any，从 dsh 请求体里的 tools 中挑选。
+ *
+ * 剧本步进按「对话里已出现几个工具结果」算，而不是按「请求序号」：
+ * 前者只认真正跑完的工具，后者会被标题生成一类的旁路请求推歪 —— 那种情况下
+ * 剧本会提前一步，而「模型提前说不出话」在测试里表现得像内核挂了。
  */
 
 const fs = require('node:fs');
@@ -102,6 +106,15 @@ function startStubLlm(options = {}) {
 
       const hasToolResult = (body.messages ?? []).some((m) => m.role === 'tool');
       /**
+       * 已发生的工具结果条数 —— 剧本的步进游标。
+       *
+       * 以「工具真的跑完了几个」为准，而不是「这是第几次请求」：内核可能为了
+       * 标题、摘要一类的事另发请求，按请求序号步进会让剧本提前一格。
+       * 2 步剧本下与旧的 `hasToolResult ? 1 : 0` 完全等价（≥1 就停在最后一格），
+       * 所以既有用例的行为不变；3 步以上（如「拒绝 → 升级重试 → 收尾」）才推得动。
+       */
+      const toolResults = (body.messages ?? []).filter((m) => m.role === 'tool').length;
+      /**
        * dsh 是否显式要求用量（`stream_options.include_usage`）。
        *
        * 真 OpenAI 只在被要求时才回那帧 usage，替身也必须这样 —— 无条件回 usage 的话，
@@ -112,8 +125,22 @@ function startStubLlm(options = {}) {
       const entry = {
         model: body.model,
         tools: (body.tools ?? []).map((t) => t?.function?.name ?? t?.name).filter(Boolean),
+        /**
+         * 各工具发过来的 parameters（JSON Schema）。
+         *
+         * 存在的理由与 `extra` 同：内核「有没有把某个参数广告给模型」是个**可观测量**，
+         * 只断言「我们有这个能力」是不够的 —— 沙箱升级参数（`sandbox_permissions`
+         * 与 `justification`）是按「是否挂了限制性文件系统后端」门控的，
+         * 那些字段没被广告出去时，模型永远不可能申请升级，而链路上看不出任何异常。
+         */
+        toolParams: Object.fromEntries(
+          (body.tools ?? [])
+            .map((t) => [t?.function?.name ?? t?.name, t?.function?.parameters ?? null])
+            .filter(([name]) => Boolean(name)),
+        ),
         messages: (body.messages ?? []).map((m) => ({ role: m.role, kind: typeof m.content === 'string' ? 'text' : 'blocks' })),
         hasToolResult,
+        toolResults,
         /**
          * 除大件（messages / tools）以外的请求字段。
          *
@@ -133,8 +160,8 @@ function startStubLlm(options = {}) {
       options.onRequest?.(entry);
       if (bodyLog) bodyLog.write(`${JSON.stringify({ tools: body.tools, firstUserContent: body.messages?.find?.((m) => m.role === 'user') ?? null })}\n`);
 
-      // 剧本推进：请求里出现 tool 结果就说明上一轮的工具已经跑完，进入下一项
-      const turn = Math.min(hasToolResult ? 1 : 0, script.length - 1);
+      // 剧本推进：游标是「已跑完的工具结果数」（见上面的说明）
+      const turn = Math.min(toolResults, script.length - 1);
       const step = script[turn] ?? { text: '' };
       const id = `stub-${++seq}`;
 
