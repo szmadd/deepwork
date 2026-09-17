@@ -21,6 +21,7 @@ import {
   type ForkOrigin,
   type GuardPolicy,
   type HostStatus,
+  isSandboxMode,
   type MemoryEntry,
   type MemoryLayer,
   type MemoryLayerStat,
@@ -31,6 +32,7 @@ import {
   type RuntimeStatus,
   SANDBOX_MODES,
   type SandboxEscalation,
+  type SandboxMode,
   type SandboxStatus,
   type ScheduleSpec,
   type ScheduleTask,
@@ -128,12 +130,16 @@ export class DeepworkHost {
    */
   private kernelEndpoint: string | null = null;
   /**
-   * 内核沙箱模式：**启动时定下、进程级生效**，所以在构造时解析一次就固定。
+   * 内核沙箱模式：**进程启动时解析、每次重启内核时重新解析**。
    *
    * 与 `kernelEndpoint` 同一形态（启动参数、改了要重启内核），但不需要「旧值 vs 新值」
    * 的比较：它没有运行期修改入口 —— ACP 面不暴露 mode（`session/set_config_option`
-   * 只认 model 与 reasoning_effort），所以要换模式只有重启这一条路，
-   * 而重启会让 `resolveSandboxMode()` 重新跑一遍。
+   * 只认 model 与 reasoning_effort），所以要换档只有重启内核这一条路。
+   *
+   * **为什么重启内核时要重解析**（FR-3.5 尾项）：档位是内核进程的启动参数，
+   * 换档 = 用新的 `DSH_PERMISSION_MODE` 重新拉起内核。设置页把选择存进 config.json 后，
+   * 若这里不重解析，用户就会遇到「改了、也重启了、界面上却还是旧档位」——
+   * 那时唯一的出路是重启整个应用，而界面上没有任何一处会告诉他这一点。
    *
    * 记它的意义在于**可核验**：在此之前产品从未设置过 `DSH_PERMISSION_MODE`，
    * 内核跑在自己的默认值上，界面上没有任何一处能回答「模型的写入受什么约束」。
@@ -154,22 +160,9 @@ export class DeepworkHost {
    */
   constructor(options?: { scheduler?: { tickMs?: number; now?: () => Date } }) {
     ensureDirs();
-    // 沙箱模式在这里定一次：它是内核的启动参数，进程活着的期间不会再变。
-    // 非法覆盖值必须留下痕迹 —— 权限设置上「以为生效了」是最不该有的状态。
-    const sandbox = resolveSandboxMode();
-    if (sandbox.rejected !== undefined) {
-      log.warn(
-        `沙箱模式「${sandbox.rejected}」不是合法值（合法值：${SANDBOX_MODES.join(' / ')}），` +
-          `本次启动回落为 ${sandbox.mode}`,
-      );
-    }
-    const platformNote = sandboxPlatformNote();
-    this.sandbox = {
-      mode: sandbox.mode,
-      source: sandbox.source,
-      ...(sandbox.rejected !== undefined ? { rejected: sandbox.rejected } : {}),
-      ...(platformNote !== null ? { note: platformNote } : {}),
-    };
+    // 沙箱档位在这里解析一次：它是内核的启动参数，进程活着的期间不会再变
+    // （换档走 restartKernel，那里会再解析一次 —— 见 refreshSandbox）。
+    this.sandbox = this.refreshSandbox(null);
     registerBuiltinTools(this.tools, { browser: this.browser });
     this.scheduler = new SchedulerEngine({
       store: this.scheduleStore,
@@ -177,6 +170,38 @@ export class DeepworkHost {
       tickMs: options?.scheduler?.tickMs,
       now: options?.scheduler?.now,
     });
+  }
+
+  /**
+   * 重新解析沙箱档位并更新 `this.sandbox`；返回新的状态。
+   *
+   * @param previous 上一次生效的档位（构造时传 null）。只在真的变了的时候写日志 ——
+   *   每次重启内核都打一行「档位未变」会把日志淹没，而这条日志的价值恰恰在于
+   *   「什么时候档位换过」。
+   *
+   * 非法值必须留下痕迹（`log.warn` + `rejected` 进 status）—— 权限设置上
+   * 「以为生效了」是最不该有的状态。注意非法值**不会**中断解析：
+   * 见 `resolveSandboxMode` 的「跳过而非判死刑」。
+   */
+  private refreshSandbox(previous: SandboxMode | null): SandboxStatus {
+    // 读配置里用户的选择（可能没有）；环境变量优先级高于它，由 resolveSandboxMode 决定
+    const resolved = resolveSandboxMode(process.env, { configured: this.getConfig().sandboxMode });
+    if (resolved.rejected !== undefined) {
+      log.warn(
+        `沙箱档位「${resolved.rejected}」不是合法值（合法值：${SANDBOX_MODES.join(' / ')}），` +
+          `已跳过它、改用 ${resolved.mode}（来源：${resolved.source}）`,
+      );
+    }
+    if (previous !== null && previous !== resolved.mode) {
+      log.info(`沙箱档位已切换：${previous} → ${resolved.mode}（来源：${resolved.source}）`);
+    }
+    const platformNote = sandboxPlatformNote();
+    return {
+      mode: resolved.mode,
+      source: resolved.source,
+      ...(resolved.rejected !== undefined ? { rejected: resolved.rejected } : {}),
+      ...(platformNote !== null ? { note: platformNote } : {}),
+    };
   }
 
   /** 上层（stdio 服务）注册事件出口 */
@@ -323,6 +348,10 @@ export class DeepworkHost {
     }
     await this.adapter.stop();
     this.adapter = null;
+    // 档位是内核的启动参数，所以「重启内核」正是重新解析它的时刻：
+    // 设置页存下的选择在这里才真正生效（不重解析的话用户会看到
+    // 「改了、也重启了、档位还是旧的」，且无从得知为何）。
+    this.sandbox = this.refreshSandbox(this.sandbox.mode);
     try {
       this.adapter = await createAdapter({
         workspace: this.workspace,
@@ -430,6 +459,15 @@ export class DeepworkHost {
     // 模型端点先校验再落盘：不合法的配置不该进 config.json，
     // 否则下次启动会带着一份坏配置跑
     if (patch.modelEndpoint) validateEndpoint(patch.modelEndpoint);
+    // 沙箱档位先校验再落盘：和端点同一个理由 —— 不合法的值进了 config.json，
+    // 下次启动会带着一份坏配置跑。这里**拒绝**而不是回落：setConfig 的调用方是
+    // 我们自己的设置页，给它一个明确的报错比替它选一个档位更有用。
+    // 注意与 resolveSandboxMode 的取舍不同：那里要容忍手改过的配置文件，所以是跳过 + 留痕。
+    if (patch.sandboxMode !== undefined && !isSandboxMode(patch.sandboxMode)) {
+      throw new Error(
+        `沙箱档位「${String(patch.sandboxMode)}」不是合法值（合法值：${SANDBOX_MODES.join(' / ')}）`,
+      );
+    }
     // 单价表同样先清洗再落盘：NaN / 负数单价会让整张估算表变成 NaN，
     // 而那种错误在界面上只是一个 NaN，追不回源头
     if (patch.modelPrices) next.modelPrices = sanitizeModelPrices(patch.modelPrices);
