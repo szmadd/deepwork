@@ -66,6 +66,7 @@ export function buildHandlers(host: DeepworkHost): Record<RpcMethod, Handler> {
     'session.events': (p) => host.sessionEvents(String(p.sessionId)),
     'session.fork': (p) =>
       host.forkSession(String(p.sessionId), typeof p.atSeq === 'number' ? p.atSeq : undefined),
+    'session.compareBranches': (p) => host.compareBranches(String(p.leftId), String(p.rightId)),
     'run.send': (p) =>
       host.send({
         sessionId: String(p.sessionId),

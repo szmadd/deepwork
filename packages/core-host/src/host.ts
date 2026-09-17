@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   DEFAULT_CONFIG,
-  runBoundaries,
   sumUsage,
   type AgentEvent,
   type AgentEventInput,
@@ -12,6 +11,8 @@ import {
   type AppConfig,
   type ApprovalDecision,
   type ApprovalRequest,
+  type BranchCompareResult,
+  classifySkillSource,
   type BrowserState,
   type ConnectorConfig,
   type ConnectorState,
@@ -22,6 +23,7 @@ import {
   type GuardPolicy,
   type HostStatus,
   isSandboxMode,
+  isThemeMode,
   type MemoryEntry,
   type MemoryLayer,
   type MemoryLayerStat,
@@ -31,6 +33,7 @@ import {
   type RunStatus,
   type RuntimeStatus,
   SANDBOX_MODES,
+  THEME_MODES,
   type SandboxEscalation,
   type SandboxMode,
   type SandboxStatus,
@@ -64,6 +67,7 @@ import { MemoryStore } from './memory/store';
 import {
   buildBrowserMcpPatch,
   buildChartMcpPatch,
+  buildMemoryMcpPatch,
   buildRuntimePatch,
   serializeRuntimePatchYaml,
   type ConnectorPatchEntry,
@@ -71,6 +75,7 @@ import {
 import { ConnectorStore } from './mcp/store';
 import { BrowserManager } from './browser/manager';
 import { buildSkillContext } from './skills/context';
+import { compareBranches } from './session/compare';
 import { SkillStore } from './skills/store';
 import { TerminalManager, type TerminalSink } from './terminal/manager';
 import { summarizeUsage, sanitizeModelPrices, type UsageSample, type UsageSessionMeta } from './usage/summary';
@@ -284,6 +289,7 @@ export class DeepworkHost {
       modelEndpointOverride(endpoint),
       this.browserMcpPatch(),
       this.chartMcpPatch(),
+      this.memoryMcpPatch(),
     );
     const file = path.join(homeDir(), 'runtime', 'kernel.patch.yml');
     if (!patch) {
@@ -349,6 +355,32 @@ export class DeepworkHost {
     };
     if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = '1';
     return buildChartMcpPatch({ command: process.execPath, entry, env });
+  }
+
+  /**
+   * 内置记忆服务的补丁条目（内核自主写记忆）。
+   *
+   * 与图表那一条同源：注册表只在 mock 下被执行，真实内核看不到
+   * memory.write，因此把读写实现（memory/tools.ts）以 MCP 服务的形式提供给内核。
+   * 入口找不到时**不注入**（不阻断内核启动）—— 缺的只是「内核会自己记」，
+   * 比内核起不来轻得多。
+   *
+   * env 里的 `DEEPWORK_HOME` 必须给：记忆是写文件的能力，宿主与 MCP 服务必须
+   * 指向同一批文件，否则模型写的与面板显示的是两份，症状是「模型说记下了、
+   * 面板里没有」。
+   */
+  private memoryMcpPatch(): { insert: ConnectorPatchEntry[] } | null {
+    const entry = path.join(__dirname, 'cli', 'memory-mcp.js');
+    if (!fs.existsSync(entry)) {
+      log.warn(`未找到记忆 MCP 服务入口（${entry}），本次不注入该能力`);
+      return null;
+    }
+    const env: Record<string, string> = {
+      DEEPWORK_HOME: homeDir(),
+      DEEPWORK_WORKSPACE: this.workspace,
+    };
+    if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = '1';
+    return buildMemoryMcpPatch({ command: process.execPath, entry, env });
   }
 
   /**
@@ -484,6 +516,12 @@ export class DeepworkHost {
       throw new Error(
         `沙箱档位「${String(patch.sandboxMode)}」不是合法值（合法值：${SANDBOX_MODES.join(' / ')}）`,
       );
+    }
+    // 主题档位同样先校验再落盘。这个字段此前从未被消费（写了也没人读），
+    // 从接通渲染那一刻起它开始影响界面 —— 一个坏值会在每次启动时
+    // 让 resolveTheme 拿到未定义档位，而它的表现是「界面主题随机」。
+    if (patch.theme !== undefined && !isThemeMode(patch.theme)) {
+      throw new Error(`主题档位「${String(patch.theme)}」不是合法值（合法值：${THEME_MODES.join(' / ')}）`);
     }
     // 单价表同样先清洗再落盘：NaN / 负数单价会让整张估算表变成 NaN，
     // 而那种错误在界面上只是一个 NaN，追不回源头
@@ -752,15 +790,22 @@ export class DeepworkHost {
   /**
    * 从既有会话分叉出一个新会话。
    *
-   * 三个刻意的设计选择：
+   * 四个刻意的设计选择：
    *
-   * 1. **分叉点吸附到运行边界。** 半轮里的日志停在悬空的 tool.started 或半截流式消息上，
-   *    那种状态没法接着跑。请求落在轮中就退到该轮之前，并如实记录 `requestedSeq` 与
-   *    `atSeq` 的差异，而不是默默改掉用户选的位置。
+   * 1. **分叉点按事件精确切**（M1 遗留的「逐事件分叉」，2026-09-17）。请求的 seq
+   *    落在任意事件上都成立，继承到那一条为止；只有 seq 落在两个事件之间时才取
+   *    不晚于它的最近事件。旧实现把它吸附到「最近一轮结束」—— 拖到第 3 步工具调用
+   *    上分叉，实际得到的是整轮结束，而用户看到的落点与真正发生的事不一致、
+   *    且没有任何提示。
    * 2. **继承段是字节级复制。** 新会话日志的前 N 行与父会话前 N 行逐字节相同，
    *    所以「这段历史来自哪里」是可核验的，而不是靠字段比对去猜。
-   * 3. **用量随上下文一起继承。** 被继承的上下文对模型而言真实存在，成本面板若在分叉处
+   * 3. **用量随上下文一起继承。** 被继承的部分在事件流里真实存在，成本面板若在分叉处
    *    凭空掉一截，后续的用量判断就会失准。
+   * 4. **继承的是「记录」，不是模型的上下文。** 新会话有新的 session.id，续跑时
+   *    宿主只把本轮输入交给内核（见 send），所以被继承的历史**不会**作为对话
+   *    上下文发给模型 —— 它出现在时间线上、计入用量、可回放，但模型看不到。
+   *    这不是本轮引入的行为，而是本产品一直以来的分叉语义；写在这里是因为
+   *    「从半边轮次分叉然后接着跑」听起来像「带着上下文继续」，而事实不是。
    */
   forkSession(sessionId: string, atSeq?: number): { session: Session; from: ForkOrigin } {
     const parent = this.store.get(sessionId);
@@ -775,20 +820,35 @@ export class DeepworkHost {
     const requested = typeof atSeq === 'number' && Number.isFinite(atSeq) ? atSeq : null;
     const target = requested ?? events[events.length - 1].seq;
 
-    const boundary =
-      [...runBoundaries(events)].reverse().find((seq) => seq <= target) ?? null;
-    if (boundary === null) {
-      // 两种「没有可用边界」的原因完全不同，提示也必须分开：
-      // 一个是这个会话根本还没跑过，另一个是用户选的位置太靠前。
-      const hasAnyRun = events.some((event) => event.type === 'run.completed' || event.type === 'run.failed');
+    /*
+     * 逐事件分叉（M1 遗留）：**按事件精确切**，不再吸附到轮次边界。
+     *
+     * 旧语义是「找不超过 target 的最近一轮结束位置」，于是拖到「第 3 步工具调用」
+     * 上分叉，实际得到的是整轮结束 —— 用户看到的落点与真正发生的事不一致，
+     * 而这种不一致没有任何提示。它的起因是「只有轮次边界才是合法分叉点」这条
+     * 假设，但那条假设来自「分叉要给模型一个完整回合」的想象 —— 而本产品的分叉
+     * 继承的是**记录**（会话日志），不是模型的上下文（见 fork 的入口注释），
+     * 所以半个回合既不会出错、也不该被拒绝：它正是「这次从这一步开始跑偏」的答案。
+     *
+     * 仍然保留一条吸附：请求的 seq 落在两个事件之间（手改日志或界面传了不存在的
+     * 位置）时，取**不晚于它的最近事件** —— 这是「找不到你指的那一条」的合理落点，
+     * 而不是把请求悄悄改成别的轮次。
+     */
+    let index = -1;
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      if (events[i].seq <= target) {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) {
       throw new Error(
-        hasAnyRun
-          ? '所选位置之前没有已完成的运行，无法作为分叉点；请选择某一轮对话结束之后的位置'
-          : '该会话还没有完成任何一轮对话，没有可分叉的历史',
+        `所选位置（#${target}）之前没有可继承的事件，无法作为分叉点；请选择会话开始之后的位置`,
       );
     }
 
-    const inherited = events.slice(0, events.findIndex((event) => event.seq === boundary) + 1);
+    const boundary = events[index].seq;
+    const inherited = events.slice(0, index + 1);
 
     const session = this.store.create({
       workspace: parent.workspace,
@@ -811,6 +871,24 @@ export class DeepworkHost {
     log.info(`分叉 ${parent.id} → ${branched.id}（继承 ${copied} 条事件，atSeq=${boundary}）`);
 
     return { session: branched, from };
+  }
+
+  /**
+   * 分支对比（M1 遗留）：把两条会话对同一批文件的改动并排交出来。
+   *
+   * 不校验「这两条是不是真有血缘」—— 任意两条会话都能比，因为对比的语义是
+   * 「各自改了什么」，与它们从哪来无关；限制成「必须是分叉谱系」只会让
+   * 「顺便比一下这两条」变成做不到的事。
+   */
+  compareBranches(leftId: string, rightId: string): BranchCompareResult {
+    const left = this.store.get(leftId);
+    if (!left) throw new Error(`会话不存在: ${leftId}`);
+    const right = this.store.get(rightId);
+    if (!right) throw new Error(`会话不存在: ${rightId}`);
+    return compareBranches({
+      left: { session: left, events: this.store.readEvents(leftId) },
+      right: { session: right, events: this.store.readEvents(rightId) },
+    });
   }
 
   // ── 运行 ──────────────────────────────────────────────────
@@ -1079,8 +1157,13 @@ export class DeepworkHost {
     return this.skills.list();
   }
 
-  installSkill(source: string): SkillInstallResult {
-    return this.skills.install(source);
+  /**
+   * 安装技能。来源可以是本地目录，也可以是 URL（zip 归档或单个 SKILL.md）——
+   * 分流在这里做，因为「是哪种来源」只影响拉取那一步，装法完全一样。
+   */
+  installSkill(source: string): Promise<SkillInstallResult> {
+    if (classifySkillSource(source) === 'url') return this.skills.installFromUrl(source);
+    return Promise.resolve(this.skills.install(source));
   }
 
   uninstallSkill(name: string): { ok: boolean } {

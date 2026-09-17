@@ -18,76 +18,98 @@
  * `$DSH_HOME/profiles/node_modules`），所以补丁里写包名即可，不需要绝对路径。
  */
 
-import { BROWSER_MCP_SERVER_NAME, CHART_MCP_SERVER_NAME, type ConnectorConfig } from '@deepwork/protocol';
+import {
+  BROWSER_MCP_SERVER_NAME,
+  CHART_MCP_SERVER_NAME,
+  MEMORY_MCP_SERVER_NAME,
+  connectorTransportOf,
+  dshTransportOf,
+  type ConnectorConfig,
+} from '@deepwork/protocol';
 
-/** dsh 插件补丁条目（cordis loader 的 insert 条目形状） */
+/**
+ * dsh 插件补丁条目（cordis loader 的 insert 条目形状）。
+ *
+ * 两种传输的 config 形状不同（内核的 zod schema 是一个 union），所以这里也是
+ * 一个判别联合 —— 用「可选字段全塞进一个接口」的写法，生成侧就得靠运行时判断
+ * 该不该带 command，而类型系统对此一句话也说不上。
+ * `transport` 取内核的值（'streamable-http'），因为这是**补丁文件的内容**，
+ * 由内核对齐；我们自己的 'http' 在 buildConnectorPatch 里已转换完毕。
+ */
 export interface ConnectorPatchEntry {
   id: string;
   name: string;
-  config: {
-    transport: 'stdio';
-    serverName: string;
-    command: string;
-    args?: string[];
-    env?: Record<string, string>;
-  };
+  config:
+    | {
+        transport: 'stdio';
+        serverName: string;
+        command: string;
+        args?: string[];
+        env?: Record<string, string>;
+      }
+    | {
+        transport: 'streamable-http';
+        serverName: string;
+        url: string;
+        headers?: Record<string, string>;
+      };
 }
 
 /**
  * 把启用的连接器生成 dsh 插件补丁对象（顶层数组，一个 insert 补丁包住全部条目）。
  * 没有启用的连接器时返回 null —— 调用方据此不传 --patch，让内核保持零改动启动。
+ *
+ * 传输在这里翻译：本产品的 http → 内核的 streamable-http（dshTransportOf）。
+ * 两种形态各自只带自己那些字段 —— 多带一个空的 command 或 url，内核的
+ * zod schema 会直接拒绝整个补丁，而报错信息只说明某个字段不符合预期，
+ * 不会告诉我们「是哪个连接器」。
  */
 export function buildConnectorPatch(connectors: ConnectorConfig[]): Array<{ insert: ConnectorPatchEntry[] }> | null {
   const entries = connectors
     .filter((item) => item.enabled)
-    .map((item) => ({
-      id: `deepwork-connector-${item.name}`,
-      name: '@deepseek-ai/dsh-mcp-client',
-      config: {
-        transport: 'stdio' as const,
-        serverName: item.name,
-        command: item.command,
-        ...(item.args?.length ? { args: item.args } : {}),
-        ...(item.env && Object.keys(item.env).length > 0 ? { env: item.env } : {}),
-      },
-    }));
+    .map((item): ConnectorPatchEntry => {
+      const transport = connectorTransportOf(item);
+      if (transport === 'http') {
+        return {
+          id: `deepwork-connector-${item.name}`,
+          name: '@deepseek-ai/dsh-mcp-client',
+          config: {
+            transport: dshTransportOf(transport) as 'streamable-http',
+            serverName: item.name,
+            url: (item.url ?? '').trim(),
+            ...(item.headers && Object.keys(item.headers).length > 0 ? { headers: item.headers } : {}),
+          },
+        };
+      }
+      return {
+        id: `deepwork-connector-${item.name}`,
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: {
+          transport: dshTransportOf(transport) as 'stdio',
+          serverName: item.name,
+          command: (item.command ?? '').trim(),
+          ...(item.args?.length ? { args: item.args } : {}),
+          ...(item.env && Object.keys(item.env).length > 0 ? { env: item.env } : {}),
+        },
+      };
+    });
   return entries.length > 0 ? [{ insert: entries }] : null;
 }
 
 /**
  * 把补丁对象序列化为 dsh 可读的 YAML（最小子集，手写）。
  *
- * 我们的数据形状受控（上面 buildConnectorPatch 的产物）：字符串里可能出现
- * 的只有路径、参数与键值 —— 一律用 JSON 双引号风格序列化标量
- * （JSON 转义是 YAML 双引号标量的合法子集），不需要引入 js-yaml。
- * 若将来要生成更深/更自由的结构，先回来改这里，不要在调用方拼接。
+ * 序列化只有一份实现（serializeInsert + emitConfig）：早先这里另有一份手写的
+ * 「stdio 专用」发射器，加 http 传输时它立刻成了要同步维护的第二份知识 ——
+ * 而且它的失败形态是**静默漏字段**（少写一个 url，内核报的是「配置不合法」，
+ * 不说是哪一条）。现在两者共用一个受控形状的发射器。
  */
 export function serializeConnectorPatchYaml(patch: Array<{ insert: ConnectorPatchEntry[] }>): string {
   const lines: string[] = [
     '# 由 DeepWork 生成（packages/core-host/src/mcp/patch.ts），请勿手改：',
     '# 每次内核（重）启动前按 ~/.deepwork/connectors.json 重建。',
   ];
-  for (const patchEntry of patch) {
-    lines.push('- insert:');
-    for (const entry of patchEntry.insert) {
-      lines.push(`    - id: ${quote(entry.id)}`);
-      lines.push(`      name: ${quote(entry.name)}`);
-      lines.push('      config:');
-      lines.push(`        transport: ${quote(entry.config.transport)}`);
-      lines.push(`        serverName: ${quote(entry.config.serverName)}`);
-      lines.push(`        command: ${quote(entry.config.command)}`);
-      if (entry.config.args?.length) {
-        lines.push('        args:');
-        for (const arg of entry.config.args) lines.push(`          - ${quote(arg)}`);
-      }
-      if (entry.config.env && Object.keys(entry.config.env).length > 0) {
-        lines.push('        env:');
-        for (const [key, value] of Object.entries(entry.config.env)) {
-          lines.push(`          ${quote(key)}: ${quote(value)}`);
-        }
-      }
-    }
-  }
+  for (const patchEntry of patch) lines.push(...serializeInsert(patchEntry));
   return `${lines.join('\n')}\n`;
 }
 
@@ -199,26 +221,53 @@ export function buildChartMcpPatch(options: {
   });
 }
 
+/**
+ * 内置记忆服务（memory_write / memory_read）。
+ *
+ * env 里有 `DEEPWORK_HOME` 与 `DEEPWORK_WORKSPACE`：
+ *  - HOME 决定记忆写到哪（<home>/memory）—— 必须与宿主同源，否则模型写的
+ *    和面板显示的是两份文件，症状是「模型说记下了，面板里没有」；
+ *  - WORKSPACE 决定工作区层记忆归属哪个项目。
+ */
+export function buildMemoryMcpPatch(options: {
+  command: string;
+  entry: string;
+  env: Record<string, string>;
+}): { insert: ConnectorPatchEntry[] } {
+  return buildBuiltinMcpPatch({
+    id: 'deepwork-memory',
+    serverName: MEMORY_MCP_SERVER_NAME,
+    command: options.command,
+    entry: options.entry,
+    env: options.env,
+  });
+}
+
 /** 合并连接器补丁、模型端点覆盖与内置服务；三者皆空返回 null（内核零改动启动） */
 export function buildRuntimePatch(
   connectors: ConnectorConfig[],
   endpointOverride: RuntimePatchOverride | null,
   browserPatch?: { insert: ConnectorPatchEntry[] } | null,
   chartPatch?: { insert: ConnectorPatchEntry[] } | null,
+  memoryPatch?: { insert: ConnectorPatchEntry[] } | null,
 ): RuntimePatchItem[] | null {
   const items: RuntimePatchItem[] = [];
   const connectorPatch = buildConnectorPatch(connectors);
   if (connectorPatch) items.push(...connectorPatch);
   if (endpointOverride) items.push(endpointOverride);
   /*
-   * 内置服务的顺序：**图表在前、浏览器在后**。
+   * 内置服务的顺序：**图表、记忆在前，浏览器在后**。
    *
    * 浏览器恒为最后一项是一条被断言钉住的约定（browser-test 段 2：
    * 「出问题时先怀疑内置项」），所以新加的内置服务插在它前面，
    * 而不是顺手追加到末尾 —— 追加会让那条断言红，而它红的原因
    * 与「浏览器服务坏了」完全无关，属于最费时间的那类失败。
+   *
+   * 注意参数顺序与推入顺序**不同**：参数沿用历史形状（browser 在前）以免
+   * 破坏既有调用方，推入顺序由这段代码决定。新增内置服务请只改这里。
    */
   if (chartPatch) items.push(chartPatch);
+  if (memoryPatch) items.push(memoryPatch);
   if (browserPatch) items.push(browserPatch);
   return items.length > 0 ? items : null;
 }
@@ -252,24 +301,14 @@ function serializeInsert(item: { insert: ConnectorPatchEntry[] }): string[] {
     lines.push(`    - id: ${quote(entry.id)}`);
     lines.push(`      name: ${quote(entry.name)}`);
     lines.push('      config:');
-    lines.push(`        transport: ${quote(entry.config.transport)}`);
-    lines.push(`        serverName: ${quote(entry.config.serverName)}`);
-    lines.push(`        command: ${quote(entry.config.command)}`);
-    if (entry.config.args?.length) {
-      lines.push('        args:');
-      for (const arg of entry.config.args) lines.push(`          - ${quote(arg)}`);
-    }
-    if (entry.config.env && Object.keys(entry.config.env).length > 0) {
-      lines.push('        env:');
-      for (const [key, value] of Object.entries(entry.config.env)) {
-        lines.push(`          ${quote(key)}: ${quote(value)}`);
-      }
-    }
+    // 统一走 emitConfig：config 的形状是受控的扁平对象（只可能多一层
+    // env / headers 这种平面键值表），不需要第二份发射器
+    emitConfig(lines, entry.config as unknown as Record<string, unknown>, 8);
   }
   return lines;
 }
 
-/** 受控形状的 YAML 发射：标量 / 标量数组 / 一层平面对象数组 */
+/** 受控形状的 YAML 发射：标量 / 标量数组 / 一层平面对象 / 平面对象数组 */
 function emitConfig(lines: string[], config: Record<string, unknown>, indent: number): void {
   const pad = ' '.repeat(indent);
   for (const [key, value] of Object.entries(config)) {
@@ -291,6 +330,22 @@ function emitConfig(lines: string[], config: Record<string, unknown>, indent: nu
           else throw new Error(`运行时补丁不支持 ${key}.${k} 的嵌套形状（先扩展 emitConfig）`);
         });
       }
+    } else if (value !== null && typeof value === 'object') {
+      /*
+       * 一层平面键值表（连接器的 env 与 headers）。
+       * 只往下走一层：emitConfig 递归后，若还遇到对象会再次进这一支 —— 也就是
+       * 允许 env: { A: { B: 1 } } 这种形状通过，而那内核并不接受。
+       * 因此这里限制「值必须是字符串」，不合法时明确抛错（方向与上面几支一致：
+       * 形状变复杂就先回来改这里，不要在调用方拼字符串）。
+       */
+      const entries = Object.entries(value as Record<string, unknown>);
+      for (const [, item] of entries) {
+        if (typeof item !== 'string') {
+          throw new Error(`运行时补丁的 ${key} 只支持一层键值表（值必须是字符串，先扩展 emitConfig）`);
+        }
+      }
+      lines.push(`${pad}${key}:`);
+      for (const [k, item] of entries) lines.push(`${pad}  ${quote(k)}: ${quote(item as string)}`);
     } else {
       throw new Error(`运行时补丁不支持 ${key} 的值形状（先扩展 emitConfig）`);
     }

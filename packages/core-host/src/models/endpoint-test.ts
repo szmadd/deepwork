@@ -47,8 +47,11 @@ function fail(
  *
  * 只翻**确定认得的**错误码；认不出就老实地把原话给出去（`请求失败：...`）——
  * 编一句「网络异常，请检查网络」会把一个明确的 TLS 证书错误也糊成同一句话。
+ *
+ * 导出给技能 URL 下载（skills/fetch.ts）复用：同一件事（连不上 / 域名解析不了 /
+ * 超时）在两处给出不同的中文解释，只会让用户以为是两个不同的问题。
  */
-function describeCause(error: unknown): { kind: EndpointFailureKind; message: string } {
+export function describeCause(error: unknown): { kind: EndpointFailureKind; message: string } {
   // undici 的 'fetch failed' 把真因包在 cause 里；多栈解析（IPv4/IPv6 都试）时
   // cause 是 AggregateError，真因在它的 errors[0]。
   let cause = (error as { cause?: unknown })?.cause ?? error;

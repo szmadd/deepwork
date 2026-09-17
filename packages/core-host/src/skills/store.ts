@@ -27,8 +27,8 @@ import type { SkillAuditReport, SkillInstallResult, SkillRecord } from '@deepwor
 import { homeDir, readJson, writeJson } from '../paths';
 import { parseSkillMd, SkillManifestError } from './manifest';
 import { auditSkillDir } from './audit';
-
-const SKILL_MD = 'SKILL.md';
+import { SKILL_MD } from './constants';
+import { materializeSkillSource, type MaterializedSkill } from './fetch';
 
 export class SkillStore {
   private readonly root: string;
@@ -56,9 +56,14 @@ export class SkillStore {
 
   /**
    * 安装（含审计前置）。
-   * source 是技能源目录的绝对路径；URL/市场来源在拉取层落成本地目录后走同一条路。
+   * source 是技能源目录的绝对路径。URL 来源在拉取层落成本地目录后走同一条路
+   * （见 installFromUrl）—— 这里不关心它是从哪来的。
+   *
+   * `originLabel` 只影响**记录里写下什么**（清单的 source 字段）：URL 安装时
+   * 传原始 URL，这样清单里留下的是用户能再次访问的东西，而不是一个
+   * 装完就被删掉的临时目录路径。
    */
-  install(source: string): SkillInstallResult {
+  install(source: string, originLabel?: string): SkillInstallResult {
     const src = path.resolve(source);
     if (!fs.existsSync(path.join(src, SKILL_MD))) {
       return { ok: false, audit: emptyReport(), reason: `源目录缺 ${SKILL_MD}：${src}` };
@@ -110,7 +115,7 @@ export class SkillStore {
 
     const record: SkillRecord = {
       manifest,
-      source: src,
+      source: originLabel ?? src,
       installedAt: new Date().toISOString(),
       enabled: true,
       audit,
@@ -119,6 +124,39 @@ export class SkillStore {
     manifestMap[manifest.name] = record;
     writeJson(this.manifestPath(), manifestMap);
     return { ok: true, audit, record };
+  }
+
+  /**
+   * 从 URL 安装（M2-C 遗留）。
+   *
+   * 三步：下载并落成临时目录 → 走 install（同一条审计与拷贝路径）→ 清理临时目录。
+   *
+   * 失败一律返回结果对象而不是抛错：这条路上「失败」的种类很多（网络、
+   * 形态不对、缺 SKILL.md、审计阻断），每一种都得让用户在界面上看到原因 ——
+   * 抛出去让上层笼统 catch 一句「安装失败」，等于把最有用的那句话丢掉。
+   */
+  async installFromUrl(url: string, options?: { workDir?: string }): Promise<SkillInstallResult> {
+    let materialized: MaterializedSkill | null = null;
+    try {
+      materialized = await materializeSkillSource({
+        source: url,
+        workDir: options?.workDir ?? path.join(homeDir(), 'tmp'),
+      });
+      const result = this.install(materialized.dir, url.trim());
+      // 来源摘要跟着结果回去：URL 安装有两个用户看不见的中间步骤（下载、剥壳），
+      // 出问题时「下载到的到底是不是我以为的那个东西」是第一个要回答的问题
+      return { ...result, source: materialized.digest };
+    } catch (error) {
+      return {
+        ok: false,
+        audit: emptyReport(),
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      // 临时目录里是**未经审计**的外部内容，无论成败都不留：
+      // 成功时它已被拷进技能目录，失败时留着也没有任何用处
+      materialized?.cleanup();
+    }
   }
 
   uninstall(name: string): boolean {
