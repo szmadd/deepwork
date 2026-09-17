@@ -4,6 +4,8 @@ import type {
   BrowserShotImage,
   BrowserShotInfo,
   HostState,
+  NotificationRequest,
+  NotificationResult,
   RpcMethod,
   RpcParams,
   RpcResult,
@@ -27,6 +29,12 @@ export interface DeepworkBridge {
   browserShots(): Promise<BrowserShotInfo[]>;
   /** 读取一张浏览器截图，返回 dataUrl；仅限截图目录下的 PNG */
   browserShotRead(target: string): Promise<BrowserShotImage>;
+  /**
+   * 发系统通知。
+   * 返回 shown 只表示「请求已交给系统」，不代表用户真的看到了它
+   * （专注模式、通知权限、未打包应用都可能让系统把它丢掉）。
+   */
+  notify(request: NotificationRequest): Promise<NotificationResult>;
   onEvent(handler: (event: AgentEvent) => void): () => void;
   onTerminal(handler: (chunk: TerminalChunk) => void): () => void;
   onHostState(handler: (payload: { state: HostState; detail?: string }) => void): () => void;

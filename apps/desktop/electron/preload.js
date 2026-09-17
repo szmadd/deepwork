@@ -22,6 +22,7 @@ const CH_PICK_ATTACHMENTS = 'deepwork:pick-attachments';
 const CH_PREVIEW_ATTACHMENT = 'deepwork:preview-attachment';
 const CH_BROWSER_SHOTS = 'deepwork:browser-shots';
 const CH_BROWSER_SHOT_READ = 'deepwork:browser-shot-read';
+const CH_NOTIFY = 'deepwork:notify';
 
 contextBridge.exposeInMainWorld('deepwork', {
   /** 调用内核宿主方法，method 必须在主进程白名单内 */
@@ -44,6 +45,12 @@ contextBridge.exposeInMainWorld('deepwork', {
 
   /** 读取一张浏览器截图，返回 dataUrl（只允许截图目录下的 PNG） */
   browserShotRead: (target) => ipcRenderer.invoke(CH_BROWSER_SHOT_READ, target),
+
+  /**
+   * 发系统通知；返回 { shown, reason? }。
+   * shown 只表示请求已交给系统 —— 是否真的弹出来由系统决定，见 main.js 的注释。
+   */
+  notify: (request) => ipcRenderer.invoke(CH_NOTIFY, request),
 
   /** 订阅归一化事件流，返回取消订阅函数 */
   onEvent: (handler) => {

@@ -27,6 +27,7 @@ import { UsagePanel, formatTokens } from './components/UsagePanel';
 import { BrowserPanel } from './components/BrowserPanel';
 import { AttachmentBar } from './components/AttachmentBar';
 import { useAgent } from './useAgent';
+import { useTheme } from './useTheme';
 
 const MODES: AgentMode[] = ['ptc', 'standard', 'minimal', 'creative'];
 
@@ -82,6 +83,8 @@ const VIEW_REFRESH: Partial<
  */
 export default function App() {
   const agent = useAgent();
+  // 主题：档位来自 config，解析与系统偏好订阅在 hook 里（config 未就绪时按浅色）
+  useTheme(agent.config?.theme);
   const [view, setView] = useState<AppView>('chat');
   const [mode, setMode] = useState<AgentMode>('ptc');
   const [model, setModel] = useState<string>('');
@@ -113,6 +116,18 @@ export default function App() {
   }, [agent.config]);
 
   const running = agent.activeRunId !== null;
+
+  /*
+   * 技能清单要尽早拉一次：`/` 补全的候选就是它，而清单原本只在打开技能
+   * 视图时才拉。那样「刚启动就在输入框打 /」会一个候选都看不到，
+   * 看起来像补全坏了 —— 而用户没有任何办法知道「先去看一眼技能页」是前提。
+   * 拿到之后不再重复拉（清单由技能页那边的操作负责刷新）。
+   */
+  useEffect(() => {
+    if (!agent.ready || agent.skills.length > 0) return;
+    void agent.refreshSkills();
+  }, [agent.ready, agent.skills.length]);
+
   // 就绪判定以内核 RPC 是否成功为准，而不是等 UI 收到 ready 事件
   // （窗口可能在 host.ready 发出之后才加载完成，只信事件会永久卡在「启动中」）
   const disabled = !agent.ready;
@@ -250,6 +265,15 @@ export default function App() {
               {endpointRestarting ? '重启中…' : '重启内核使配置生效'}
             </button>
             {endpointRestartError ? <span className="banner-detail">{endpointRestartError}</span> : null}
+          </div>
+        ) : null}
+
+        {agent.notifyWarning ? (
+          <div className="banner banner-warn">
+            <span>桌面通知未能发出：{agent.notifyWarning}（窗口切走时不会收到提醒）</span>
+            <button type="button" className="icon-btn" onClick={agent.dismissNotifyWarning}>
+              ×
+            </button>
           </div>
         ) : null}
 
@@ -406,6 +430,7 @@ export default function App() {
             <Composer
               disabled={disabled}
               running={running}
+              skills={agent.skills}
               onSend={(text) => void agent.send(text, { mode, model })}
               onAbort={() => void agent.abort()}
             />
@@ -455,7 +480,14 @@ export default function App() {
 
         {view === 'trajectory' ? (
           <PanelPage title="Trajectory" subtitle="事件流时间线 · 逐条可核验" flush onBack={backToChat}>
-            <TrajectoryPanel events={agent.events} onClose={backToChat} />
+            <TrajectoryPanel
+              events={agent.events}
+              sessionId={agent.current?.id}
+              parentSessionId={agent.current?.fork?.sessionId}
+              onCompare={agent.compareBranches}
+              onFork={(atSeq) => void agent.forkSession(atSeq)}
+              onClose={backToChat}
+            />
           </PanelPage>
         ) : null}
 

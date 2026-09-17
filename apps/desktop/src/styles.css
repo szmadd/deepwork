@@ -20,6 +20,94 @@
   --radius: 12px;
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', Consolas, monospace;
+
+  /*
+   * ── 语义色的「淡底」变体 ─────────────────────────────────────────
+   * 这些值原来是散在各条规则里写死的（提示条、diff 行、审计结论、内联代码…）。
+   * 抽出来只为一件事：深色主题要**整组翻面**。
+   * 不抽的后果很具体 —— 深色页面上会冒出「浅绿底 + 深绿字」的提示块，
+   * 亮度对比刺眼且和周围完全不是一套；而逐个选择器覆盖，等于把同一份色表
+   * 抄第二遍，两遍必然漂（本项目在别处已经栽过一次「同一份知识有两个实现」）。
+   */
+  --tint-warn-bg: #fdf8ec;
+  --tint-warn-fg: #8a6a1a;
+  --tint-danger-bg: #fef0ef;
+  --tint-danger-fg: #b71e1a;
+  --tint-info-bg: #eef4fe;
+  --tint-info-fg: #2f5fb8;
+  --tint-ok-bg-soft: #e6f6ea;
+  --tint-ok-fg: #1a7f37;
+  --tint-add-bg: #e6ffec;
+  --tint-del-bg: #ffebe9;
+  --tint-del-bg-soft: #fdeceb;
+  --tint-del-fg: #cf222e;
+  --accent-border: #c9d4ff;
+  --accent-border-soft: #dbe3ff;
+  --accent-strong: #3f5df0;
+  --accent-soft-2: #8fb0ff;
+  /* 正文里的内联代码：比正文稍冷稍深，浅底上读起来更像「代码」而不是普通文字 */
+  --text-code: #3a4150;
+  --tree-dot: #cdd2d9;
+}
+
+/*
+ * ── 深色主题（2026-09-17 接主题切换器）──────────────────────────────
+ *
+ * 只覆盖变量，不改规则：整份样式表都建在 :root 的变量上 —— 接切换器时逐条
+ * 核过一遍，把最后一批写死的语义色（提示条的浅底深字、diff 的增删底色、
+ * 审计结论的色块、内联代码色）也抽成了变量。这样「深色下哪里不对」
+ * 只有一个地方要查，而不是每条规则各判一次。
+ *
+ * 挂在 `html[data-theme]` 而不是 body：原生控件（select 下拉、滚动条、
+ * 日期选择器）读的是**根元素**的 color-scheme，挂 body 覆盖不到它们 ——
+ * 那个症状很具体：深色主题下点开一个白底的下拉列表。
+ *
+ * 属性值由 protocol 的 resolveTheme 决定（'system' 档在渲染层已经解析成
+ * light/dark）。**这里不判断系统偏好** —— 判断散在两处，迟早出现
+ * 「设置页写着跟随系统，某个窗口却永远浅色」。
+ */
+html[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #1b1d21;
+  --bg-2: #212429;
+  --bg-3: #262a31;
+  --bg-4: #2f343c;
+  --border: #343941;
+  --border-soft: #2b3038;
+  --text: #e4e7eb;
+  --text-dim: #a4acb7;
+  --text-faint: #767e8a;
+  /* 深底上 #4d6bfe 偏闷，提亮一档才读得清 */
+  --accent: #6f8aff;
+  --accent-soft: #232a45;
+  --danger: #f28b82;
+  --warn: #e3b341;
+  --ok: #3fb950;
+  --purple: #b083f0;
+
+  --tint-warn-bg: #3a2f12;
+  --tint-warn-fg: #e3b341;
+  --tint-danger-bg: #3d1d1d;
+  --tint-danger-fg: #f28b82;
+  --tint-info-bg: #1c2740;
+  --tint-info-fg: #8fb4ff;
+  --tint-ok-bg-soft: #16301f;
+  --tint-ok-fg: #3fb950;
+  --tint-add-bg: #14331f;
+  --tint-del-bg: #3a1d1c;
+  --tint-del-bg-soft: #331a19;
+  --tint-del-fg: #f28b82;
+  --accent-border: #2f3b6b;
+  --accent-border-soft: #2a3350;
+  --accent-strong: #5570f5;
+  --accent-soft-2: #8fb0ff;
+  --text-code: #d7dbe1;
+  --tree-dot: #4a5260;
+
+  /* 终端本来就是深色，深色主题下反而要与页面拉开一点层次，
+     否则终端看不出边界（浅色主题里它是唯一的深块，天然分隔） */
+  --terminal-bg: #101317;
 }
 
 * {
@@ -89,7 +177,7 @@ pre {
   width: 26px;
   height: 26px;
   border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent), #8fb0ff);
+  background: linear-gradient(135deg, var(--accent), var(--accent-soft-2));
   flex: 0 0 26px;
 }
 
@@ -158,7 +246,7 @@ pre {
 
 .session-item.active {
   background: var(--accent-soft);
-  border-color: #c9d4ff;
+  border-color: var(--accent-border);
 }
 
 .session-main {
@@ -342,18 +430,18 @@ pre {
 }
 
 .banner-error {
-  background: #fef0ef;
-  color: #b71e1a;
+  background: var(--tint-danger-bg);
+  color: var(--tint-danger-fg);
 }
 
 .banner-warn {
-  background: #fdf8ec;
-  color: #8a6a1a;
+  background: var(--tint-warn-bg);
+  color: var(--tint-warn-fg);
 }
 
 .banner-info {
-  background: #eef4fe;
-  color: #2f5fb8;
+  background: var(--tint-info-bg);
+  color: var(--tint-info-fg);
 }
 
 .banner .icon-btn {
@@ -414,7 +502,7 @@ pre {
 
 .bubble-user {
   background: var(--accent-soft);
-  border: 1px solid #dbe3ff;
+  border: 1px solid var(--accent-border-soft);
   max-width: 78%;
 }
 
@@ -429,7 +517,7 @@ pre {
   background: var(--bg-3);
   padding: 1px 5px;
   border-radius: 5px;
-  color: #3a4150;
+  color: var(--text-code);
 }
 
 .code-block {
@@ -505,14 +593,14 @@ pre {
 }
 
 .notice-warn {
-  color: #8a6a1a;
-  background: #fdf8ec;
+  color: var(--tint-warn-fg);
+  background: var(--tint-warn-bg);
   border-color: rgba(210, 153, 34, 0.35);
 }
 
 .notice-error {
-  color: #b71e1a;
-  background: #fef0ef;
+  color: var(--tint-danger-fg);
+  background: var(--tint-danger-bg);
   border-color: rgba(207, 34, 46, 0.3);
 }
 
@@ -590,8 +678,8 @@ pre {
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 5px;
-  color: #8a6a1a;
-  background: #fdf8ec;
+  color: var(--tint-warn-fg);
+  background: var(--tint-warn-bg);
   border: 1px solid rgba(210, 153, 34, 0.4);
   white-space: nowrap;
 }
@@ -644,14 +732,14 @@ pre {
 }
 
 .risk-confirm {
-  color: #8a6a1a;
-  background: #fdf8ec;
+  color: var(--tint-warn-fg);
+  background: var(--tint-warn-bg);
   border-color: rgba(210, 153, 34, 0.4);
 }
 
 .risk-danger {
-  color: #b71e1a;
-  background: #fef0ef;
+  color: var(--tint-danger-fg);
+  background: var(--tint-danger-bg);
   border-color: rgba(207, 34, 46, 0.35);
 }
 
@@ -702,7 +790,7 @@ pre {
   max-height: 260px;
   overflow: auto;
   margin: 0;
-  color: #3a4150;
+  color: var(--text-code);
 }
 
 /* ── 输入区 ───────────────────────────────────── */
@@ -714,6 +802,55 @@ pre {
   display: flex;
   gap: 10px;
   align-items: flex-end;
+  /* 技能补全弹层相对输入区定位（贴在它上方），否则会被别的层盖住或被裁掉 */
+  position: relative;
+}
+
+/*
+ * `/` 技能补全弹层。
+ * 右边界留出按钮列的宽度：不避让的话弹层会盖住「发送」，而用户此时正要确认候选。
+ */
+.composer-complete {
+  position: absolute;
+  left: 16px;
+  right: 108px;
+  bottom: calc(100% - 6px);
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 26px rgba(15, 18, 24, 0.16);
+  max-height: 236px;
+  overflow: auto;
+  z-index: 20;
+}
+
+.composer-complete-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.composer-complete-item code {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.composer-complete-desc {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-complete-on {
+  background: var(--accent-soft);
 }
 
 .composer-input {
@@ -769,7 +906,7 @@ pre {
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #3f5df0;
+  background: var(--accent-strong);
 }
 
 .btn-danger {
@@ -779,7 +916,7 @@ pre {
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: #fef0ef;
+  background: var(--tint-danger-bg);
 }
 
 .btn-active {
@@ -893,9 +1030,9 @@ pre {
   font-size: 11.5px;
   padding: 1px 5px;
   border-radius: 4px;
-  background: #fdf8ec;
+  background: var(--tint-warn-bg);
   border: 1px solid rgba(210, 153, 34, 0.4);
-  color: #8a6a1a;
+  color: var(--tint-warn-fg);
 }
 
 /* 模型的理由原样引用：它是「用户凭什么点头」的全部信息，不做归纳不改写 */
@@ -965,12 +1102,131 @@ pre {
 
 .traj-row {
   display: grid;
-  grid-template-columns: 34px 1fr auto;
+  /* 第 4 列是「从此处分叉」入口；payload 占 2..5 在第二行横跨 */
+  grid-template-columns: 34px 1fr auto auto;
   gap: 4px 8px;
   padding: 5px 7px;
   border-radius: 7px;
   font-size: 11px;
   border-bottom: 1px solid var(--border-soft);
+}
+
+/*
+ * 逐事件分叉入口（M1 遗留）。
+ * 默认半透明：轨迹视图是「一屏几十行」的排布，几十个实心按钮会把事件本身淹没。
+ * hover 该行时才实体化 —— 入口要能被找到，但不该抢走对内容的注意力。
+ */
+.traj-fork {
+  opacity: 0;
+  padding: 0 8px;
+  font-family: inherit;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--text-faint);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.traj-row:hover .traj-fork,
+.traj-fork:focus-visible {
+  opacity: 1;
+}
+
+.traj-fork:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ── 分支对比（轨迹视图内的另一半，M1 遗留）───────────────────── */
+
+.branch-compare {
+  padding: 6px 2px;
+}
+
+/*
+ * 两列用 auto-fit + minmax 而不是固定 1fr 1fr：
+ * 轨迹面板的宽度随窗口与面板设置变，固定两列在窄宽度下会把 diff 挤成
+ * 每行两三个字 —— 那时「并排」只剩下形式，内容读不了。
+ * 宽度不够时自动堆叠，够宽才并排。
+ */
+.branch-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 8px;
+}
+
+.branch-basis {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 6px 9px;
+  margin-bottom: 8px;
+}
+
+.branch-group-title {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  margin: 10px 0 6px;
+}
+
+.branch-empty {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  padding: 8px 2px;
+}
+
+.branch-file {
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  padding: 7px 8px;
+  margin-bottom: 8px;
+  background: var(--bg);
+}
+
+.branch-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.branch-file-path {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-file-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.branch-col {
+  min-width: 0;
+}
+
+.branch-col-head {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-bottom: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .traj-seq {
@@ -989,13 +1245,29 @@ pre {
 }
 
 .traj-payload {
-  grid-column: 2 / 4;
+  grid-column: 2 / 5;
   margin: 0;
   color: var(--text-dim);
   white-space: pre-wrap;
   word-break: break-all;
   max-height: 90px;
   overflow: hidden;
+}
+
+/* URL 安装行：输入框吃满剩余宽度，两个按钮贴右 */
+.skill-url-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.skill-url-row .settings-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.skill-url-row .btn {
+  flex: 0 0 auto;
 }
 
 /* ── 工作区指示 ───────────────────────────────────────────── */
@@ -1117,12 +1389,12 @@ pre {
 }
 
 .diff-badge-new {
-  background: #e6f6ea;
+  background: var(--tint-ok-bg-soft);
   color: var(--ok);
 }
 
 .diff-badge-del {
-  background: #fdeceb;
+  background: var(--tint-del-bg-soft);
   color: var(--danger);
 }
 
@@ -1175,21 +1447,21 @@ pre {
 }
 
 .diff-add {
-  background: #e6ffec;
+  background: var(--tint-add-bg);
 }
 
 .diff-add > .diff-sign,
 .diff-add > .diff-text {
-  color: #1a7f37;
+  color: var(--tint-ok-fg);
 }
 
 .diff-remove {
-  background: #ffebe9;
+  background: var(--tint-del-bg);
 }
 
 .diff-remove > .diff-sign,
 .diff-remove > .diff-text {
-  color: #cf222e;
+  color: var(--tint-del-fg);
 }
 
 .diff-hunk {
@@ -1336,8 +1608,8 @@ pre {
 }
 
 .panel-note-warn {
-  background: #fdf8ec;
-  color: #8a6a1a;
+  background: var(--tint-warn-bg);
+  color: var(--tint-warn-fg);
   border: 1px solid rgba(210, 153, 34, 0.3);
 }
 
@@ -1422,7 +1694,7 @@ pre {
   height: 6px;
   flex: 0 0 6px;
   border-radius: 50%;
-  background: #cdd2d9;
+  background: var(--tree-dot);
 }
 
 .tree-name {
@@ -1629,7 +1901,7 @@ pre {
 }
 
 .attach-flag {
-  color: #9a6700;
+  color: var(--warn);
 }
 
 /* ── 会话搜索与重命名 ─────────────────────────── */
@@ -1740,6 +2012,40 @@ pre {
   border-color: var(--accent);
 }
 
+/*
+ * 主题档位：用胶囊按钮而不是下拉框。
+ * 三个选项的价值在于「一眼看到有哪三档」—— 下拉框只显示当前值，
+ * 用户得点开才知道原来还能跟随系统。改动立即生效，所以也不需要保存按钮。
+ */
+.theme-chips {
+  display: flex;
+  gap: 6px;
+  margin: 2px 0 6px;
+}
+
+.theme-chip {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.theme-chip:hover {
+  border-color: var(--accent-border);
+  color: var(--text);
+}
+
+.theme-chip-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .settings-textarea {
   font-family: var(--mono);
   font-size: 11.5px;
@@ -1805,8 +2111,8 @@ pre {
 }
 
 .modal-hint-warn {
-  color: #8a6a1a;
-  background: #fdf8ec;
+  color: var(--tint-warn-fg);
+  background: var(--tint-warn-bg);
   border: 1px solid rgba(210, 153, 34, 0.28);
   padding: 7px 10px;
   border-radius: 8px;
@@ -1923,7 +2229,7 @@ pre {
   border-radius: 8px;
   background: var(--bg-2);
   border: 1px solid var(--border-soft);
-  color: #3a4150;
+  color: var(--text-code);
   font-size: 11.5px;
   line-height: 1.55;
   white-space: pre;
@@ -2011,12 +2317,12 @@ pre {
 
 .skill-finding-critical {
   border-color: rgba(207, 34, 46, 0.35);
-  background: #fef0ef;
+  background: var(--tint-danger-bg);
 }
 
 .skill-finding-warn {
   border-color: rgba(210, 153, 34, 0.35);
-  background: #fdf8ec;
+  background: var(--tint-warn-bg);
 }
 
 .skill-finding-head {
@@ -2038,7 +2344,7 @@ pre {
 }
 
 .skill-finding-warn .skill-severity {
-  color: #9a6700;
+  color: var(--warn);
 }
 
 .skill-snippet {
@@ -2219,7 +2525,7 @@ pre {
   width: 26px;
   height: 26px;
   border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent), #8fb0ff);
+  background: linear-gradient(135deg, var(--accent), var(--accent-soft-2));
   margin-bottom: 10px;
   flex: 0 0 26px;
 }

@@ -2,6 +2,8 @@ import type {
   AttachmentPreview,
   BrowserShotImage,
   BrowserShotInfo,
+  NotificationRequest,
+  NotificationResult,
   RpcMethod,
   RpcParams,
   RpcResult,
@@ -50,6 +52,19 @@ export function browserShots(): Promise<BrowserShotInfo[]> {
 /** 读取一张浏览器截图（主进程只放行截图目录下的 PNG） */
 export function browserShotRead(target: string): Promise<BrowserShotImage> {
   return bridge().browserShotRead(target);
+}
+
+/**
+ * 发系统通知。
+ *
+ * 注意 shown 的口径：它表示「主进程已把请求交给系统」，不表示用户看到了。
+ * 调用方（useAgent）据此决定要不要在界面上补一条提示 —— 通知发不出去时
+ * 静默失败是最糟的结果：用户以为「切走了也会被提醒」，而实际上不会。
+ */
+export function notify(request: NotificationRequest): Promise<NotificationResult> {
+  const value = window.deepwork;
+  if (!value?.notify) return Promise.resolve({ shown: false, reason: '当前环境没有通知通道' });
+  return value.notify(request);
 }
 
 export function describeError(error: unknown): string {

@@ -1,6 +1,11 @@
 import { useState } from 'react';
-import type { ConnectorConfig, ConnectorState } from '@deepwork/protocol';
-import { validateConnectorConfig } from '@deepwork/protocol';
+import type { ConnectorConfig, ConnectorState, ConnectorTransport } from '@deepwork/protocol';
+import {
+  CONNECTOR_TRANSPORTS,
+  CONNECTOR_TRANSPORT_LABEL,
+  connectorTransportOf,
+  validateConnectorConfig,
+} from '@deepwork/protocol';
 import { describeError } from '../api';
 
 interface ConnectorsPanelProps {
@@ -126,13 +131,24 @@ export function ConnectorsPanel({
                 </button>
               </div>
               <div className="schedule-desc">
-                {state.config.command}
-                {state.config.args?.length ? ` ${state.config.args.join(' ')}` : ''}
+                {connectorTransportOf(state.config) === 'http' ? (
+                  <>网络地址 {state.config.url}</>
+                ) : (
+                  <>
+                    {state.config.command}
+                    {state.config.args?.length ? ` ${state.config.args.join(' ')}` : ''}
+                  </>
+                )}
               </div>
               <div className="schedule-meta">
-                工具前缀 mcp__{state.config.name}__
+                {CONNECTOR_TRANSPORT_LABEL[connectorTransportOf(state.config)]} · 工具前缀 mcp__
+                {state.config.name}__
                 {state.config.env && Object.keys(state.config.env).length > 0
                   ? ` · 环境变量 ${Object.keys(state.config.env).join('、')}`
+                  : ''}
+                {/* 请求头只列名不列值：值可能是令牌，而这一行会出现在截图与共享里 */}
+                {state.config.headers && Object.keys(state.config.headers).length > 0
+                  ? ` · 请求头 ${Object.keys(state.config.headers).join('、')}`
                   : ''}
               </div>
               <div className="schedule-meta" title={state.note}>
@@ -185,7 +201,7 @@ export function ConnectorsPanel({
   );
 }
 
-/** 添加表单：名称 / 命令 / 参数 / 环境变量（每行一个 KEY=VALUE） */
+/** 添加表单：传输 / 名称 / 命令或地址 / 参数或请求头 */
 function ConnectorForm({
   onSubmit,
   onCancel,
@@ -193,10 +209,13 @@ function ConnectorForm({
   onSubmit: (config: ConnectorConfig) => Promise<void>;
   onCancel: () => void;
 }) {
+  const [transport, setTransport] = useState<ConnectorTransport>('stdio');
   const [name, setName] = useState('');
   const [command, setCommand] = useState('');
   const [argsText, setArgsText] = useState('');
   const [envText, setEnvText] = useState('');
+  const [url, setUrl] = useState('');
+  const [headersText, setHeadersText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -206,27 +225,39 @@ function ConnectorForm({
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const env: Record<string, string> = {};
-  let envError: string | null = null;
-  for (const line of envText.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq <= 0) {
-      envError = `环境变量行缺少 KEY=VALUE 形式：${trimmed}`;
-      break;
+  /** KEY=VALUE 逐行解析（env 与 headers 同一形状，用同一段代码） */
+  const parsePairs = (text: string, label: string): { map: Record<string, string>; error: string | null } => {
+    const map: Record<string, string> = {};
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq <= 0) return { map, error: `${label}行缺少 KEY=VALUE 形式：${trimmed}` };
+      map[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1);
     }
-    env[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1);
-  }
-
-  const config: ConnectorConfig = {
-    name: name.trim(),
-    command: command.trim(),
-    ...(args.length > 0 ? { args } : {}),
-    ...(Object.keys(env).length > 0 ? { env } : {}),
-    enabled: true,
+    return { map, error: null };
   };
-  const invalid = envError ?? validateConnectorConfig(config);
+
+  const envParsed = parsePairs(envText, '环境变量');
+  const headersParsed = parsePairs(headersText, '请求头');
+
+  const config: ConnectorConfig =
+    transport === 'http'
+      ? {
+          name: name.trim(),
+          transport: 'http',
+          url: url.trim(),
+          ...(Object.keys(headersParsed.map).length > 0 ? { headers: headersParsed.map } : {}),
+          enabled: true,
+        }
+      : {
+          name: name.trim(),
+          command: command.trim(),
+          ...(args.length > 0 ? { args } : {}),
+          ...(Object.keys(envParsed.map).length > 0 ? { env: envParsed.map } : {}),
+          enabled: true,
+        };
+  const invalid = envParsed.error ?? headersParsed.error ?? validateConnectorConfig(config);
 
   const submit = async () => {
     setBusy(true);
@@ -245,32 +276,75 @@ function ConnectorForm({
       <div className="modal-label">添加连接器</div>
       {error ? <div className="banner banner-error">{error}</div> : null}
 
+      {/*
+        传输放在最前：它决定了下面要填哪几个字段（一个本地命令，还是一个地址）。
+        藏在后面的话，用户会先把命令填完才发现「原来还能填地址」——
+        而两种形态的字段互不通用，填错了只能整条重来。
+      */}
+      <div className="theme-chips">
+        {CONNECTOR_TRANSPORTS.map((item) => (
+          <button
+            type="button"
+            key={item}
+            className={`theme-chip${transport === item ? ' theme-chip-on' : ''}`}
+            onClick={() => setTransport(item)}
+          >
+            {CONNECTOR_TRANSPORT_LABEL[item]}
+          </button>
+        ))}
+      </div>
+
       <input
         className="settings-input"
         placeholder="名称（小写字母/数字/中划线，如 github —— 工具名前缀 mcp__github__）"
         value={name}
         onChange={(event) => setName(event.target.value)}
       />
-      <input
-        className="settings-input"
-        placeholder="命令（如 npx 或某个可执行文件的绝对路径）"
-        value={command}
-        onChange={(event) => setCommand(event.target.value)}
-      />
-      <textarea
-        className="settings-input settings-textarea"
-        rows={2}
-        placeholder={'参数（可选，每行一个）\n-y\n@modelcontextprotocol/server-github'}
-        value={argsText}
-        onChange={(event) => setArgsText(event.target.value)}
-      />
-      <textarea
-        className="settings-input settings-textarea"
-        rows={2}
-        placeholder={'环境变量（可选，每行一个 KEY=VALUE）\nGITHUB_TOKEN=…'}
-        value={envText}
-        onChange={(event) => setEnvText(event.target.value)}
-      />
+
+      {transport === 'http' ? (
+        <>
+          <input
+            className="settings-input"
+            placeholder="服务地址（如 http://192.168.1.20:3000/mcp）"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+          />
+          <textarea
+            className="settings-input settings-textarea"
+            rows={2}
+            placeholder={'请求头（可选，每行一个 KEY=VALUE）\nAuthorization=Bearer …'}
+            value={headersText}
+            onChange={(event) => setHeadersText(event.target.value)}
+          />
+          <div className="modal-hint">
+            请求头会明文保存到本机配置文件并交给内核 —— 这里不适合放会过期的短期令牌。
+            该地址需要从这台机器可达；连不上只会出现在内核日志里，本面板不探测。
+          </div>
+        </>
+      ) : (
+        <>
+          <input
+            className="settings-input"
+            placeholder="命令（如 npx 或某个可执行文件的绝对路径）"
+            value={command}
+            onChange={(event) => setCommand(event.target.value)}
+          />
+          <textarea
+            className="settings-input settings-textarea"
+            rows={2}
+            placeholder={'参数（可选，每行一个）\n-y\n@modelcontextprotocol/server-github'}
+            value={argsText}
+            onChange={(event) => setArgsText(event.target.value)}
+          />
+          <textarea
+            className="settings-input settings-textarea"
+            rows={2}
+            placeholder={'环境变量（可选，每行一个 KEY=VALUE）\nGITHUB_TOKEN=…'}
+            value={envText}
+            onChange={(event) => setEnvText(event.target.value)}
+          />
+        </>
+      )}
 
       <div className="modal-hint">
         {invalid ?? `将以 ${name.trim() || '<名称>'} 注册，工具形如 mcp__${name.trim() || '<名称>'}__xxx；添加后需重启内核生效。`}

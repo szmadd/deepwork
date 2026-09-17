@@ -100,9 +100,11 @@ export function ChatStream({ items, onFork }: ChatStreamProps) {
                 {item.durationMs ? ` · ${(item.durationMs / 1000).toFixed(1)}s` : ''} ·
                 {onFork ? (
                   /*
-                   * 分叉入口放在轮次的边界上，而不是每条消息旁边：
-                   * 只有一轮完整结束的位置才是合法分支点，界面顺着这个约束长，
-                   * 用户就不会点到一个必然被内核拒绝的位置。
+                   * 对话视图把入口放在轮次边界上：这里要回答的是「这一轮结束的地方」，
+                   * 一条滚动的消息流里逐条挂按钮既吵、也容易点错行。
+                   * 精确到「某一条事件」的入口在轨迹视图（TrajectoryPanel），
+                   * 那里本来就是一事件一行的排布。两处给的是同一个 atSeq 参数，
+                   * 区别只在用户能选多细 —— 合法性判断始终在内核，界面不重复规则。
                    */
                   <button
                     type="button"

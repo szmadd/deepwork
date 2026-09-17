@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { SkillAuditReport, SkillInstallResult, SkillRecord } from '@deepwork/protocol';
+import { describeSkillSource } from '@deepwork/protocol';
 import { describeError, pickWorkspace } from '../api';
 
 interface SkillsPanelProps {
@@ -47,6 +48,9 @@ export function SkillsPanel({
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** URL 安装行：默认收起，点「从 URL 安装…」才展开 */
+  const [urlOpen, setUrlOpen] = useState(false);
+  const [url, setUrl] = useState('');
 
   const pickAndAudit = async () => {
     setError(null);
@@ -59,6 +63,37 @@ export function SkillsPanel({
     } catch (cause) {
       setError(describeError(cause));
       setInstall({ step: 'idle' });
+    }
+  };
+
+  /**
+   * 从 URL 安装（M2-C 遗留）。
+   *
+   * 与本地目录那条路的关键差别：**审计没法在下载之前做** —— 内容还在别人
+   * 的机器上。所以这里的顺序是「下载 → 审计 → 落盘」，审计仍然在内容进入
+   * 技能目录之前（critical 一律拒绝，源目录不进家目录），但报告只能在下完之后
+   * 才看得到。这一点必须写在界面上：不说的话，用户会以为这与本地安装
+   * 是同一套流程（本地那条能先看报告再决定）。
+   */
+  const installFromUrl = async () => {
+    const source = url.trim();
+    if (!source) return;
+    setBusy(true);
+    setError(null);
+    setInstall({ step: 'auditing', source });
+    try {
+      const result = await onInstall(source);
+      setInstall({ step: 'done', result });
+      if (result.ok) {
+        await onRefresh();
+        setUrl('');
+        setUrlOpen(false);
+      }
+    } catch (cause) {
+      setError(describeError(cause));
+      setInstall({ step: 'idle' });
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -104,6 +139,40 @@ export function SkillsPanel({
 
           {install.step === 'idle' || install.step === 'done' ? (
             <>
+              {urlOpen ? (
+                <>
+                  <div className="skill-url-row">
+                    <input
+                      className="settings-input"
+                      placeholder="技能地址（zip 归档，或单个 SKILL.md 的 http(s) 链接）"
+                      value={url}
+                      onChange={(event) => setUrl(event.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={busy || !url.trim()}
+                      onClick={() => void installFromUrl()}
+                    >
+                      {busy ? '安装中…' : '安装'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => {
+                        setUrlOpen(false);
+                        setUrl('');
+                      }}
+                    >
+                      取消
+                    </button>
+                  </div>
+                  <div className="modal-hint">
+                    URL 来源的顺序是「先下载、再审计、后落盘」：审计仍然发生在内容进入技能目录之前，
+                    critical 会拒绝安装；但报告要等下载完才能看（本地目录那条路可以先看报告再决定）。
+                  </div>
+                </>
+              ) : null}
               {install.step === 'done' ? (
                 install.result.ok ? (
                   <div className="modal-hint">
@@ -113,6 +182,11 @@ export function SkillsPanel({
                       ? `；审计留有 ${install.result.audit.findings.length} 条发现（见下方记录）`
                       : '，审计零发现'}
                     。
+                    {/* URL 来源多两个看不见的中间步骤，摘要必须显示 ——
+                        「装上的到底是不是我以为的那个包」是这里唯一能回答它的地方 */}
+                    {install.result.source
+                      ? ` 来源：${describeSkillSource(install.result.source)}。`
+                      : ''}
                   </div>
                 ) : (
                   <div className="modal-hint modal-hint-warn">
@@ -217,6 +291,9 @@ export function SkillsPanel({
             <>
               <button type="button" className="btn" onClick={onClose}>
                 返回对话
+              </button>
+              <button type="button" className="btn" onClick={() => setUrlOpen(true)}>
+                从 URL 安装…
               </button>
               <button type="button" className="btn btn-primary" onClick={() => void pickAndAudit()}>
                 从本地目录安装…

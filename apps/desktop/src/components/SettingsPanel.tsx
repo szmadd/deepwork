@@ -14,6 +14,8 @@ import {
   DEFAULT_ENDPOINT_CONTEXT_WINDOW,
   SANDBOX_MODE_INFO,
   SANDBOX_MODES,
+  THEME_MODE_LABEL,
+  THEME_MODES,
   type AgentMode,
   type SandboxMode,
 } from '@deepwork/protocol';
@@ -219,6 +221,30 @@ export function SettingsPanel({
           ) : null}
           {tab === 'prefs' ? (
             <>
+              {/*
+                主题放在偏好页最上面：它是唯一一个「改完立刻能看见」的设置，
+                排在这里用户能马上确认它生效了。三档而不是两档 ——
+                「跟随系统」是唯一不需要用户再回来管的档位。
+              */}
+              <div className="modal-label">主题</div>
+              <div className="theme-chips">
+                {THEME_MODES.map((mode) => (
+                  <button
+                    type="button"
+                    key={mode}
+                    className={`theme-chip${config.theme === mode ? ' theme-chip-on' : ''}`}
+                    onClick={() => onUpdateConfig({ theme: mode })}
+                  >
+                    {THEME_MODE_LABEL[mode]}
+                  </button>
+                ))}
+              </div>
+              <div className="modal-hint">
+                {config.theme === 'system'
+                  ? '跟随系统外观：系统切深色时应用一起切，不必回来改这一项。'
+                  : '立即生效，不需要重启内核。'}
+              </div>
+
               <div className="modal-label">新建会话的默认模式</div>
               <select
                 className="settings-input"

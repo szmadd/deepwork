@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type {
-  AgentEvent,
+import {
+  notificationFor,
+  type AgentEvent,
   AgentMode,
   AppConfig,
   ApprovalDecision,
   ApprovalRequest,
   AttachmentPreview,
+  BranchCompareResult,
   ConnectorConfig,
   BrowserState,
   ConnectorState,
@@ -35,6 +37,7 @@ import {
   describeError,
   hasBridge,
   invoke,
+  notify,
   pickAttachments,
   pickWorkspace,
   previewAttachment,
@@ -67,6 +70,8 @@ export interface UseAgentResult {
   guard: GuardPolicy | null;
   sessions: Session[];
   current: Session | null;
+  /** 分支对比（轨迹视图用）：两条会话各自对文件的改动 */
+  compareBranches: (leftId: string, rightId: string) => Promise<BranchCompareResult>;
   timeline: TimelineItem[];
   events: AgentEvent[];
   approvals: ApprovalRequest[];
@@ -126,8 +131,9 @@ export interface UseAgentResult {
   removeSession: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
   /**
-   * 从当前会话的某一轮结束处分叉出新会话，并切过去。
-   * atSeq 省略表示从末尾分叉；内核会把落在半轮里的位置吸附回运行边界。
+   * 从当前会话的某一条事件处分叉出新会话，并切过去。
+   * atSeq 省略表示从末尾分叉。切点是**逐事件**的：新会话继承该事件之前
+   * 的全部日志（供回看），但那只是日志，不是喂给模型的上下文。
    */
   forkSession: (atSeq?: number) => Promise<void>;
   send: (text: string, options?: { mode?: AgentMode; model?: string }) => Promise<void>;
@@ -206,6 +212,13 @@ export interface UseAgentResult {
   setModelApiKey: (key: string) => Promise<void>;
   clearModelApiKey: () => Promise<void>;
 
+  /**
+   * 通知发送失败的横幅（只在「本该弹却没弹」时出现）。
+   * 口径是「请求已交给系统」而非「已通知」——系统可能之后静默丢弃。
+   */
+  notifyWarning: string | null;
+  dismissNotifyWarning: () => void;
+
   dismissError: () => void;
 }
 
@@ -238,6 +251,14 @@ export function useAgent(): UseAgentResult {
   const [scheduleNotice, setScheduleNotice] = useState<{ taskId: string; title: string; sessionId: string } | null>(
     null,
   );
+  const [notifyWarning, setNotifyWarning] = useState<string | null>(null);
+  /**
+   * 当前会话标题的镜像。
+   *
+   * 事件回调（onEvent 的闭包）读不到最新的 current —— 那个回调只在挂载时建立一次。
+   * 与 currentWorkspaceRef 同一模式：在渲染期同步，回调里读。
+   */
+  const currentTitleRef = useRef<string>('');
   const [connectors, setConnectors] = useState<ConnectorState[]>([]);
   const [browser, setBrowser] = useState<BrowserState | null>(null);
   const [browserNotice, setBrowserNotice] = useState<string | null>(null);
@@ -414,6 +435,35 @@ export function useAgent(): UseAgentResult {
         setTimeline((prev) => applyEvent(prev, event));
       }
 
+      /*
+       * 桌面通知（M2-F 遗留）。
+       *
+       * 判定在契约层（notificationFor），这里只提供两个**只有渲染环境才知道**
+       * 的事实：窗口此刻可见吗、这条事件属不属于当前会话。
+       *
+       * 可见性每次现取而不是缓存：缓存它需要在 focus / blur /
+       * visibilitychange 三处维护更新，漏掉任何一处都会让通知在该静的时候响、
+       * 该响的时候不响 —— 而这两种失败都不会报错。
+       *
+       * document.hasFocus() 与 !document.hidden 要同时成立才算「用户在看」：
+       * 最小化时 hidden 为真，被别的窗口盖住时只有 hasFocus 为假。
+       */
+      const request = notificationFor(event, {
+        windowVisible: !document.hidden && document.hasFocus(),
+        isCurrentSession: belongsToCurrent,
+        sessionTitle: currentTitleRef.current || '未命名会话',
+      });
+      if (request) {
+        void notify(request).then(
+          (result) => {
+            // 发不出去要说出来：用户按「切走了会提醒」安排工作，而这句话
+            // 在不支持通知的环境里是假的
+            if (!result.shown) setNotifyWarning(result.reason ?? '系统未接受这条通知');
+          },
+          (cause: unknown) => setNotifyWarning(describeError(cause)),
+        );
+      }
+
       switch (event.type) {
         case 'session.created':
         case 'session.forked':
@@ -557,10 +607,13 @@ export function useAgent(): UseAgentResult {
   }, []);
 
   /**
-   * 分叉：把「某一轮之后」变成一条能独立走下去的新分支。
+   * 分叉：从「某一条事件」处切出一条能独立走下去的新分支。
    *
-   * 界面只负责给出「在哪一轮之后」（atSeq），合法性判断全在内核 ——
+   * 界面只负责给出切在哪里（atSeq），合法性判断全在内核 ——
    * UI 不重复业务规则，也就不会出现「界面允许但内核拒绝」的两套说法。
+   *
+   * 调用方有两处：对话视图给「某一轮结束」（轮次边界的 seq），
+   * 轨迹视图给「某一条事件」（逐事件分叉）。
    */
   const forkSession = useCallback(
     async (atSeq?: number) => {
@@ -578,6 +631,18 @@ export function useAgent(): UseAgentResult {
     },
     [loadSession],
   );
+
+  /**
+   * 分支对比：交给内核算（对比的是事件流里的改动记录，渲染层不解析第二遍）。
+   * 抛错原样交给调用方 —— 对比失败时要显示原因，静默返回空结果会被读成「两边没冲突」。
+   */
+  const compareBranches = useCallback(
+    (leftId: string, rightId: string) => invoke('session.compareBranches', { leftId, rightId }),
+    [],
+  );
+
+  /** 关掉「通知发不出去」的提示：它是一次性告知，看过就不必再占位置 */
+  const dismissNotifyWarning = useCallback(() => setNotifyWarning(null), []);
 
   const send = useCallback(
     async (text: string, options?: { mode?: AgentMode; model?: string }) => {
@@ -1133,6 +1198,8 @@ export function useAgent(): UseAgentResult {
     memoryStats,
     schedules,
     scheduleNotice,
+    notifyWarning,
+    dismissNotifyWarning,
     connectors,
     browser,
     browserNotice,
@@ -1145,6 +1212,7 @@ export function useAgent(): UseAgentResult {
     removeSession,
     renameSession,
     forkSession,
+    compareBranches,
     send,
     abort,
     respondApproval,

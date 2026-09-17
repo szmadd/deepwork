@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Notification } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -35,6 +35,7 @@ const CH_PREVIEW_ATTACHMENT = 'deepwork:preview-attachment';
 /** 浏览器截图清单与读取（截图落在工作区之外，同样由壳层处理） */
 const CH_BROWSER_SHOTS = 'deepwork:browser-shots';
 const CH_BROWSER_SHOT_READ = 'deepwork:browser-shot-read';
+const CH_NOTIFY = 'deepwork:notify';
 
 /** 渲染层可调用的方法白名单。新增方法必须先加到 packages/protocol 的 RpcContract。 */
 const ALLOWED_METHODS = new Set([
@@ -55,6 +56,7 @@ const ALLOWED_METHODS = new Set([
   'session.delete',
   'session.events',
   'session.fork',
+  'session.compareBranches',
   'run.send',
   'run.abort',
   'fs.tree',
@@ -595,6 +597,35 @@ function registerIpc() {
    */
   ipcMain.handle(CH_BROWSER_SHOTS, async () => listBrowserShots());
   ipcMain.handle(CH_BROWSER_SHOT_READ, async (_event, target) => readBrowserShot(target));
+  ipcMain.handle(CH_NOTIFY, async (_event, request) => showNotification(request));
+}
+
+/**
+ * 发一条系统通知。
+ *
+ * ── 返回值只说「我们做了什么」，不说「用户看到了什么」────────────────
+ * shown=true 的含义是**请求已交给系统**。之后是否真的出现在通知中心，
+ * 取决于专注模式、通知权限、以及应用有没有被正确安装（Windows 上未打包的
+ * 应用通知可能被系统直接丢掉）—— 这几件事都没有 API 能回问。
+ * 所以这里不承诺「已通知」，渲染层也按同一口径说话。
+ *
+ * isSupported() 是唯一能提前问清楚的一件事：不支持就直接说清楚，
+ * 不要让渲染层以为发出去了。
+ */
+function showNotification(request) {
+  const title = String(request?.title ?? '').slice(0, 200);
+  const body = String(request?.body ?? '').slice(0, 500);
+  if (!title) return { shown: false, reason: '通知缺少标题' };
+  if (!Notification.isSupported()) {
+    return { shown: false, reason: '当前系统不支持桌面通知' };
+  }
+  try {
+    new Notification({ title, body, silent: false }).show();
+    return { shown: true };
+  } catch (error) {
+    // 抛错本身就是「发不出去」的确切证据，比猜更可靠
+    return { shown: false, reason: String(error?.message || error) };
+  }
 }
 
 const gotLock = app.requestSingleInstanceLock();
