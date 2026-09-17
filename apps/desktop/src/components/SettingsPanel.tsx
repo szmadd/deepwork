@@ -8,7 +8,15 @@ import type {
   ModelCatalog,
   ModelEndpoint,
 } from '@deepwork/protocol';
-import { AGENT_MODE_LABEL, APP_VIEW_LABEL, DEFAULT_ENDPOINT_CONTEXT_WINDOW, type AgentMode } from '@deepwork/protocol';
+import {
+  AGENT_MODE_LABEL,
+  APP_VIEW_LABEL,
+  DEFAULT_ENDPOINT_CONTEXT_WINDOW,
+  SANDBOX_MODE_INFO,
+  SANDBOX_MODES,
+  type AgentMode,
+  type SandboxMode,
+} from '@deepwork/protocol';
 import { DeploySettings } from './DeploySettings';
 
 interface SettingsPanelProps {
@@ -32,17 +40,29 @@ interface SettingsPanelProps {
 const MODES: AgentMode[] = ['ptc', 'standard', 'minimal', 'creative'];
 
 /**
- * 沙箱模式来源的显示名。
+ * 沙箱档位来源的显示名。
  *
- * `env-override` 刻意不写「你设的」以外的话：产品侧的 `DEEPWORK_SANDBOX_MODE`
- * 与用户直接设的内核变量 `DSH_PERMISSION_MODE` 都归到这一档，而两者谁生效由宿主的
- * 解析优先级决定 —— 界面只呈现「这个值不是产品默认」，不在渲染层重算一遍优先级
- * （那会让同一条规则有两个实现）。
+ * 「环境变量」与「设置里选的」必须分成两句：前者意味着**用户在下面选什么都不生效**，
+ * 后者意味着这是他的选择。合成一句「你设的」会让用户对着一个改不动的选项反复尝试。
+ * 界面只呈现「这个值从哪来」，不在渲染层重算一遍优先级 ——
+ * 谁压过谁是宿主的规则（`resolveSandboxMode`），在这里再实现一次就会漂。
  */
-function sandboxSourceLabel(source?: 'product-default' | 'env-override'): string {
-  if (source === 'env-override') return '环境变量指定';
-  if (source === 'product-default') return '产品默认（内核默认值）';
+function sandboxSourceLabel(source?: 'product-default' | 'config' | 'env-override'): string {
+  if (source === 'env-override') return '环境变量指定（优先于设置）';
+  if (source === 'config') return '设置里选的';
+  if (source === 'product-default') return '产品默认（你没选过）';
   return '未知';
+}
+
+/**
+ * 档位的显示名。
+ *
+ * 文案取自契约层的 `SANDBOX_MODE_INFO`，渲染层不再写第二份中文名 ——
+ * 两处同义不同词的后果是「设置里显示『限定工作区』、状态里显示『工作区可写』」，
+ * 用户会以为是两个不同的东西。
+ */
+function sandboxModeLabel(mode?: string): string {
+  return SANDBOX_MODE_INFO.find((item) => item.mode === mode)?.label ?? mode ?? '未知';
 }
 
 /**
@@ -78,6 +98,63 @@ export function SettingsPanel({
   const [denyText, setDenyText] = useState(guard.denyPatterns.join('\n'));
   /** 「重新向内核核对」是个会真的建探针会话的动作，按钮要有忙碌态 */
   const [modelBusy, setModelBusy] = useState(false);
+
+  /**
+   * 沙箱档位的**草稿**选择（还没落盘前不碰配置）。
+   *
+   * 与端点表单同一个理由：选档位与「让它生效」是两步，中间隔着一次内核重启。
+   * 边选边落盘会让「我选错了但还没重启」也变成已保存的事实。
+   * null = 用户从没选过（配置里没有这个键），此时单选框停在当前生效的档位上，
+   * 但**不**把它写成选择 —— 「产品默认恰好是 workspace-write」与
+   * 「用户明确选了 workspace-write」在界面上与配置里都必须是两件事。
+   */
+  const [chosen, setChosen] = useState<SandboxMode | null>(config.sandboxMode ?? null);
+  const [sandboxBusy, setSandboxBusy] = useState<string | null>(null);
+  const [sandboxMessage, setSandboxMessage] = useState<string | null>(null);
+  const [sandboxError, setSandboxError] = useState<string | null>(null);
+
+  const savedMode = config.sandboxMode ?? null;
+  const effectiveMode = status?.sandbox?.mode ?? null;
+  /** 单选框停在哪：没选过就停在当前生效的那个，让用户一眼看到现状 */
+  const shownMode = chosen ?? effectiveMode;
+  const needsSave = chosen !== null && chosen !== savedMode;
+  const needsRestart = savedMode !== null && savedMode !== effectiveMode;
+  const canApply = needsSave || needsRestart;
+
+  /**
+   * 保存档位并重启内核。
+   *
+   * 两件事绑成一个按钮，因为单做任何一件都没有意义：只保存不重启 = 用户以为换好了，
+   * 只重启不保存 = 重启用的是旧配置。失败时的措辞分两种 ——
+   * **已保存但重启失败**要明确说「选择已经存下了，修好后再点一次即可」，
+   * 否则用户会以为白选了、回去重选一遍。
+   */
+  const applySandboxMode = async () => {
+    setSandboxBusy('sandbox');
+    setSandboxError(null);
+    setSandboxMessage(null);
+    try {
+      if (needsSave) onUpdateConfig({ sandboxMode: chosen as SandboxMode });
+      await onRestartKernel();
+      setSandboxMessage(
+        needsSave
+          ? `已切到「${sandboxModeLabel(chosen ?? undefined)}」并重启内核，新档位已生效。`
+          : '内核已重启，档位生效。',
+      );
+    } catch (cause) {
+      const reason =
+        cause instanceof Error
+          ? cause.message.replace(/^Error invoking remote method '[^']+':\s*/, '')
+          : String(cause);
+      setSandboxError(
+        needsSave
+          ? `档位已保存，但内核没能重启：${reason}。已保存的选择不会丢 —— 条件允许后点这个按钮再试一次即可生效。`
+          : `内核没能重启：${reason}`,
+      );
+    } finally {
+      setSandboxBusy(null);
+    }
+  };
 
   const saveDeny = () => {
     const patterns = denyText
@@ -323,7 +400,7 @@ export function SettingsPanel({
               <div className="modal-label">内核沙箱（模型改文件的实际边界）</div>
               <div className="settings-kv">
                 <div>
-                  <span>当前模式</span>
+                  <span>当前生效</span>
                   <code>{status?.sandbox?.mode ?? '未知'}</code>
                 </div>
                 <div>
@@ -331,13 +408,81 @@ export function SettingsPanel({
                   <code>{sandboxSourceLabel(status?.sandbox?.source)}</code>
                 </div>
               </div>
-              {status?.sandbox?.rejected ? (
+
+              {/*
+                环境变量压住设置页时的提示必须排在最前面。这一档来源优先级最高
+                （它是排障用的旁路），有它在时下面选什么都不生效 —— 不说清楚的话，
+                用户会反复「选了、保存了、重启了，还是没变」，然后把问题归到软件坏了。
+              */}
+              {status?.sandbox?.source === 'env-override' ? (
                 <div className="modal-hint modal-hint-warn">
-                  你设置的沙箱模式「<code>{status.sandbox.rejected}</code>」不是合法值，
-                  本次启动实际用的是 <code>{status.sandbox.mode}</code>。
-                  合法值：read-only / workspace-write / danger-full-access。
+                  档位由环境变量指定（<code>DEEPWORK_SANDBOX_MODE</code> 或内核的{' '}
+                  <code>DSH_PERMISSION_MODE</code>），它优先于这里的设置 ——
+                  你现在选什么都不会生效。要在这里控制档位，请先清掉那个环境变量。
                 </div>
               ) : null}
+              {status?.sandbox?.rejected ? (
+                <div className="modal-hint modal-hint-warn">
+                  档位「<code>{status.sandbox.rejected}</code>」不是合法值（有人拼错了），
+                  已跳过它、实际用的是 <code>{status.sandbox.mode}</code>。
+                  合法值：{SANDBOX_MODES.join(' / ')}。
+                </div>
+              ) : null}
+
+              {/*
+                三档选项。顺序与后果说明都来自契约层的 SANDBOX_MODE_INFO ——
+                这里不自己排一遍：档位的宽窄关系是内核事实，在渲染层复制一份就会漂。
+              */}
+              <div className="sandbox-modes">
+                {SANDBOX_MODE_INFO.map((item) => (
+                  <label
+                    key={item.mode}
+                    className={[
+                      'sandbox-mode',
+                      shownMode === item.mode ? 'sandbox-mode-on' : '',
+                      item.emphasis === 'danger' ? 'sandbox-mode-danger' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                  >
+                    <input
+                      type="radio"
+                      name="sandbox-mode"
+                      checked={shownMode === item.mode}
+                      disabled={sandboxBusy !== null}
+                      onChange={() => {
+                        setChosen(item.mode);
+                        setSandboxError(null);
+                        setSandboxMessage(null);
+                      }}
+                    />
+                    <span className="sandbox-mode-body">
+                      <span className="sandbox-mode-head">
+                        <span className="sandbox-mode-name">{item.label}</span>
+                        <code className="sandbox-mode-code">{item.mode}</code>
+                        {status?.sandbox?.mode === item.mode ? (
+                          <span className="sandbox-mode-badge">当前生效</span>
+                        ) : null}
+                      </span>
+                      <span className="sandbox-mode-consequence">{item.consequence}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              {/*
+                「选了」与「生效了」是两个状态，必须都能看见。
+                档位是内核进程的启动参数（见 core-host/src/security/sandbox.ts），
+                存进配置只是记下意图，换档要重启内核 —— 这个中间态最容易被做成
+                「假装立即生效」，然后在用户重启后才发现没变。
+              */}
+              {savedMode !== null && savedMode !== status?.sandbox?.mode ? (
+                <div className="modal-hint modal-hint-warn">
+                  已保存为「{sandboxModeLabel(savedMode)}」，但运行中的内核还是原来的档位 ——
+                  点下面的按钮重启内核后生效（重启不会动你的文件与会话记录）。
+                </div>
+              ) : null}
+
               <div className="modal-hint">
                 {status?.adapter === 'harness' ? (
                   <>
@@ -345,10 +490,27 @@ export function SettingsPanel({
                     {status?.sandbox?.note ? ` ${status.sandbox.note}。` : ''}
                   </>
                 ) : (
-                  <>当前跑的是 mock 内核，模型的命令不经内核执行，这道沙箱不参与 —— 模式值只在真实内核下才有意义。</>
+                  <>当前跑的是 mock 内核，模型的命令不经内核执行，这道沙箱不参与 —— 档位只在真实内核下才有意义。</>
                 )}
-                模式是内核的启动参数：改环境变量（<code>DEEPWORK_SANDBOX_MODE</code>）后需要重启内核才生效。
               </div>
+
+              <div className="modal-foot">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={sandboxBusy !== null || !canApply}
+                  onClick={() => void applySandboxMode()}
+                >
+                  {sandboxBusy === 'sandbox' ? '切换中…' : '保存并重启内核'}
+                </button>
+                {canApply ? null : (
+                  <span className="modal-hint">
+                    {chosen === null ? '先选一个档位。' : '当前已是你选中的档位，无需改动。'}
+                  </span>
+                )}
+              </div>
+              {sandboxMessage ? <div className="modal-hint">{sandboxMessage}</div> : null}
+              {sandboxError ? <div className="modal-hint modal-hint-warn">{sandboxError}</div> : null}
 
               <div className="modal-label">审批档位（哪些命令要问你）</div>
               <select
