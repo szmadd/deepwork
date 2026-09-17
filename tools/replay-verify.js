@@ -10,7 +10,9 @@
  *     这靠的是归约器住在契约层、且必须是纯函数；
  *  3. **分叉是可核验的**：新会话日志的前 N 行与父会话前 N 行逐字节相同 ——
  *     「这段历史继承自那里」因此不是一句声明，而是一条可断言的不等式；
- *  4. **分叉点合法**：落在半轮里的请求会被吸附回运行边界，并如实记录这个差异。
+ *  4. **分叉点精确**：按事件 seq 切，落在半轮里就精确切在半轮（**不再吸附回轮次边界**，
+ *     见 M1 遗留「逐事件分叉」）。请求一个不存在的 seq 时取「不晚于它的最近事件」，
+ *     并如实记录 requestedSeq 与 atSeq 的差异。
  *
  *   npm run test:replay
  */
@@ -112,8 +114,8 @@ async function main() {
   const from0 = live.length;
   await client.invoke('run.send', { sessionId: parent.id, text: '看一下这个工程，把运行笔记写好' });
   await waitForRun(from0);
-  // 第二轮是为了拿到两个运行边界：这样才能验证「落在半轮里被吸附回上一个边界」，
-  // 只跑一轮的话任何非边界位置之前都不存在可用的收尾点，那是另一条错误路径。
+  // 第二轮是为了拿到两个运行边界：这样才能挑一条「落在半轮里」的事件来验证精确分叉。
+  // 只在轮末分叉的话，「精确切」与「轮末切」恰好重合，测不出两者的差别。
   const from1 = live.length;
   await client.invoke('run.send', { sessionId: parent.id, text: '再确认一次运行时环境' });
   await waitForRun(from1);
@@ -186,8 +188,8 @@ async function main() {
   check('session.fork 返回新会话', typeof child?.id === 'string' && child.id !== parent.id, child?.id);
   check('新会话记录了来源', child.fork?.sessionId === parent.id, `${child.fork?.sessionId} @ ${child.fork?.atSeq}`);
   check(
-    '默认从末尾分叉，边界取最后一轮结束处',
-    forked.from.atSeq === boundaries[boundaries.length - 1],
+    '默认从末尾分叉，边界取最后一条事件',
+    forked.from.atSeq === parentEvents[parentEvents.length - 1].seq && forked.from.requestedSeq === null,
     `atSeq=${forked.from.atSeq}（requested=null）`,
   );
   check(
@@ -240,36 +242,35 @@ async function main() {
     list.some((item) => item.id === child.id && item.fork?.sessionId === parent.id),
   );
 
-  // ── 4. 分叉点吸附 ─────────────────────────────────────────
+  // ── 4. 分叉点精确（逐事件）────────────────────────────────
   check('两轮运行各自形成边界', boundaries.length === 2, `边界: ${boundaries.join(', ')}`);
   const midRun = parentEvents.find(
     (event) => 'runId' in event && event.seq > boundaries[0] && event.seq < boundaries[1],
   );
   const snapped = await client.invoke('session.fork', { sessionId: parent.id, atSeq: midRun.seq });
   check(
-    '落在半轮里的分叉点被吸附回运行边界',
-    snapped.from.atSeq === boundaries[0] && snapped.from.atSeq < midRun.seq,
+    '落在半轮里的分叉点精确落在该事件上（不再吸附回轮次边界）',
+    snapped.from.atSeq === midRun.seq && !boundaries.includes(midRun.seq),
     `请求 #${midRun.seq}（${midRun.type}）→ 采用 #${snapped.from.atSeq}`,
   );
-  check('吸附如实保留原始请求位置', snapped.from.requestedSeq === midRun.seq, `requestedSeq=${snapped.from.requestedSeq}`);
+  check('请求位置被采用时如实记录 requestedSeq', snapped.from.requestedSeq === midRun.seq, `requestedSeq=${snapped.from.requestedSeq}`);
   const snappedLast = JSON.parse(rawLines(home, snapped.session.id)[snapped.from.copied - 1] ?? 'null');
   check(
-    '吸附后的前缀以一轮运行的结束事件收尾',
-    snappedLast?.type === 'run.completed' || snappedLast?.type === 'run.failed',
-    snappedLast?.type ?? '空',
+    '前缀以请求的那条事件收尾',
+    snappedLast?.seq === midRun.seq,
+    snappedLast ? `#${snappedLast.seq} ${snappedLast.type}` : '空',
   );
 
-  const empty = await client.invoke('session.create', { workspace, title: '空会话' });
-  let emptyError = '';
-  try {
-    await client.invoke('session.fork', { sessionId: empty.id });
-  } catch (error) {
-    emptyError = error.message;
-  }
+  // 新建但没跑过对话的会话，日志里只有一条 session.created。逐事件语义下它仍是
+  // 一个合法切点（精确继承这 1 条），**切在它之前**才是「没有可继承的事件」。
+  const fresh = await client.invoke('session.create', { workspace, title: '新会话' });
+  const freshEvents = await client.invoke('session.events', { sessionId: fresh.id });
+  const freshFork = await client.invoke('session.fork', { sessionId: fresh.id });
   check(
-    '没跑过对话的会话被拒，且原因区别于「位置太靠前」',
-    emptyError.includes('还没有完成任何一轮对话'),
-    emptyError || '未报错',
+    '只有创建事件的新会话可分叉，且精确继承这 1 条',
+    freshEvents.length === 1 && freshEvents[0].type === 'session.created' &&
+      freshFork.from.copied === 1 && freshFork.from.atSeq === freshEvents[0].seq,
+    `copied=${freshFork.from.copied} atSeq=${freshFork.from.atSeq}`,
   );
 
   let earlyError = '';
@@ -280,7 +281,7 @@ async function main() {
   }
   check(
     '无有效边界的位置被拒且原因可行动',
-    earlyError.includes('没有已完成的运行'),
+    earlyError.includes('没有可继承的事件'),
     earlyError || '未报错',
   );
 

@@ -289,7 +289,11 @@ const skillsDir = path.join(home, 'skills');
 // ══════════════════════════════════════════════════════════
 console.log('\n── RPC 接线 ──');
 
-{
+// 这一段是异步的：`skills.install` 现在可能拉取 URL（网络 IO），契约返回 Promise。
+// 本地目录走 `Promise.resolve(同步结果)` 包一层，wire 行为不变（RPC 派发本就 await）。
+// 因此这里必须 await —— 直接读返回值的 `.ok` 会拿到 undefined。
+// 汇总必须放在这个异步块**之后**，否则它会在等待完成前就先跑完。
+(async () => {
   const host = new DeepworkHost();
   const handlers = buildHandlers(host);
   check('5 个 skills.* 方法均已注册',
@@ -300,10 +304,10 @@ console.log('\n── RPC 接线 ──');
   check('skills.list 返回已安装记录', Array.isArray(listed) && listed.some((r) => r.manifest.name === 'good-skill'),
     `共 ${listed.length} 个`);
 
-  const installed = handlers['skills.install']({ source: path.join(root, 'src-up1') });
+  const installed = await handlers['skills.install']({ source: path.join(root, 'src-up1') });
   check('skills.install 走完整审计链', installed.ok === true && installed.record.manifest.name === 'upgrade-skill');
 
-  const rejected = handlers['skills.install']({ source: path.join(root, 'src-dang') });
+  const rejected = await handlers['skills.install']({ source: path.join(root, 'src-dang') });
   check('skills.install 对 critical 源返回 ok=false', rejected.ok === false);
 
   const toggled = handlers['skills.toggle']({ name: 'upgrade-skill', enabled: false });
@@ -311,15 +315,15 @@ console.log('\n── RPC 接线 ──');
 
   const removed = handlers['skills.uninstall']({ name: 'upgrade-skill' });
   check('skills.uninstall 生效', removed.ok === true);
-}
 
-// ══════════════════════════════════════════════════════════
-// 汇总
-// ══════════════════════════════════════════════════════════
-const failed = results.filter((r) => !r.ok).length;
-console.log(`\n技能系统测试：${results.length - failed}/${results.length} 通过`);
-if (failed > 0) {
-  console.error(`\n${failed} 项失败：`);
-  for (const r of results.filter((x) => !x.ok)) console.error(`  - ${r.name}`);
-  process.exit(1);
-}
+  // ══════════════════════════════════════════════════════════
+  // 汇总
+  // ══════════════════════════════════════════════════════════
+  const failed = results.filter((r) => !r.ok).length;
+  console.log(`\n技能系统测试：${results.length - failed}/${results.length} 通过`);
+  if (failed > 0) {
+    console.error(`\n${failed} 项失败：`);
+    for (const r of results.filter((x) => !x.ok)) console.error(`  - ${r.name}`);
+    process.exit(1);
+  }
+})();

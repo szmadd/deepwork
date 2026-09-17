@@ -10,7 +10,9 @@
  *   2. context 层：三层分节、截断标记、无记忆返回 null；
  *   3. host 链路（mock 内核）：memory.attached 形状与次序、user.message 原文不改写、
  *      适配器如实收到注入、run 结束后当日日志多一行；
- *   4. RPC 接线：5 个 memory.* 方法注册可用。
+ *   4. RPC 接线：5 个 memory.* 方法注册可用；
+ *   5. 内核自主写记忆：memory 工具的契约 / 校验 / 预算闸门，以及 MCP 服务
+ *      按 stdio 的真实往返（真握手、真落盘、真读回）；内核补丁注入与顺序。
  *
  * 这条链路最危险的失败形态是「看起来记下了，实际注入的是旧的或被改写的文本」，
  * 所以断言全部落在事件流与适配器收到的真实出口上。
@@ -19,6 +21,8 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const readline = require('node:readline');
+const { spawn } = require('node:child_process');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deepwork-memory-'));
 const home = path.join(root, '.deepwork');
@@ -32,9 +36,25 @@ const {
   DAILY_LOG_TAIL,
 } = require('../packages/core-host/dist/memory/store');
 const { buildMemoryContext } = require('../packages/core-host/dist/memory/context');
+const { runMemoryRead, runMemoryWrite } = require('../packages/core-host/dist/memory/tools');
 const { DeepworkHost } = require('../packages/core-host/dist/host');
 const { buildHandlers } = require('../packages/core-host/dist/rpc/stdio-server');
 const { buildTimeline } = require('../packages/protocol/dist/reduce');
+const {
+  MEMORY_MCP_READ_TOOL,
+  MEMORY_MCP_SERVER_NAME,
+  MEMORY_MCP_WRITE_TOOL,
+  MEMORY_WRITE_ARGS,
+  MEMORY_WRITE_LAYERS,
+  isMemoryWriteLayer,
+  memoryReadInputJsonSchema,
+  memoryWriteInputJsonSchema,
+} = require('../packages/protocol/dist/memory');
+const {
+  buildMemoryMcpPatch,
+  buildRuntimePatch,
+  serializeRuntimePatchYaml,
+} = require('../packages/core-host/dist/mcp/patch');
 
 const results = [];
 function check(name, ok, detail) {
@@ -330,9 +350,249 @@ async function main() {
     await rpcHost.stop();
   }
 
+  // ══════════════════════════════════════════════════════════
+  // 5. 内核自主写记忆（memory 工具）
+  // ══════════════════════════════════════════════════════════
+  await memoryToolSection();
+  memoryPatchSection();
+
   const failed = results.filter((r) => !r.ok);
   console.log(`\n三层记忆系统测试：${results.length - failed.length}/${results.length} 通过`);
   if (failed.length > 0) process.exit(1);
+}
+
+/**
+ * 段 5：内核自主写记忆。
+ *
+ * 这条链路最危险的失败形态是「模型说记下了，实际没落盘 / 落到了别的地方」——
+ * 所以断言分两半：一半直接压 memory/tools.ts 的校验与预算闸门，
+ * 另一半把 MCP 服务按 stdio 真拉起来、真握手、真落盘，再从磁盘读回。
+ */
+async function memoryToolSection() {
+  console.log('\n── 内核自主写记忆（memory 工具）──');
+
+  // 契约：入参表是单一事实来源（描述与 JSON Schema 同源，两处不会分叉）
+  const schema = memoryWriteInputJsonSchema();
+  check(
+    'memory_write 的 JSON Schema 从入参表派生',
+    schema.required.join(',') === 'layer,text' &&
+      MEMORY_WRITE_ARGS.every((arg) => schema.properties[arg.name]?.description === arg.description),
+  );
+  check('可写层只有 user / workspace', MEMORY_WRITE_LAYERS.join(',') === 'user,workspace');
+  check(
+    '画像是工具写入的禁区（修改必须由用户亲手完成）',
+    !isMemoryWriteLayer('profile') && !isMemoryWriteLayer('nope') && isMemoryWriteLayer('user'),
+  );
+  check('read 的 schema 里 layer 可选', !memoryReadInputJsonSchema().required.includes('layer'));
+
+  // 工具实现：校验、预算闸门、origin 标记
+  const toolHome = path.join(root, 'tool-home');
+  const toolStore = new MemoryStore(toolHome);
+  const wsTool = path.join(root, 'ws-tool');
+  fs.mkdirSync(wsTool, { recursive: true });
+
+  const writeText = runMemoryWrite(toolStore, { layer: 'user', text: '用户偏好 pnpm。TOOL_MARK' }, wsTool);
+  check(
+    '工具写入用户级记忆，origin=agent（面板能认出不是用户自己加的）',
+    toolStore.list('user').some((item) => item.text.includes('TOOL_MARK') && item.origin === 'agent'),
+  );
+  check(
+    '写入回执带该层用量与预算（模型据此判断快写满了没有）',
+    writeText.includes('用户级记忆') && writeText.includes('预算') && writeText.includes('TOOL_MARK'),
+    writeText,
+  );
+
+  runMemoryWrite(toolStore, { layer: 'workspace', text: '本项目约定：契约先行。WS_TOOL_MARK' }, wsTool);
+  check(
+    '工作区层写入落到该工作区的 hash 目录',
+    fs
+      .readFileSync(path.join(toolHome, 'memory', 'workspaces', hashOf(wsTool), 'notes.json'), 'utf8')
+      .includes('WS_TOOL_MARK'),
+  );
+
+  check(
+    '工具拒绝写画像（不依赖调用方记得传对 layer）',
+    throwsWith(() => runMemoryWrite(toolStore, { layer: 'profile', text: 'x' }, wsTool), '画像'),
+  );
+  check(
+    '工具拒绝空文本',
+    throwsWith(() => runMemoryWrite(toolStore, { layer: 'user', text: '   ' }, wsTool), 'text'),
+  );
+  check(
+    '工具拒绝未知层并说明可选值',
+    throwsWith(() => runMemoryWrite(toolStore, { layer: 'nope', text: 'x' }, wsTool), 'layer'),
+  );
+  check(
+    '预算闸门原样透出（记不下就说记不下，不静默截断）',
+    throwsWith(
+      () => runMemoryWrite(toolStore, { layer: 'user', text: 'x'.repeat(USER_MEMORY_BUDGET + 10) }, wsTool),
+      '超出预算',
+    ),
+  );
+
+  const readAll = runMemoryRead(toolStore, {}, wsTool);
+  check(
+    '读工具返回三层，且与面板同源',
+    readAll.includes('画像') && readAll.includes('TOOL_MARK') && readAll.includes('WS_TOOL_MARK'),
+    readAll.split('\n')[0],
+  );
+  check('读工具可按层过滤', !runMemoryRead(toolStore, { layer: 'user' }, wsTool).includes('WS_TOOL_MARK'));
+  check(
+    '读工具拒绝未知层',
+    throwsWith(() => runMemoryRead(toolStore, { layer: 'nope' }, wsTool), 'layer'),
+  );
+
+  // 真实进程往返：MCP 服务按 stdio 真拉起来、真握手、真落盘
+  const entry = path.join(__dirname, '..', 'packages', 'core-host', 'dist', 'cli', 'memory-mcp.js');
+  if (!fs.existsSync(entry)) {
+    check('记忆 MCP 服务入口存在', false, entry);
+    return;
+  }
+  check('记忆 MCP 服务入口存在（补丁里写的就是这个路径）', true, entry);
+
+  const mcpHome = path.join(root, 'mcp-home');
+  const mcpWs = path.join(root, 'mcp-ws');
+  fs.mkdirSync(mcpWs, { recursive: true });
+  const child = spawn(process.execPath, [entry], {
+    env: { ...process.env, DEEPWORK_HOME: mcpHome, DEEPWORK_WORKSPACE: mcpWs },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const lines = [];
+  readline.createInterface({ input: child.stdout }).on('line', (line) => lines.push(line));
+  let stderrText = '';
+  child.stderr.on('data', (chunk) => {
+    stderrText += chunk.toString('utf8');
+  });
+
+  const call = async (message) => {
+    child.stdin.write(`${JSON.stringify(message)}\n`);
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const found = lines
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .find((item) => item && item.id === message.id);
+      if (found) return found;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    throw new Error(`MCP 响应超时（id=${message.id}）；stderr 片段：${stderrText.slice(-200)}`);
+  };
+
+  try {
+    const init = await call({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'memory-test', version: '0' } },
+    });
+    check(
+      'initialize 回显协议版本并公布 tools 能力',
+      init.result?.protocolVersion === '2025-06-18' && Boolean(init.result?.capabilities?.tools),
+    );
+    check('initialize 公布服务名', init.result?.serverInfo?.name === MEMORY_MCP_SERVER_NAME, init.result?.serverInfo?.name);
+
+    const list = await call({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    const names = (list.result?.tools ?? []).map((tool) => tool.name).sort();
+    check(
+      'tools/list 只列出两个记忆工具（不声明没实现的能力）',
+      names.join(',') === [MEMORY_MCP_READ_TOOL, MEMORY_MCP_WRITE_TOOL].sort().join(','),
+      names.join(','),
+    );
+    check(
+      '两个工具都带 JSON Schema 入参',
+      (list.result?.tools ?? []).every((tool) => tool.inputSchema?.type === 'object'),
+    );
+
+    const made = await call({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: MEMORY_MCP_WRITE_TOOL, arguments: { layer: 'user', text: 'MCP 写入的记忆。MCP_MARK' } },
+    });
+    const madeText = made.result?.content?.[0]?.text ?? '';
+    check('tools/call 真的落盘并回一句话回执', madeText.includes('已写入用户级记忆'), madeText.split('\n')[0]);
+    check(
+      '落盘位置与宿主同源（写进 DEEPWORK_HOME/memory）',
+      fs.readFileSync(path.join(mcpHome, 'memory', 'user.json'), 'utf8').includes('MCP_MARK'),
+    );
+
+    const read = await call({
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: { name: MEMORY_MCP_READ_TOOL, arguments: {} },
+    });
+    check('read 工具读到刚写的条目', (read.result?.content?.[0]?.text ?? '').includes('MCP_MARK'));
+
+    const badLayer = await call({
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'tools/call',
+      params: { name: MEMORY_MCP_WRITE_TOOL, arguments: { layer: 'profile', text: 'x' } },
+    });
+    check(
+      '业务失败按 isError 内容返回（不是 JSON-RPC error，否则模型看不到原因）',
+      badLayer.result?.isError === true &&
+        !badLayer.error &&
+        (badLayer.result?.content?.[0]?.text ?? '').includes('画像'),
+      badLayer.result?.content?.[0]?.text,
+    );
+
+    const unknown = await call({
+      jsonrpc: '2.0',
+      id: 6,
+      method: 'tools/call',
+      params: { name: 'memory_nope', arguments: {} },
+    });
+    check('未知工具是协议层错误（客户端问了一个不存在的名字）', unknown.error?.code === -32602, JSON.stringify(unknown.error));
+    const notImplemented = await call({ jsonrpc: '2.0', id: 7, method: 'resources/list' });
+    check('未实现的方法明确报 -32601（不静默挂起）', notImplemented.error?.code === -32601);
+  } finally {
+    child.kill();
+  }
+}
+
+/** 段 6：内核补丁（记忆服务注入） */
+function memoryPatchSection() {
+  console.log('\n── 内核补丁（记忆服务注入）──');
+  const entry = path.join(__dirname, '..', 'packages', 'core-host', 'dist', 'cli', 'memory-mcp.js');
+  const patch = buildMemoryMcpPatch({
+    command: process.execPath,
+    entry,
+    env: { DEEPWORK_HOME: home, DEEPWORK_WORKSPACE: wsA },
+  });
+  const item = patch.insert[0];
+  check('补丁是一个 insert 条目', Array.isArray(patch.insert) && patch.insert.length === 1);
+  check('条目 name 是内核依赖闭包内的 MCP 客户端包名', item.name === '@deepseek-ai/dsh-mcp-client', item.name);
+  check('serverName 与契约层一致', item.config.serverName === MEMORY_MCP_SERVER_NAME);
+  check('传输是 stdio', item.config.transport === 'stdio');
+  check('args 指向记忆 MCP 入口', item.config.args[0] === entry);
+  check('入口文件在磁盘上真实存在（否则内核拉起必失败）', fs.existsSync(entry), entry);
+  check(
+    'env 同时带 HOME 与 WORKSPACE（少了 HOME 会写到另一份文件里去）',
+    item.config.env.DEEPWORK_HOME === home && item.config.env.DEEPWORK_WORKSPACE === wsA,
+  );
+
+  const builtin = (id, serverName) => ({
+    insert: [{ id, name: '@deepseek-ai/dsh-mcp-client', config: { transport: 'stdio', serverName, command: 'node' } }],
+  });
+  const merged = buildRuntimePatch([], null, builtin('deepwork-browser', 'deepwork_browser'), builtin('deepwork-chart', 'deepwork_chart'), patch);
+  check('合并补丁含三项内置服务', Array.isArray(merged) && merged.length === 3, String(merged?.length));
+  check(
+    '顺序是 图表 → 记忆 → 浏览器（浏览器恒为最后一项）',
+    merged.map((entry2) => entry2.insert[0].id).join(',') === 'deepwork-chart,deepwork-memory,deepwork-browser',
+    merged.map((entry2) => entry2.insert[0].id).join(','),
+  );
+  const yaml = serializeRuntimePatchYaml(merged);
+  check(
+    'YAML 可序列化（两个内置服务的 serverName 都在）',
+    yaml.includes('serverName: "deepwork_memory"') && yaml.includes('serverName: "deepwork_chart"'),
+  );
 }
 
 function throwsWith(fn, keyword) {

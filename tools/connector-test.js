@@ -34,8 +34,15 @@ const { ConnectorStore } = require('../packages/core-host/dist/mcp/store');
 const { DeepworkHost } = require('../packages/core-host/dist/host');
 const { buildHandlers } = require('../packages/core-host/dist/rpc/stdio-server');
 const { mapUpdateToEvent } = require('../packages/core-host/dist/adapter/harness-sidecar');
-const { validateConnectorConfig, connectorStateOf } = require('../packages/protocol/dist/mcp');
-
+const {
+  CONNECTOR_TRANSPORTS,
+  CONNECTOR_TRANSPORT_LABEL,
+  connectorTargetOf,
+  connectorTransportOf,
+  dshTransportOf,
+  validateConnectorConfig,
+  connectorStateOf,
+} = require('../packages/protocol/dist/mcp');
 const results = [];
 function check(name, ok, detail) {
   results.push({ name, ok });
@@ -131,6 +138,86 @@ console.log('\n── 连接器存储 ──');
   // 契约共享纯函数
   check('validateConnectorConfig 合法返回 null', validateConnectorConfig({ name: 'a-1', command: 'x', enabled: true }) === null);
   check('connectorStateOf 停用态文案', connectorStateOf({ name: 'a', command: 'x', enabled: false }).note.includes('已停用'));
+}
+
+// ══════════════════════════════════════════════════════════
+// 2.5 HTTP 传输（M2-G 遗留：标准输入之外的那一半）
+// ══════════════════════════════════════════════════════════
+console.log('\n── HTTP 传输 ──');
+
+{
+  check('两种传输齐备', CONNECTOR_TRANSPORTS.join(',') === 'stdio,http', CONNECTOR_TRANSPORTS.join(','));
+  check('每种传输都有中文标签', CONNECTOR_TRANSPORTS.every((t) => Boolean(CONNECTOR_TRANSPORT_LABEL[t])));
+  check(
+    '缺省即 stdio（旧清单里没有 transport 字段，而这正是它们当时的形态）',
+    connectorTransportOf({}) === 'stdio' && connectorTransportOf({ transport: undefined }) === 'stdio',
+  );
+  check('http 被如实读出', connectorTransportOf({ transport: 'http' }) === 'http');
+  check(
+    '本产品的 http → 内核的 streamable-http（映射只此一处）',
+    dshTransportOf('http') === 'streamable-http' && dshTransportOf('stdio') === 'stdio',
+  );
+}
+
+{
+  // 校验：两种传输的必填项不同。拿「command 必填」去套 http，
+  // 会让 http 连接器永远存不下去 —— 而用户填的地址明明是对的
+  check('http 需要 url', String(validateConnectorConfig({ name: 'a', transport: 'http', enabled: true })).includes('服务地址'));
+  check('http 的 url 必须以 http(s):// 开头', String(validateConnectorConfig({ name: 'a', transport: 'http', url: 'ftp://x', enabled: true })).includes('http://'));
+  check('http 合法配置通过', validateConnectorConfig({ name: 'a', transport: 'http', url: 'http://10.0.0.5:3000/mcp', enabled: true }) === null);
+  check('stdio 需要 command', String(validateConnectorConfig({ name: 'a', transport: 'stdio', enabled: true })).includes('命令'));
+  check('非法传输值被拒绝', String(validateConnectorConfig({ name: 'a', transport: 'websocket', enabled: true })).includes('合法值'));
+  check('headers 必须是键值表', String(validateConnectorConfig({ name: 'a', transport: 'http', url: 'http://x', headers: { A: 1 }, enabled: true })).includes('请求头'));
+  check(
+    'note 按传输分开说（stdio 排查「程序能不能起来」，http 排查「地址通不通」）',
+    connectorStateOf({ name: 'a', transport: 'http', url: 'http://x', enabled: true }).note.includes('可达') &&
+      connectorStateOf({ name: 'a', command: 'x', enabled: true }).note.includes('启动'),
+  );
+  check('connectorTargetOf 按传输给出「指向什么」', connectorTargetOf({ name: 'a', transport: 'http', url: 'http://x/y', enabled: true }) === 'http://x/y' && connectorTargetOf({ name: 'a', command: 'node', args: ['s.js'], enabled: true }) === 'node s.js');
+}
+
+{
+  const storeHome = path.join(root, 'http-home');
+  const store = new ConnectorStore(storeHome);
+  const added = store.add({
+    name: 'remote-tools',
+    transport: 'http',
+    url: '  http://10.0.0.5:3000/mcp  ',
+    headers: { Authorization: 'Bearer t' },
+    // 故意夹带 stdio 字段：归一化必须把它们清掉，否则补丁里会出现
+    // transport: streamable-http 与 command 同时在场的形状，内核 zod union 两边都不匹配
+    command: 'node',
+    args: ['leftover.js'],
+    enabled: true,
+  });
+  check('http 连接器落盘后只带自己的字段', added.config.url === 'http://10.0.0.5:3000/mcp' && !('command' in added.config) && !('args' in added.config), JSON.stringify(Object.keys(added.config)));
+  check('headers 被保留', added.config.headers?.Authorization === 'Bearer t');
+  check('url 被 trim（用户复制粘贴常带空白）', added.config.url === 'http://10.0.0.5:3000/mcp');
+
+  store.add({ name: 'local-tools', command: 'node', args: ['s.js'], enabled: true });
+  const local = new ConnectorStore(storeHome).list().find((c) => c.name === 'local-tools');
+  check('stdio 连接器不夹带 http 字段（也不写 transport 键，缺省即 stdio）', local.command === 'node' && !('url' in local) && !('transport' in local), JSON.stringify(Object.keys(local)));
+}
+
+{
+  // 补丁：http 条目必须是内核 zod 的 streamable-http 分支
+  const patch = buildConnectorPatch([
+    { name: 'remote', transport: 'http', url: 'http://10.0.0.5:3000/mcp', headers: { 'X-A': '1' }, enabled: true },
+    { name: 'local', command: 'node', enabled: true },
+  ]);
+  const httpEntry = patch[0].insert.find((e) => e.config.serverName === 'remote');
+  const stdioEntry = patch[0].insert.find((e) => e.config.serverName === 'local');
+  check('http 条目的 transport 是 streamable-http', httpEntry.config.transport === 'streamable-http', String(httpEntry.config.transport));
+  check('http 条目形状：serverName/url/headers（无 command/args/env）',
+    httpEntry.config.url === 'http://10.0.0.5:3000/mcp' &&
+      httpEntry.config.headers['X-A'] === '1' &&
+      !('command' in httpEntry.config) && !('args' in httpEntry.config) && !('env' in httpEntry.config),
+    JSON.stringify(Object.keys(httpEntry.config).sort()));
+  check('stdio 条目形状不受影响（transport 仍是 stdio）', stdioEntry.config.transport === 'stdio' && stdioEntry.config.command === 'node');
+
+  const yaml = serializeConnectorPatchYaml(patch);
+  check('YAML 里两种传输都能序列化', yaml.includes('transport: "streamable-http"') && yaml.includes('transport: "stdio"'));
+  check('YAML 含 url 与 headers，且不含 http 条目的 command', yaml.includes('url: "http://10.0.0.5:3000/mcp"') && yaml.includes('"X-A": "1"'));
 }
 
 // ══════════════════════════════════════════════════════════

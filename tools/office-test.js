@@ -559,8 +559,13 @@ function wiringSection() {
   console.log('\n── 接线取证 ──');
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   check('package.json 注册了 test:office', pkg.scripts['test:office'] === 'npm run build && node tools/office-test.js', pkg.scripts['test:office']);
-  check('verify 链里包含 office 测试', String(pkg.scripts.verify).includes('tools/office-test.js'));
-  check('verify 链尾仍是真实 MCP 套件（已知失败不遮蔽后续）', String(pkg.scripts.verify).trimEnd().endsWith('node tools/real-dsh-mcp-test.js'));
+  // 套件清单已从 `verify` 字符串搬进编排器（tools/verify-all.js 的 SUITES）——
+  // 断言改为读那份清单，意图不变：office 在验收链里、真实 MCP 哨兵在链尾。
+  check('package.json 的 verify 走编排器', String(pkg.scripts.verify).includes('tools/verify-all.js'), pkg.scripts.verify);
+  const verifyAll = fs.readFileSync(path.join(root, 'tools', 'verify-all.js'), 'utf8');
+  const suites = [...(verifyAll.match(/const SUITES = \[([\s\S]*?)\];/) || [, ''])[1].matchAll(/'([^']+\.js)'/g)].map((m) => m[1]);
+  check('verify 编排器里包含 office 测试', suites.includes('office-test.js'), `${suites.length} 个套件`);
+  check('verify 编排器把真实 MCP 套件放在最后（已知失败不遮蔽后续）', suites[suites.length - 1] === 'real-dsh-mcp-test.js', suites[suites.length - 1] || '空');
   check('真实软件打开取证的脚本存在', fs.existsSync(path.join(root, 'tools', 'open-with-office.js')));
   check('OFD 样本生成脚本存在（样本必须可重建）', fs.existsSync(path.join(root, 'tools', 'fixtures', 'make-ofd-fixture.py')));
   const capture = fs.readFileSync(path.join(root, 'tools', 'capture.sh'), 'utf8');
