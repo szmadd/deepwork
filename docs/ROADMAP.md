@@ -303,16 +303,17 @@ B 档各项：契约草案 + DEVLOG 明确「为什么本地验不了、需要�
 
 | 来源 | 遗留 |
 |---|---|
-| M1 | Trajectory 视图逐事件分叉；分支对比视图（同名文件差异并排） |
-| M2-C | 技能市场 URL 安装源；审计规则无白名单机制（误报无法标记「已知合法」） |
-| M2-D | Composer 的 `/` 技能名补全 |
-| M2-E | 内核自动写记忆（经 MCP 把 memory 工具暴露给内核——M2-G 已打通通道，**具备开工条件**）；30 天归档是机械合并不是语义蒸馏；记忆条目无去重 |
-| M2-F | 桌面通知（Notification API）；触发精度 ±30s；交付物无独立归档通道 |
-| M2-G | 连接器 HTTP 传输（**局域网 MCP 场景下优先级上升**）；内核侧连接状态不可见 |
+| M1 | ✅ **逐事件分叉 + 分支对比视图已完成（2026-09-17）**：`forkSession` 改为按事件 seq 切片（不再吸附到 run 边界），继承事件是「记录」而非模型上下文；分支对比只比**事件流里的 FileDiff**（fork 共享工作区，比磁盘永远是空），每个文件取最后一次变更，两路来源（`tool.started.call.diff` 与 `approval.requested.request.diff`）都收；`tools/branch-test.js` **30 项**进 verify |
+| M2-C | 🔶 **技能市场 URL 安装源已落地（2026-09-17）**：按内容判源（PK 头 vs `---` frontmatter），手写零依赖 zip 解压器（防路径穿越 / 符号链接 / zip64 / 炸弹），`installFromUrl` 走与本地安装同一条审计+落盘路径，源 URL 记进 manifest。**审计规则无白名单机制（误报无法标记「已知合法」）仍未做** —— 留在此行 |
+| M2-D | ✅ **Composer 的 `/` 技能名补全已完成（2026-09-17）**：契约 `skillCommandCompletion`/`applySkillCommandCompletion`，插入 `/name `（**尾随空格是内核 `EXPLICIT_RE` 的硬要求**），`tools/completion-test.js` **29 项**进 verify（含与内核正则 `^\/([a-z0-9][a-z0-9-]*)(?=\s\|$)` 的对齐断言） |
+| M2-E | ✅ **内核自动写记忆已完成（2026-09-17）**：与 chart/browser 同形，memory 做成独立 stdio MCP 服务（`deepwork_memory`，工具 `memory_write`/`memory_read`），与 UI 面板**共用同一个 `MemoryStore`**（单一事实来源）；画像（profile）对内核**写禁**（`MEMORY_WRITE_LAYERS=[user,workspace]`），写入**复用 `MemoryStore.add` 的预算闸**。**30 天归档仍是机械合并不是语义蒸馏；记忆条目仍无去重** —— 留在此行 |
+| M2-F | ✅ **桌面通知已完成（2026-09-17）**：`notificationFor(event, ctx)` 纯函数，判据是 **`!(windowVisible && isCurrentSession)`** —— 应用在前台且正是当前会话时不打扰；覆盖 `schedule.fired`/`run.completed`（failed/aborted 分叉）/`run.failed`/`run.notice`（**仅 warn**）；标题 ≤60、正文 ≤160 对**整句**裁剪；`shown` 语义是「已交给系统」而非「用户看见了」。`tools/notify-test.js` **29 项**进 verify。**触发精度 ±30s、交付物无独立归档通道** —— 留在此行 |
+| M2-G | 🔶 **连接器 HTTP 传输已落地（2026-09-17）**：`dshTransportOf` 把 `http` 映射到内核的 `streamable-http`，配置改判别联合、`ConnectorStore.add` 按传输分别归一化（**防字段串台**）；补丁不再带 command/args/env。`tools/connector-test.js` 扩到 **64 项**进 verify。**内核侧连接状态不可见** —— 留在此行 |
 | M2-H | 浏览器无等待条件 / 网络拦截 / 多标签；无元素级截图；不支持接入用户自己开的调试端口浏览器 |
 | M2-I | Markdown 子集不含图片 / 脚注 / 页眉页脚 / 页码；OFD 只读不写不渲染（印章签名未解析）；xlsx 单工作表、无公式图表、列宽固定 |
-| 界面 | 深浅主题切换器未接（`config.theme` 字段已在，只差切换器） |
-| 测试 | ~~`real-dsh-mcp` 3/8 的环境性失败根因未定位~~ → **2026-09-16 复测 8/8**（改动前后两棵树皆然），旧记录不再复现、原因未定；该套件仍是真实 MCP 通路唯一哨兵，**不要摘**，须留在 verify 链尾 |
+| 界面 | ✅ **深浅主题切换器已完成（2026-09-17）**：契约 `resolveTheme(mode, prefersDark)`；`data-theme` 挂在 `document.documentElement`（**不是 body** —— 原生控件跟随 `color-scheme`）；CSS 变量抽成语义色；**默认 `theme: 'light'`**（原为 `dark` 却从未被消费，接了切换器会静默翻转整个 UI）。`tools/theme-test.js` **24 项**进 verify（含「每个 `:root` 变量在深色下都有覆盖」的完整性断言） |
+| 测试 | ~~`real-dsh-mcp` 3/8 的环境性失败根因未定位~~ → **2026-09-16 复测 8/8**（改动前后两棵树皆然），旧记录不再复现、原因未定 → **2026-09-17 又复现 3/8**，且这一次**当场做了对照**：`git stash -u` 回到 HEAD 干净树、重建、连跑，**同样是 3/8**，与本轮八项改动无关。失败形态稳定（`start()` 握手 ok、run completed，但模型工具表里**没有任何 `mcp__` 工具**，即 fake server 未被注册；无插件加载报错）。该套件仍是真实 MCP 通路唯一哨兵，**不要摘**，须留在 verify 链尾 |
+| 测试 | ⚠️ **`npm run verify` 在本沙箱跑不到底**：`browser-test`（Edge 起不来，code=0）与链尾的 `real-dsh-mcp`（上一条）都是环境性红，`&&` 链**在 browser-test 处即中断** —— 排在它之后的 office/chart/modelcfg/sandbox/sandbox-e2e/runtime/installer/pip/preflight/routing/theme/notify/branch/completion/real-dsh-mcp **不会被执行**。2026-09-17 已单独补跑这一段并全绿（见 DEVLOG）。**不要把「verify 输出停在 browser-test」误读成「后面全过了」** |
 | 界面 | **沙箱相关 UI 的渲染截图未产出**（升级审批弹窗的 `DEEPWORK_MOCK_SANDBOX_ESCALATION` mock 帧与 capture 场景已就绪、安全页的三档选择器也已接线，但缺 Electron 二进制跑不了 capture）；这两处的渲染证据目前都只到读源码断言 |
 | 仓库 | `wip/m2-h` 半成品分支已并入 main，可删（未删，留给用户决定） |
 | 运维 | 已接：无。待补：**CI**（`npm run verify` 仍靠人工）、**远端推送**（`origin` 上 `main` 领先 **17** 个提交）、**版本 tag**（M0/M1 各阶段成果无回滚点） |
@@ -360,8 +361,15 @@ M2 的剩余清单（H/J/I/K）里没有，M3 的 A/B 两档里也没有。此�
    「生成自包含 HTML 图表并预览」，见上表与 DEVLOG 同轮条目。**至此第「七」节四条漏项里，
    所有不依赖后端平台的项都已清空**——剩下的 FR-10.5 崩溃上报（需接收端）与跨平台打包
    （需 CI 与双端环境）仍按原判据挂起。
-3. **遗留债插空**（§五）：桌面通知、Composer `/` 补全、Trajectory 逐事件分叉、主题切换器、
-   内核自动写记忆、技能市场 URL 源、连接器 HTTP 传输。
+3. ~~**遗留债插空**（§五）：桌面通知、Composer `/` 补全、Trajectory 逐事件分叉、主题切换器、
+   内核自动写记忆、技能市场 URL 源、连接器 HTTP 传输。~~ ✅ **八项全部落地（2026-09-17）**：
+   桌面通知 / Composer `/` 补全 / Trajectory 逐事件分叉 + 分支对比视图 / 主题切换器 /
+   内核自动写记忆（MCP 服务）/ 技能市场 URL 源 / 连接器 HTTP 传输。新增
+   `tools/theme-test.js`(24) `notify-test.js`(29) `branch-test.js`(30) `completion-test.js`(29)
+   `skill-url-test.js`(47) 进 verify，`connector-test` 扩到 64、`memory-test` 扩到 73。
+   **未做（如实留档，见 §五各行）**：技能审计白名单、记忆条目去重 + 语义蒸馏归档、
+   桌面通知触发精度 ±30s 与交付物归档通道、内核侧连接状态可见性。
+   另：本轮改了分叉语义 ⇒ `replay-verify.js` 与契约注释里旧语义断言/描述一并改到新契约。
 4. **运维债**（§五末行）：接 CI、推远端、打 tag。
 
 ---

@@ -3210,3 +3210,145 @@ build + typecheck：三包 + 渲染层全清
 §五 的八项遗留债（桌面通知 / Composer `/` 补全 / Trajectory 逐事件分叉 / 主题切换器 /
 内核自动写记忆 / 技能市场 URL 源 / 连接器 HTTP 传输 / 分支对比视图）。
 运维债（CI / 推远端 / 打 tag）仍未动。
+
+---
+
+## 2026-09-17 · 第八轮 · §五 八项遗留债一次性清偿（主题 / 通知 / 分叉对比 / 补全 / URL 源 / 连接器 HTTP / 内核写记忆）
+
+**目标**
+
+把 ROADMAP §五「各轮 DEVLOG 遗留债汇总」里八项**不依赖后端平台**的债一次清完，
+标准是前面每轮同一条：**契约先行 + 测试随代码 + 断言落真实出口 + 如实标注未验收**。
+八项：桌面通知、Composer `/` 技能名补全、Trajectory 逐事件分叉 + 分支对比视图、
+深浅主题切换器、内核自动写记忆、技能市场 URL 安装源、连接器 HTTP 传输。
+
+**改动（按模块）**
+
+契约层（`packages/protocol/src/`）：
+
+- **`notify.ts`（新）**：`notificationFor(event, ctx)` 纯函数。判据是
+  **`!(ctx.windowVisible && ctx.isCurrentSession)`** —— 应用在前台且正是**当前会话**时不打扰，
+  其余情况才出通知。覆盖 `schedule.fired` / `run.completed`（failed / aborted 分叉）/ `run.failed` /
+  `run.notice`（**只对 `warn` 出通知**，`info` 不出）。标题 ≤60、正文 ≤160，对**整句**裁剪（见踩坑 1）。
+- **`theme`（config.ts）**：`resolveTheme(mode, prefersDark)` + `isThemeMode`；默认由 `dark` 改
+  **`light`**（字段此前从未被消费，一旦接切换器会静默翻转整个 UI）。
+- **分叉（session.ts）**：`ForkOrigin.requestedSeq` 注释改到新语义（精确切；`requestedSeq≠atSeq`
+  只表示「请求的 seq 不在日志里」）。
+- **`memory.ts`**：新增 MCP 服务常量与工具面（`deepwork_memory` / `memory_write` / `memory_read`）、
+  参数表（`MEMORY_WRITE_ARGS` / `MEMORY_READ_ARGS`）与 JSON Schema 生成、写入/读取结果文本、
+  `MEMORY_WRITE_LAYERS = ['user','workspace']`（**画像对内核写禁**）。
+- **`skills.ts`**：`classifySkillSource` / `validateSkillSource` / `describeSkillSource`（按内容判源）；
+- **`mcp.ts`**：连接器传输判别联合（`CONNECTOR_TRANSPORTS` / `connectorTransportOf` / `dshTransportOf`）。
+- **`rpc.ts`**：新增 `session.compare` 等方法号；**`index.ts`**：导出 `notify`。
+
+核心宿主（`packages/core-host/src/`）：
+
+- **`session/compare.ts`（新）**：`collectLastDiffs` / `compareBranches` —— **只比事件流里的 FileDiff**
+  （fork 共享工作区，读磁盘永远两边一样 ⇒ 对比恒空，而「空」会被读成「没冲突」，所以必须建在事件上）。
+  每个文件取**最后一次**变更；两处来源都收：`tool.started.call.diff` 与 `approval.requested.request.diff`。
+- **`host.ts`**：`forkSession` 改为**按事件 seq 精确切**（不再吸附到 run 边界）；新增 `compareBranches` 调用点。
+- **`memory/tools.ts`（新）**：`runMemoryWrite` / `runMemoryRead` —— 与 UI 面板**共用同一个 `MemoryStore`**
+  （单一事实来源），写入复用 `MemoryStore.add` 的预算闸，拒绝 profile / 空文本 / 未知层。
+- **`memory/mcp-server.ts`（新）+ `cli/memory-mcp.ts`（新）**：独立 stdio MCP 服务，
+  与 chart / browser 服务**同形**；业务失败经 `isError` 内容返回而不是 JSON-RPC error。
+- **`mcp/patch.ts`**：`buildMemoryMcpPatch`；`buildRuntimePatch` 注入顺序 **chart → memory → browser**
+  （browser 恒最后，browser-test 有断言）。
+- **`skills/zip.ts`（新）**：手写零依赖 zip 解压器（防路径穿越 / 绝对路径 / 盘符 / 符号链接 /
+  异常压缩方法 / zip64 / 体积与条目数炸弹）。
+- **`skills/fetch.ts`（新）**：`materializeSkillSource` —— 按内容分流 zip / SKILL.md / 目录，带超时与体积上限。
+- **`skills/store.ts`**：`installFromUrl` 走**与本地安装同一条审计 + 落盘**路径，源 URL 记进 manifest。
+
+界面（`apps/desktop/`）：
+
+- **`useTheme.ts`（新）**：`data-theme` 挂 `document.documentElement`（**不是 body**，原生控件跟随 `color-scheme`）。
+- **`styles.css`**：CSS 变量抽成语义色，深色块补齐 `:root` 全部变量的覆盖。
+- **`TrajectoryPanel.tsx`**：点击**任意事件**分叉 + 分支对比视图（同名文件差异并排）。
+- **`Composer.tsx`**：`/` 技能名补全（ArrowUp/Down 选择、Enter/Tab 采纳、Esc 关闭）。
+- **`ConnectorsPanel.tsx`** / **`SkillsPanel.tsx`** / **`SettingsPanel.tsx`**：HTTP 传输表单、URL 安装输入、主题选择。
+- **`main.js` / `preload.js` / `api.ts` / `env.d.ts` / `useAgent.ts`**：`CH_NOTIFY` 通道 + `notificationFor` 接线
+  （判据读 `document.hidden` / `document.hasFocus()`），`notifyWarning` 横幅。
+
+**验证（真实命令与数字）**
+
+```
+tools/theme-test.js       24/24（新，进 verify）
+tools/notify-test.js      29/29（新，进 verify）
+tools/branch-test.js      30/30（新，进 verify）
+tools/completion-test.js  29/29（新，进 verify）
+tools/skill-url-test.js   47/47（新，进 verify）
+tools/connector-test.js   64/64（扩 HTTP 传输段）
+tools/memory-test.js      73/73（扩工具面 + 补丁注入段）
+tools/replay-verify.js    29/29（**改到新分叉语义**，见踩坑 2）
+```
+
+关键断言落点（不是「应该没问题」）：
+
+- **主题**：契约 `resolveTheme`；宿主 config 闸拒绝 `solarized`、接受 `dark`；
+  **CSS 变量完整性** —— 断言每个 `:root` 变量在 `html[data-theme='dark']` 里都有覆盖
+  （共享变量允许：`--radius/--font/--mono/--terminal-text/--terminal-dim`）；语义色翻转。
+- **通知**：判据三态（可见+当前→null / 可见+他会话→通知 / 不可见→通知）；
+  标题 ≤60、正文 ≤160 对**整句**裁剪；`shown` 语义 = 「已交给系统」。
+- **分叉/对比**：两处来源、last-change-wins、shared/leftOnly/rightOnly、forkedFrom；
+  `forkSession` 精确切（copied = targetIndex+1）、新会话（1 条 `session.created`）可精确继承 1 条、
+  切在首条之前被拒。
+- **补全**：插入 `/name `（**尾随空格是内核 `EXPLICIT_RE = ^\/([a-z0-9][a-z0-9-]*)(?=\s|$)` 的硬要求**），
+  且与 manifest `NAME_RE`、store `isValidName` **三处正则对齐**断言。
+- **URL 源**：zip 安全用例（路径穿越/绝对路径/盘符/符号链接/异常方法/zip64/体积/条目数）全部拒绝；
+  **端到端真起 HTTP 服务**跑 `SkillStore.installFromUrl`（URL 进 manifest、SKILL.md 落盘、源摘要、404 返回结果不抛错、临时目录清理）。
+- **连接器 HTTP**：`dshTransportOf` http→`streamable-http`；`ConnectorStore.add` 按传输归一化
+  **防字段串台**；补丁 `transport: 'streamable-http'` **不带** command/args/env。
+- **内核写记忆**：写/读校验、预算闸、**真进程 MCP 往返**（起 `cli/memory-mcp.js` 真实子进程通信）、
+  坏层 `isError`；补丁注入且顺序 chart→memory→browser。
+
+复跑：`npm run verify` 走到的每一套件都绿（含本轮 5 个新套件），但它**在 browser-test 处被
+环境性红中断**（见「未验收」），故其后的 15 个套件是**单独补跑**的，也全绿（哨兵除外）。
+build + typecheck 全清。
+
+**踩坑与修复**
+
+1. **通知标题长度只在变量上裁剪，整句会超。** 初版 `clip(\`定时任务已触发：${event.task.title}\`, MAX)` 看着对，
+   但若只裁变量、不裁拼好的句子，标题能到 68 字 —— notify-test 直接断言标题 ≤60 才抓到。
+   改成对**整句**裁剪。这类「看起来裁了、其实没裁到位」的 bug 不写断言根本发现不了。
+2. **改了分叉语义 ⇒ 旧断言与旧注释全是过期契约。** `forkSession` 改成精确切后，`replay-verify.js`
+   里 5 条旧断言（「吸附回运行边界」「默认取最后一轮结束」「没跑过对话的会话被拒」）当场变红；
+   契约 `session.ts` 的 `requestedSeq` 注释、`CONVENTIONS.md`「分叉点必须吸附到 run 边界」也都是旧话。
+   **一并改到新契约**：新会话（只有 `session.created`）现在是**合法切点**，切在它之前才非法。
+   教训：改语义时，断言、注释、约定文档要作为同一批改动一起改，否则「代码是新的、说明是旧的」。
+3. **`session.create` 会写一条 `session.created` 事件**，所以「空会话」其实有 1 条事件 ——
+   旧测试假设「没跑过对话 = 0 事件」因此不成立。新契约下这不是 bug，而是「新会话本身就是一个切点」。
+4. **技能源分类误判**：`file://` / `ftp://` 曾被判成 `local-dir`（于是报「目录不存在」这种误导错误）、
+   盘符 `C:\` 也没处理；改用 `SCHEME_RE` + 长度===1 判定本地后修正，`validateSkillSource` 对非 http/https 给可行动提示。
+
+**未验收（如实记）**
+
+- **UI 渲染截图未产出**：Electron 二进制缺失，主题 / 通知 / 补全 / 分支对比四处的渲染证据
+  目前只到**读源码断言 + `tsc --noEmit`**（与既有沙箱 UI 同样的情况）。
+- **`npm run verify` 在本沙箱跑不到底**：`browser-test` 的环境性失败（沙箱内 Electron 起不了
+  Edge，`code=0` 提前退出）会**在 `&&` 链上中断后续所有套件** —— 排在 browser 之后的
+  office/chart/modelcfg/sandbox/sandbox-e2e/runtime/installer/pip/preflight/routing/theme/notify/
+  branch/completion/real-dsh-mcp 这 15 个套件都不会被 verify 自动执行。本轮**已单独逐个补跑**
+  （见下），全绿除哨兵。**别把「verify 停在 browser-test」当成「后面全过了」。**
+- **`real-dsh-mcp` 3/8（环境性，本轮当场对照确认）**：`start()` 握手 ok、run completed，
+  但模型工具表里没有任何 `mcp__` 工具（fake server 未被注册），无插件加载报错。
+  为排除本轮回归，做了决定性对照：`git stash push -u` 回到 HEAD 干净树 → 重建 → 跑，
+  **同样 3/8**。结论：与本轮八项改动无关，属环境性/既有问题（ROADMAP 记录它 09-16 曾 8/8）。
+  该套件是真实 MCP 通路唯一哨兵，**不摘**。
+- **补跑的尾部套件结果**（单跑，均 exit 0）：office 130 / chart 126 / modelcfg 124 /
+  sandbox 62 / sandbox-e2e 31 / runtime 21 / installer 29 / pip 31 / preflight 28 / routing 39 /
+  theme 24 / notify 29 / branch 30 / completion 29；real-dsh-mcp 3/8（上述环境性）。
+- **§五 各行的「后半」未做**（沿用原判据，已留在 ROADMAP §五）：技能审计白名单、
+  记忆条目去重 + 语义蒸馏归档、桌面通知触发精度（±30s）与交付物独立归档通道、内核侧连接状态可见性。
+- **连接器 HTTP 的局域网真实形态未验**：只验了契约映射与补丁形状，未对真实局域网 MCP server 做端到端。
+
+**本轮调试修复（verify 暴露的真实回归，非本轮引入的功能缺陷）**
+
+1. **`replay-verify.js` 5 条旧分叉断言**：改了分叉语义后当场变红 —— 已按新契约改写（见踩坑 2）。
+2. **`skill-system-test.js` 2 条 RPC 断言**：`skills.install` 因支持 URL 安装而改为返回 Promise，
+   测试仍**同步**读返回值的 `.ok`（拿到 `undefined`）。已把该段改成 `await`（本地安装走
+   `Promise.resolve` 包一层，RPC 派发本就 `await handler(...)`，wire 行为不变），汇总移入其后。
+   改后 59/59。
+
+**下一步**
+
+运维债（§五末行）：接 **CI**（`npm run verify` 仍靠人工）、**推远端**（`origin/main` 已领先若干提交）、
+**打 tag**。以及 §七 挂起项（FR-10.5 崩溃上报需接收端、跨平台打包需 CI + 双端环境）。
