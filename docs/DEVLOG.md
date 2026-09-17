@@ -3348,7 +3348,23 @@ build + typecheck 全清。
    `Promise.resolve` 包一层，RPC 派发本就 `await handler(...)`，wire 行为不变），汇总移入其后。
    改后 59/59。
 
+**运维落地（本轮收尾追加，2026-09-17）**
+
+- **推远端 + 打 tag 完成**：`main` 推到 `origin`（`195a4f7..b001c07`，含本批 22 个提交），
+  并落**第一个回滚点**：annotated tag **`v0.1.0`**（指向 `b001c07`，即 M0/M1/M2/M2+ 全收口；
+  此前仓库零 tag，M0/M1 成果无回滚点）。经 API 交叉核对 `refs/heads/main -> b001c07`、
+  `refs/tags/v0.1.0 -> b001c07`，本地与远端 `0/0`。
+- **推送踩坑（环境性，非仓库问题）**：`git push` 报 `Recv failure: Connection was reset`。取证链条：
+  DNS 正常（`github.com -> 20.205.243.166`）→ **该 IP 的 443 超时/重置**，换 `140.82.113.3`
+  等三个 IP 同路径**5 试 4 成**（⇒ 是这个 IP 被阻断 + 偶发重置，**不是域名被封**）；
+  `api.github.com` 全程 `200`；`github.com:22` 可达（止于 `Permission denied (publickey)`，
+  本机无密钥，token 又缺 `admin:public_key` scope，SSH 路走不通）。
+  **处置**：临时起本地 CONNECT 代理把 `github.com` 钉到 `140.82.113.3`，
+  用 `git -c http.proxy=http://127.0.0.1:<port>` 推送，**一次即成功**；用完即销毁，
+  **未改 hosts、未动系统配置**。复发时同法（或先把路由器 DNS 换掉）。
+- **CI 仍未接**（`npm run verify` 仍靠人工）：编排器已让验收链可稳定跑完，接 CI 的前提已具备。
+
 **下一步**
 
-运维债（§五末行）：接 **CI**（`npm run verify` 仍靠人工）、**推远端**（`origin/main` 已领先若干提交）、
-**打 tag**。以及 §七 挂起项（FR-10.5 崩溃上报需接收端、跨平台打包需 CI + 双端环境）。
+接 **CI**（§五末行唯一剩余的运维项）；以及 §七 挂起项（FR-10.5 崩溃上报需接收端、
+跨平台打包需 CI + 双端环境）。
