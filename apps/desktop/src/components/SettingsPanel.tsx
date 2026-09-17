@@ -279,6 +279,51 @@ export function SettingsPanel({
               </div>
 
               {/*
+                按会话模式指定模型（FR-10.2 后半：快模型 / 推理模型分工）。
+                顺序沿用上面的 MODES，不在这里另排一遍 —— 两个下拉的同一批选项
+                顺序不一致，会让人以为它们是两组不同的东西。
+              */}
+              <div className="modal-label">按会话模式指定模型（可选）</div>
+              <div className="modal-hint">
+                轻问答和要动代码的活可以用不同的模型。留空的模式跟随上面的默认模型。
+                映射在<strong>新建会话</strong>时生效 —— 会话建好之后改模式不会自动换模型
+                （在对话中途静默换模型比不换更糟）；那时要换模型，用会话自己的模型选择器。
+              </div>
+              {MODES.map((item) => {
+                const value = config.modeModels?.[item] ?? '';
+                const inCatalog = !value || (catalog?.models ?? []).some((m) => m.id === value);
+                return (
+                  <div className="settings-row" key={item}>
+                    <label className="settings-field">
+                      <span>{AGENT_MODE_LABEL[item]}</span>
+                      <select
+                        className="settings-input"
+                        value={value}
+                        onChange={(event) =>
+                          onUpdateConfig({ modeModels: { ...config.modeModels, [item]: event.target.value } })
+                        }
+                      >
+                        <option value="">
+                          跟随默认模型{config.defaultModel ? `（${config.defaultModel}）` : '（内核默认）'}
+                        </option>
+                        {/* 配置里存着一个当前目录里没有的模型时也要显示它，
+                            否则下拉会静默跳到「跟随默认模型」，用户以为已经改回去了 */}
+                        {inCatalog ? null : (
+                          <option value={value}>{value}（不在当前清单里）</option>
+                        )}
+                        {(catalog?.models ?? []).map((model) => (
+                          <option value={model.id} key={`${model.source}:${model.id}`}>
+                            {model.label}
+                            {model.source === 'endpoint' ? '（自定义端点）' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                );
+              })}
+
+              {/*
                 推理档位：取值同样来自内核公布（不在这里枚举），空 = 不干预。
                 内核没公布这个选项时只留「不干预」—— 编一套看起来合理的档位
                 会做出一个「界面能选、内核不认」的开关。

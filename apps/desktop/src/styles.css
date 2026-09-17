@@ -516,6 +516,19 @@ pre {
   border-color: rgba(207, 34, 46, 0.3);
 }
 
+/* 提示的第二、三行：建议与依据。都用继承色但压暗一点 ——
+   它们是对主句的补充，抢了主句的注意力就本末倒置了。 */
+.notice-remedy {
+  margin-top: 3px;
+  opacity: 0.9;
+}
+
+.notice-basis {
+  margin-top: 3px;
+  opacity: 0.7;
+  font-size: 11px;
+}
+
 .run-footer {
   text-align: center;
   color: var(--text-faint);

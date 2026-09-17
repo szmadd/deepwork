@@ -79,9 +79,17 @@ export function ChatStream({ items, onFork }: ChatStreamProps) {
             );
 
           case 'notice':
+            /*
+             * remedy 与 basis 分开成行，不折进 text：
+             *  「发生了什么」「该怎么办」「凭什么这么说」是三件事，折成一段话之后
+             *  用户会跳过整段。其中 basis 尤其不能省 —— 它是「这条结论有多新」的唯一线索
+             *  （端点可达性提示的依据是最近一次探测，不是此刻的实时状态）。
+             */
             return (
               <div className={`row notice notice-${item.level}`} key={item.id}>
-                {item.text}
+                <div>{item.text}</div>
+                {item.remedy ? <div className="notice-remedy">{item.remedy}</div> : null}
+                {item.basis ? <div className="notice-basis">{item.basis}</div> : null}
               </div>
             );
 
