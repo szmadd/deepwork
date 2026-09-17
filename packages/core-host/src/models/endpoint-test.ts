@@ -15,16 +15,40 @@
  *    穿过 RPC 与界面。
  */
 
-import type { EndpointTestResult } from '@deepwork/protocol';
+import type { EndpointFailureKind, EndpointTestResult } from '@deepwork/protocol';
 
 const TEST_TIMEOUT_MS = 8_000;
 
-function fail(latencyMs: number, error: string, httpStatus?: number): EndpointTestResult {
-  return { ok: false, latencyMs, models: [], error, ...(httpStatus !== undefined ? { httpStatus } : {}) };
+/**
+ * 每个失败点**在构造失败的那一刻**填上 kind。
+ *
+ * 这是唯一确切知道根因的位置：出了这个函数，根因就只剩一句给用户看的 error 文本，
+ * 谁想再用它做分支就只能去正则匹配 —— 那是把「知道」降级成「猜」，
+ * 而猜错的形态是把「key 无效」说成「服务没起」，用户会去重启一个本来好好的服务。
+ */
+function fail(
+  kind: EndpointFailureKind,
+  latencyMs: number,
+  error: string,
+  httpStatus?: number,
+): EndpointTestResult {
+  return {
+    ok: false,
+    latencyMs,
+    models: [],
+    error,
+    kind,
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+  };
 }
 
-/** 把 fetch 的底层异常翻成用户能行动的一句中文。 */
-function describeCause(error: unknown): string {
+/**
+ * 把 fetch 的底层异常翻成用户能行动的一句中文。
+ *
+ * 只翻**确定认得的**错误码；认不出就老实地把原话给出去（`请求失败：...`）——
+ * 编一句「网络异常，请检查网络」会把一个明确的 TLS 证书错误也糊成同一句话。
+ */
+function describeCause(error: unknown): { kind: EndpointFailureKind; message: string } {
   // undici 的 'fetch failed' 把真因包在 cause 里；多栈解析（IPv4/IPv6 都试）时
   // cause 是 AggregateError，真因在它的 errors[0]。
   let cause = (error as { cause?: unknown })?.cause ?? error;
@@ -32,26 +56,42 @@ function describeCause(error: unknown): string {
   const code = (cause as { code?: string })?.code ?? (error as { code?: string })?.code;
   switch (code) {
     case 'ECONNREFUSED':
-      return '连接被拒绝：端点服务未在监听。确认服务已启动、地址与端口正确。';
+      return {
+        kind: 'unreachable',
+        message: '连接被拒绝：端点服务未在监听。确认服务已启动、地址与端口正确。',
+      };
     case 'ENOTFOUND':
     case 'EAI_AGAIN':
-      return '主机名无法解析：确认地址拼写，或改用 IP。';
+      return { kind: 'unreachable', message: '主机名无法解析：确认地址拼写，或改用 IP。' };
     case 'ETIMEDOUT':
     case 'UND_ERR_CONNECT_TIMEOUT':
-      return '连接超时：网络不可达（确认两台机器互通、防火墙放行该端口）。';
+      return {
+        kind: 'unreachable',
+        message: '连接超时：网络不可达（确认两台机器互通、防火墙放行该端口）。',
+      };
     default:
       break;
   }
   if ((error as Error)?.name === 'TimeoutError' || (error as Error)?.name === 'AbortError') {
-    return `超过 ${TEST_TIMEOUT_MS / 1000} 秒无响应：网络不可达或服务过载。`;
+    return {
+      kind: 'unreachable',
+      message: `超过 ${TEST_TIMEOUT_MS / 1000} 秒无响应：网络不可达或服务过载。`,
+    };
   }
-  return `请求失败：${error instanceof Error ? error.message : String(error)}`;
+  return {
+    kind: 'unreachable',
+    message: `请求失败：${error instanceof Error ? error.message : String(error)}`,
+  };
 }
 
 export async function testEndpoint(input: { baseUrl: string; apiKey?: string }): Promise<EndpointTestResult> {
   const baseUrl = input.baseUrl.trim().replace(/\/+$/, '');
   if (!/^https?:\/\//.test(baseUrl)) {
-    return fail(0, '端点地址需要以 http(s):// 开头，例如 http://127.0.0.1:8000/v1');
+    return fail(
+      'invalid-url',
+      0,
+      '端点地址需要以 http(s):// 开头，例如 http://127.0.0.1:8000/v1',
+    );
   }
 
   const startedAt = Date.now();
@@ -62,29 +102,41 @@ export async function testEndpoint(input: { baseUrl: string; apiKey?: string }):
       signal: AbortSignal.timeout(TEST_TIMEOUT_MS),
     });
   } catch (error) {
-    return fail(Date.now() - startedAt, describeCause(error));
+    const described = describeCause(error);
+    return fail(described.kind, Date.now() - startedAt, described.message);
   }
   const latencyMs = Date.now() - startedAt;
 
   if (response.status === 401 || response.status === 403) {
-    return fail(latencyMs, '端点拒绝了凭据（401/403）：key 无效或未授权，请在下方重新保存 key。', response.status);
+    return fail(
+      'auth',
+      latencyMs,
+      '端点拒绝了凭据（401/403）：key 无效或未授权，请在下方重新保存 key。',
+      response.status,
+    );
   }
   if (response.status === 404) {
     return fail(
+      'not-found',
       latencyMs,
       '服务在线，但 /models 返回 404：baseUrl 多半少了 /v1 前缀（应为 http://主机:端口/v1）。',
       response.status,
     );
   }
   if (!response.ok) {
-    return fail(latencyMs, `端点返回 HTTP ${response.status}：服务在线但应答异常，请查看端点侧日志。`, response.status);
+    return fail(
+      'bad-response',
+      latencyMs,
+      `端点返回 HTTP ${response.status}：服务在线但应答异常，请查看端点侧日志。`,
+      response.status,
+    );
   }
 
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    return fail(latencyMs, '响应不是 JSON：这多半不是一个 OpenAI 兼容端点。', response.status);
+    return fail('not-json', latencyMs, '响应不是 JSON：这多半不是一个 OpenAI 兼容端点。', response.status);
   }
   const data = (body as { data?: unknown })?.data;
   const models = Array.isArray(data)

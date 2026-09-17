@@ -50,6 +50,7 @@ import { createLogger } from './logger';
 import { resolveSandboxMode, sandboxPlatformNote } from './security/sandbox';
 import { clearApiKey, endpointRestartMessage, endpointRoutingFingerprint, getApiKey, maskApiKey, modelEndpointOverride, setApiKey, syncModelCredentials, validateEndpoint } from './models/endpoint';
 import { testEndpoint } from './models/endpoint-test';
+import { endpointProbeNotice, type ReachabilityRecord } from './models/reachability';
 import { DEFAULT_MODE, DEFAULT_MODEL, catalogUnavailable, mockCatalog } from './models';
 import { configPath, ensureDirs, guardPath, homeDir, readJson, writeJson } from './paths';
 import { runPreflight } from './runtime/preflight';
@@ -129,6 +130,19 @@ export class DeepworkHost {
    * 只能等用户来报「发出去一直没有回应」。null = 还没成功起过内核（不知道，不猜）。
    */
   private kernelEndpoint: string | null = null;
+  /**
+   * 最近一次**端点可达性探测**的结论（FR-10.2 后半）。
+   *
+   * 它是一个缓存而不是事实来源：真事实是「此刻那个地址通不通」，那要现测一次才知道，
+   * 而现测最坏要 8 秒 —— 用户不该为一句提示等一次网络超时。所以开跑时**只读**它，
+   * 提示里带上探测时刻，让用户自己判断这条结论有多新。
+   *
+   * null = 从没探过（或端点已换、旧结论作废）。**不知道就不说** ——
+   * 与模型守卫同一条口径：目录为空时不拦，因为那是「不知道」不是「不匹配」。
+   */
+  private endpointProbe: ReachabilityRecord | null = null;
+  /** 探测进行中标记：避免同一个地址被并发探很多次（开跑 + 改配置 + 点测试都会触发） */
+  private endpointProbeInFlight = false;
   /**
    * 内核沙箱模式：**进程启动时解析、每次重启内核时重新解析**。
    *
@@ -241,6 +255,8 @@ export class DeepworkHost {
     });
     // 补丁已经写盘、内核已经带着它起来 —— 记下「这一代内核的端点是哪个」
     this.kernelEndpoint = endpointRoutingFingerprint(this.getConfig().modelEndpoint);
+    // 顺手在后台探一次端点可达性：结论供**后续几轮**开跑时提示用（本轮不阻塞）
+    this.refreshEndpointProbe();
     log.info(`内核就绪: ${this.adapter.kind} / ${this.adapter.version}`);
     this.scheduler.start();
     this.emit({
@@ -366,6 +382,7 @@ export class DeepworkHost {
     // 重启就是为了让新补丁（端点 / 连接器）生效，所以这一笔必须跟着更新：
     // 漏了它，界面会一直说「端点配置和内核不一致」，而用户已经重启过了
     this.kernelEndpoint = endpointRoutingFingerprint(this.getConfig().modelEndpoint);
+    this.refreshEndpointProbe();
     log.info(`内核已重启: ${this.adapter.kind} / ${this.adapter.version}`);
     // 壳层与 UI 靠 host.ready 恢复就绪态（与初次启动同一条通道）
     this.emit({
@@ -481,6 +498,10 @@ export class DeepworkHost {
       // 缓存里那份就过期了。清掉而不是留着：留着会让「设置页显示的是什么」
       // 与「重启后会变成什么」不一致，而这种不一致没有任何报错。
       this.catalog = null;
+      // 换了端点，旧的可达性结论就与它无关了 —— 先作废再重探，
+      // 否则下一步开跑会拿着「上一个地址不通」的结论去提示新地址
+      this.endpointProbe = null;
+      this.refreshEndpointProbe();
       log.info(`模型端点已更新（重启内核生效）: ${result.detail}`);
     }
     return next;
@@ -575,6 +596,20 @@ export class DeepworkHost {
     );
   }
 
+  /**
+   * 按会话模式解析新建会话该用哪个模型（FR-10.2 后半）。
+   *
+   * 规则只有一句：**该模式配了模型就用它，没配就走默认模型那条链**。
+   * 「配了但配成空白串」按没配处理（`||` 而不是 `??`）—— 一个空串不是模型 id，
+   * 让它穿透下去会变成一个查无此模型的请求，而报错里只有一个空引号。
+   *
+   * 刻意不做「用户输入分类」：那是一条没有真值的规则，判错时用户只会看到
+   * 「这轮怎么换了个模型」却无从纠正。会话模式是用户显式选的，规则因此可见可改。
+   */
+  private resolveModelForMode(config: AppConfig, mode: AgentMode): string {
+    return (config.modeModels?.[mode] ?? '').trim() || this.resolveDefaultModel(config);
+  }
+
   // ── 模型 API key（secrets.json，明文不出宿主）──────────────────
 
   modelApiKeyStatus(): { set: boolean; masked?: string } {
@@ -601,14 +636,69 @@ export class DeepworkHost {
   }
 
   /**
+   * 后台探一次端点可达性并记下结论。**不 await**（调用方都是「顺手刷新」，不该被网络拖住），
+   * 也**不抛错**（探测失败本身就是结论，措辞交给 `endpointProbeNotice`）。
+   *
+   * 只探自定义端点：官方端点没配 key 时必然 401，那会把「你还没填 key」说成
+   * 「端点有问题」。官方端点的可达性是官方的事，我们不下结论。
+   */
+  private refreshEndpointProbe(): void {
+    const endpoint = this.getConfig().modelEndpoint;
+    if (endpoint.kind !== 'custom') {
+      this.endpointProbe = null;
+      return;
+    }
+    if (this.endpointProbeInFlight) return;
+    const fingerprint = endpointRoutingFingerprint(endpoint);
+    this.endpointProbeInFlight = true;
+    void testEndpoint({ baseUrl: endpoint.baseUrl ?? '', apiKey: getApiKey('custom') || undefined })
+      .then((result) => {
+        this.endpointProbe = { fingerprint, checkedAt: Date.now(), result };
+        if (!result.ok) {
+          log.info(`端点可达性探测未通过（${result.kind ?? 'unknown'}）：${result.error ?? ''}`);
+        }
+      })
+      .catch((error) => {
+        // testEndpoint 自己把网络异常翻成了结果对象，走到这里说明是更底层的意外。
+        // 记一笔但**不写进缓存** —— 一个我们没能解释的异常不该变成给用户的结论。
+        log.warn(`端点可达性探测本身出错（不是端点的问题，不据此提示）: ${String(error)}`);
+      })
+      .finally(() => {
+        this.endpointProbeInFlight = false;
+      });
+  }
+
+  /**
+   * 把一次**用户主动触发**的探测结果也收进缓存。
+   *
+   * 只在地址与当前配置一致时收：设置页的「测试连接」打的是界面上的**未保存值**，
+   * 拿它对未保存的地址下结论，会让用户以为「当前配置」有问题 ——
+   * 而那条结论会在下一次开跑时以提示的形式出现，指向一个并不存在的故障。
+   */
+  private recordEndpointProbe(baseUrl: string, result: EndpointTestResult): void {
+    const endpoint = this.getConfig().modelEndpoint;
+    if (endpoint.kind !== 'custom') return;
+    const normalize = (value: string) => value.trim().replace(/\/+$/, '');
+    if (normalize(baseUrl) !== normalize(endpoint.baseUrl ?? '')) return;
+    this.endpointProbe = {
+      fingerprint: endpointRoutingFingerprint(endpoint),
+      checkedAt: Date.now(),
+      result,
+    };
+  }
+
+  /**
    * 端点连通性测试（设置页「测试连接」）：对界面上的未保存值发一次真实请求。
    * key 优先级：显式参数 > 已存的 custom key > 无。结果不含 key，可直接回渲染层。
    */
-  testModelEndpoint(input: { baseUrl?: string; apiKey?: string }): Promise<EndpointTestResult> {
-    return testEndpoint({
-      baseUrl: String(input.baseUrl ?? ''),
+  async testModelEndpoint(input: { baseUrl?: string; apiKey?: string }): Promise<EndpointTestResult> {
+    const baseUrl = String(input.baseUrl ?? '');
+    const result = await testEndpoint({
+      baseUrl,
       apiKey: input.apiKey?.trim() || getApiKey('custom') || undefined,
     });
+    this.recordEndpointProbe(baseUrl, result);
+    return result;
   }
 
   // ── 会话 ──────────────────────────────────────────────────
@@ -624,11 +714,14 @@ export class DeepworkHost {
     model?: string;
   }): Session {
     const config = this.getConfig();
+    const mode = input.mode ?? config.defaultMode ?? DEFAULT_MODE;
     const session = this.store.create({
       workspace: input.workspace,
       title: input.title,
-      mode: input.mode ?? config.defaultMode ?? DEFAULT_MODE,
-      model: input.model || this.resolveDefaultModel(config),
+      mode,
+      // 模式 → 模型的映射在这里落地（新建会话时定一次，见 modeModels 的注释）。
+      // input.model 仍然优先：那是调用方显式点的名，比任何规则都硬。
+      model: input.model?.trim() || this.resolveModelForMode(config, mode),
     });
     this.emit({ type: 'session.created', session });
     return session;
@@ -746,7 +839,10 @@ export class DeepworkHost {
     this.runToSession.set(runId, session.id);
 
     const mode = input.mode ?? session.mode;
-    const model = input.model ?? session.model;
+    // 空串按「未指定」处理（`||` 而不是 `??`）：界面上的模型选择器在还没选中时是空串，
+    // 用 `??` 会让那个空串穿透成「本轮的模型 = 空」，而报错里只有一个空引号。
+    // 与 createSession / resolveModelForMode 同一口径 —— 三处对空串的处理必须一致。
+    const model = input.model?.trim() || session.model;
     const attachments = input.attachments?.filter((item) => typeof item === 'string' && item.trim());
 
     // 首轮对话自动用用户输入生成标题
@@ -790,6 +886,27 @@ export class DeepworkHost {
       this.activeRuns.delete(runId);
       this.runToSession.delete(runId);
       return { runId };
+    }
+
+    /*
+     * 端点可达性提示：**只提示，不拦**（FR-10.2 后半）。
+     *
+     * 排在上一条守卫之后：上一条成立时这一轮根本不发请求，再说「发出去可能不通」是废话。
+     * 排在模型守卫之前：端点不通是上游问题 —— 模型名对不对在它面前排不上号。
+     *
+     * 为什么用缓存而不是现测：现测最坏 8 秒超时，用户不该为一句提示等一次网络往返。
+     * 代价是结论可能过期，所以措辞里必须带探测时刻（basis 由 endpointProbeNotice 给）。
+     *
+     * 为什么不拦：探测打的是 `/models`，而它不是 OpenAI 兼容端点的强制面 ——
+     * 只实现 `/chat/completions` 的网关会被误判成「不可达」。拿一个非强制面的
+     * 探测结果去拦请求，会把本来能用的部署打断，用户还查不出所以然。
+     */
+    const probeNotice = endpointProbeNotice({
+      endpoint: this.getConfig().modelEndpoint,
+      record: this.endpointProbe,
+    });
+    if (probeNotice) {
+      this.emit({ type: 'run.notice', runId, ...probeNotice });
     }
 
     /*
