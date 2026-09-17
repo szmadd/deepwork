@@ -35,7 +35,10 @@ export interface SessionFork {
 export interface ForkOrigin extends SessionFork {
   /**
    * 调用方请求的分叉点；null 表示「从末尾分叉」。
-   * 与 atSeq 不同即说明请求落在一轮运行中间，被吸附回了最近的合法边界。
+   * 分叉按事件 seq 精确切：请求位置恰好命中某条事件时 atSeq === requestedSeq。
+   * 仅当请求的 seq 不存在于日志（手改日志或界面传了不存在的位置）时，
+   * atSeq 才取「不晚于该 seq 的最近事件」—— 二者的差异只表示这一件事，
+   * **不是**「请求落在轮次中间被吸附回边界」（旧语义，见 M1 遗留「逐事件分叉」）。
    */
   requestedSeq: number | null;
   /** 继承的事件条数（= 新会话日志中位于分叉标记之前的行数） */

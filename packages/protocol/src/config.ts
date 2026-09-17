@@ -137,8 +137,60 @@ export interface EndpointTestResult {
   kind?: EndpointFailureKind;
 }
 
+/**
+ * 主题档位。
+ *
+ * ── 为什么加 'system' 而不是只留 light/dark ─────────────────────────
+ * 「跟随系统」是唯一一个**不需要用户再管**的档位：系统在日落时切深色，
+ * 用户不必回来改一次设置。两个固定值做不到这件事，而它是设置页里
+ * 成本最低、收益最直接的一项。
+ *
+ * 代价是它把「用户选了什么」与「现在实际是什么」分开了：'system' 本身
+ * 不是一个可渲染的颜色方案，必须结合系统偏好解析成 light/dark 才谈得上生效。
+ * 所以解析函数 resolveTheme 与档位清单同住契约层 —— 界面、测试与
+ * 未来的其它渲染入口（托盘图标、预览窗口）必须用同一份解析，
+ * 否则「跟随系统」在某个窗口里会静默变成永远浅色。
+ */
+export type ThemeMode = 'light' | 'dark' | 'system';
+
+/** 合法档位，顺序即设置页展示顺序（固定值在前，跟随系统在最后） */
+export const THEME_MODES: readonly ThemeMode[] = ['light', 'dark', 'system'];
+
+export const THEME_MODE_LABEL: Record<ThemeMode, string> = {
+  light: '浅色',
+  dark: '深色',
+  system: '跟随系统',
+};
+
+/** 主题档位判定 —— 白名单只此一处（启动 / 配置校验 / 界面回填共用） */
+export function isThemeMode(value: unknown): value is ThemeMode {
+  return typeof value === 'string' && (THEME_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * 把档位解析成**实际要渲染的方案**。
+ *
+ * `prefersDark` 由调用方从渲染环境取（浏览器是 matchMedia，测试直接传值）——
+ * 不在这里读全局，是因为这个函数要能在没有 window 的地方跑（宿主、
+ * 打包期校验、Node 里的测试），而读全局会让它只在浏览器里可测。
+ */
+export function resolveTheme(mode: ThemeMode, prefersDark: boolean): 'light' | 'dark' {
+  if (mode === 'system') return prefersDark ? 'dark' : 'light';
+  return mode;
+}
+
 export interface AppConfig {
-  theme: 'dark' | 'light';
+  /**
+   * 主题档位。
+   *
+   * 默认 `light` —— 与当前实际渲染一致。这个字段自 M0 起就存在，但**从未被
+   * 任何代码消费过**（2026-09-17 接切换器时发现）：它此前是 `'dark' | 'light'`
+   * 且默认 `'dark'`，而界面一直渲染浅色。也就是说，一旦有人开始读它，
+   * 默认值会立刻把界面翻成深色 —— 那不是「实现了主题」，那是改了一个
+   * 从没生效过的默认值引发的视觉变更。默认值随实现一起修正为 `light`，
+   * 保持读者看到的东西与以前一致。
+   */
+  theme: ThemeMode;
   /**
    * 内核选择：auto = 有 DEEPWORK_HARNESS_CMD 才用真实内核；mock = 强制 mock；
    * harness = 强制真实内核（失败即报错不降级）。持久化在这里，不用每次设环境变量。
@@ -225,7 +277,7 @@ export interface AppConfig {
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
-  theme: 'dark',
+  theme: 'light',
   adapter: 'auto',
   defaultMode: 'ptc',
   defaultModel: '',
@@ -251,7 +303,7 @@ export const DEFAULT_ENDPOINT_CONTEXT_WINDOW = 131_072;
 
 /** 配置项的取值域，设置面板据此渲染控件；未知键不进设置面板（由实现自行消费） */
 export const CONFIG_FIELDS = {
-  theme: { kind: 'enum', values: ['dark', 'light'], label: '主题' },
+  theme: { kind: 'enum', values: ['light', 'dark', 'system'], label: '主题' },
   adapter: { kind: 'enum', values: ['auto', 'mock', 'harness'], label: '内核' },
   defaultMode: { kind: 'enum', values: ['ptc', 'standard', 'minimal', 'creative'], label: '默认模式' },
   defaultModel: { kind: 'string', label: '默认模型（空 = 跟随内核默认）' },

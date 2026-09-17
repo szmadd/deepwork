@@ -54,3 +54,54 @@ export type ToolPreview = { kind: 'diff'; diff: FileDiff };
 
 /** 一次差异的规模上限，超出则截断，避免把超大文件塞进事件流与日志 */
 export const DIFF_MAX_HUNKS = 60;
+
+// ════════════════════════════════════════════════════════════════
+// 分支对比（M1 遗留：分支对比视图 / 同名文件差异并排）
+// ════════════════════════════════════════════════════════════════
+
+/** 对比的一侧：一条分支自己的改动 */
+export interface BranchCompareSide {
+  sessionId: string;
+  title: string;
+  /** 这条分支改过的文件数（按路径去重） */
+  changedFiles: number;
+  /** 从哪个会话分叉来的；非分叉会话为空 */
+  forkedFrom?: string;
+}
+
+/** 一个文件在两个分支里的改动 */
+export interface BranchFileEntry {
+  path: string;
+  /** 左分支对该文件**最后一次**改动；该分支没碰过则为空 */
+  left?: FileDiff;
+  /** 右分支对该文件最后一次改动 */
+  right?: FileDiff;
+}
+
+/**
+ * 分支对比结果。
+ *
+ * ── 为什么数据源是「写工具的差异预览」而不是「两边的工作区文件」──────
+ * 本产品的分叉共享**同一个工作区**：分叉复制的是会话日志，不是文件系统快照
+ * （见 host.forkSession）。所以磁盘上根本不存在「左分支的 a.ts」与
+ * 「右分支的 a.ts」两个版本 —— 去读文件只能读到「最后写成的那个」，
+ * 两边永远是同一份，对比恒为空。
+ *
+ * 真实存在的两份东西是**两次改动本身**（`tool.started` 里带出来的差异预览）。
+ * 「同名文件差异并排」因此实现为：把两条分支对同一个路径的改动并排摊开。
+ * 这不是退而求其次 —— 它恰好是用户想看的那个问题：「同一个文件，
+ * 这条分支改了什么、那条分支改了什么」。
+ *
+ * `basis` 如实说明这个结论的取数范围（哪些事件、以哪一次为准），
+ * 界面直接展示 —— 它是「这份对比有多完整」的唯一线索。
+ */
+export interface BranchCompareResult {
+  left: BranchCompareSide;
+  right: BranchCompareSide;
+  /** 两边都改过的文件 —— 并排展示的主体 */
+  shared: BranchFileEntry[];
+  /** 只有左 / 右分支改过的文件（单列展示，不并排） */
+  leftOnly: BranchFileEntry[];
+  rightOnly: BranchFileEntry[];
+  basis: string;
+}

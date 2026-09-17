@@ -9,6 +9,7 @@
 import type { AppConfig, EndpointTestResult } from './config';
 import type { BrowserShotImage, BrowserShotInfo, BrowserState } from './browser';
 import type { PreflightReport, RuntimeStatus } from './deploy';
+import type { BranchCompareResult } from './diff';
 import type { AgentEvent } from './events';
 import type { MemoryEntry, MemoryLayer, MemoryLayerStat } from './memory';
 import type { ConnectorConfig, ConnectorState } from './mcp';
@@ -91,8 +92,12 @@ export interface SendResult {
 export interface ForkSessionParams {
   sessionId: string;
   /**
-   * 期望的分叉点（父会话中某条 run 结束事件的 seq）。
-   * 省略表示「从末尾分叉」；落在某轮运行中间时会被吸附回该轮之前的边界。
+   * 分叉点：父会话里某条事件的 seq，继承到**那一条为止**（逐事件分叉）。
+   * 省略表示「从末尾分叉」。落在两个事件之间时取不晚于它的最近事件，
+   * 并在结果 `from.requestedSeq` 与 `from.atSeq` 的差异里如实保留。
+   *
+   * 注意继承的是**记录**不是模型上下文：新会话的续跑不会把这段历史带给模型
+   * （见 host.forkSession 的注释）。界面上的措辞必须与此一致。
    */
   atSeq?: number;
 }
@@ -146,6 +151,8 @@ export interface RpcContract {
   'session.delete': { params: { sessionId: string }; result: { ok: true } };
   'session.events': { params: { sessionId: string }; result: AgentEvent[] };
   'session.fork': { params: ForkSessionParams; result: ForkSessionResult };
+  /** 分支对比：两条会话各自对文件的改动（不要求它们有血缘，见 host.compareBranches） */
+  'session.compareBranches': { params: { leftId: string; rightId: string }; result: BranchCompareResult };
   'run.send': { params: SendParams; result: SendResult };
   'run.abort': { params: { runId: string }; result: { ok: boolean } };
 

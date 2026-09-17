@@ -12,6 +12,7 @@ export * from './diff';
 export * from './events';
 export * from './memory';
 export * from './mcp';
+export * from './notify';
 export * from './office';
 export * from './reduce';
 export * from './rpc';
