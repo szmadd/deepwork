@@ -3413,3 +3413,53 @@ node tools/smoke-ipc.js       # 30/30 通过（config 往返链路无回归）
 **下一步**
 
 继续手动调试主线（会话 / 写操作审批 / 技能 / 记忆 / 沙箱档位切换）。
+
+---
+
+## 2026-09-17 · 调试期 · 真实端点暴露图表工具 schema 非法（真内核首轮对话修复）
+
+**目标**
+
+手动调试真实内核时新会话首轮即失败：`Invalid schema for function
+'mcp__deepwork_chart__chart_render': "string|array" is not valid under any of the
+schemas listed in the 'anyOf' keyword`（ACP -32603，retryable）。定位并修复。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/chart.ts` | `chartInputJsonSchema()`：`rows` 的内部伪类型 `'string|array'` 不再原样写进 schema，翻译为合法 `anyOf`（字符串 或 二维数组，单元格 anyOf 平铺 string/number/boolean）；`ChartArgSpec.jsonType` 注释标明伪类型身份与教训 |
+| `tools/chart-test.js` | 断言从「type === 'string|array'」（钉住非法形状）改为「anyOf 两分支形状正确」+「schema 全文不含 string|array 伪值」（防回归），126 → **127 项** |
+
+**验证**
+
+```
+node tools/chart-test.js     # 127/127 通过
+真实端点取证（api.deepseek.com，已存 key 不回显）：
+  GET  /models                                     → 200，[deepseek-flash, deepseek-v4-pro]
+  POST /chat/completions（带修复后的 chart 工具表） → 200，schema 被接受
+```
+
+**踩坑与修复**
+
+1. **替身端点不校验工具 schema，真端点校验** —— 与 M2 第三轮「替身不回 usage 导致假事实」同族：
+   测试替身的宽容会变成「看起来没问题」。`type:'string|array'` 在全部 126 项测试与全部
+   mock/替身链路里畅通无阻，第一次打真端点就整轮被拒。
+   → 修法分两层：schema 生成改合法 anyOf（本条目）；测试补「全文不含伪值」防回归断言。
+2. **同轮另两条调试结论**（非代码改动，记在此备查）：
+   - 「端点测试连接无反应」：早期实例上的点击未到达渲染层（HMR 热更新后的不干净状态 /
+     DevTools 分离窗口遮挡），冷启动后恢复；`config.json` 的 mtime 是判定「点击是否到达
+     宿主」的有效取证手段。
+   - 旧会话绑定 `mock-echo` 模型，切真实内核后被开跑守卫拦下（设计内行为），
+     顶栏换模型或新建会话即可。另实测确认 `deepseek-flash` 是该端点上的真实模型 id
+     （此前 ROADMAP 记录的「内部别名」口径已过时，以端点 /models 为准）。
+
+**遗留**
+
+- 浏览器 / 记忆 MCP 工具的 schema 已人工核对为合法类型（无伪类型）；若端点侧还有
+  更严格的校验面（如嵌套 anyOf 容忍度），只能靠真端点逐工具实测，未覆盖。
+- 「测试连接」点击无响应的根因未完全定位（现象消失于冷启动后），留观察。
+
+**下一步**
+
+用户重启内核后重试真实对话；继续手动调试主线。

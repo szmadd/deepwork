@@ -141,9 +141,16 @@ console.log('\n── 契约层 ──');
     String(schema.required),
   );
   check(
-    'rows 同时接受字符串与数组（Markdown 表格 / 二维数组）',
-    schema.properties.rows.type === 'string|array',
-    String(schema.properties.rows.type),
+    'rows 的 schema 是合法 JSON Schema 联合（anyOf：字符串 或 二维数组）',
+    Array.isArray(schema.properties.rows.anyOf) &&
+      schema.properties.rows.anyOf.length === 2 &&
+      schema.properties.rows.anyOf[0].type === 'string' &&
+      schema.properties.rows.anyOf[1].type === 'array',
+    JSON.stringify(schema.properties.rows),
+  );
+  check(
+    'rows 的 schema 不含非法的 type 伪值（真实端点会拒绝整个工具表）',
+    !JSON.stringify(schema).includes('string|array'),
   );
   check('规模上限都是正数', CHART_MAX_POINTS > 0 && CHART_MAX_SERIES > 0 && CHART_MAX_CATEGORIES > 0);
 }

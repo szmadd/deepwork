@@ -136,7 +136,13 @@ export const CHART_TOOL_RISK: Record<string, RiskLevel> = {
  */
 export interface ChartArgSpec {
   name: string;
-  /** JSON Schema 的 type（数组形式表示可接受多种类型） */
+  /**
+   * JSON Schema 的 type；`'string|array'` 是**内部伪类型**（表示「字符串或数组」二选一），
+   * 生成 schema 时由 `chartInputJsonSchema` 翻译成合法的 anyOf —— 它本身不是合法
+   * JSON Schema，直接发出去会被真实端点拒绝（2026-09-17 实测：DeepSeek function
+   * calling 报 `Invalid schema for function 'mcp__deepwork_chart__chart_render'`，
+   * 整个 turn 失败）。替身端点不校验 schema，这个形状只有真端点能验出来。
+   */
   jsonType: string;
   required: boolean;
   /** 一句中文说明，同时作为宿主工具的 parameters 文案 */
@@ -187,9 +193,29 @@ export function chartInputJsonSchema(): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
   for (const arg of CHART_ARGS) {
-    const spec: Record<string, unknown> = { type: arg.jsonType, description: arg.description };
+    let spec: Record<string, unknown>;
     if (arg.jsonType === 'string|array') {
-      spec.items = { type: 'array' };
+      // rows：Markdown 管道表格字符串 或 二维数组，二选一 → 合法的 anyOf 联合。
+      // 二维数组的单元格类型用 anyOf 平铺而不是 type 数组：两种写法都是合法
+      // JSON Schema，但端点侧的严格校验器对嵌套形状的容忍度以实测为准，
+      // 平铺是最没有歧义的形态。
+      spec = {
+        anyOf: [
+          { type: 'string' },
+          {
+            type: 'array',
+            items: {
+              type: 'array',
+              items: {
+                anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }],
+              },
+            },
+          },
+        ],
+        description: arg.description,
+      };
+    } else {
+      spec = { type: arg.jsonType, description: arg.description };
     }
     properties[arg.name] = spec;
     if (arg.required) required.push(arg.name);
