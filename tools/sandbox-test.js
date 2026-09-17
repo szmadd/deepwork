@@ -122,7 +122,7 @@ function classify(target, result) {
   return 'denied';
 }
 
-function main() {
+async function main() {
   console.log('沙箱后端验证（内核 win32 ACL 受限令牌档）');
 
   if (!runnerAvailable()) {
@@ -135,6 +135,8 @@ function main() {
     kernelAssemblySection();
     hostStatusSection();
     denialDialectSection();
+    await sandboxSwitchSection();
+    uiWiringSection();
     console.log(`\n通过 ${passed} 项 / 失败 ${failed} 项`);
     process.exit(failed > 0 ? 1 : 0);
   }
@@ -228,10 +230,12 @@ function main() {
   kernelAssemblySection();
   hostStatusSection();
   denialDialectSection([runnerDenialText]);
+  await sandboxSwitchSection();
+  uiWiringSection();
 
   console.log(`\n通过 ${passed} 项 / 失败 ${failed} 项`);
   if (failed > 0) console.log(`失败项：${failures.join('、')}`);
-  // 显式退出：第 6 节会构造真实宿主，它可能留下未清句柄（调度器等），
+  // 显式退出：第 6/10 节会构造真实宿主，它可能留下未清句柄（调度器等），
   // 让进程挂着不退出会把「跑完了」伪装成「卡住了」。
   process.exit(failed > 0 ? 1 : 0);
 }
@@ -299,11 +303,232 @@ function modeResolutionSection() {
     `实际 ${JSON.stringify(badWide)}`,
   );
 
+  // ── FR-3.5 尾项：设置页里存下的选择（config 来源）─────────────────────
+  // 这一档的意义：用户不必改环境变量、也不必重启整个应用，在设置页里选一下就能换档。
+  const byConfig = resolveSandboxMode({}, { configured: 'read-only' });
+  check(
+    '设置页的选择单独存在时生效，来源标为 config（界面据此说「你在设置里选的」）',
+    byConfig.mode === 'read-only' && byConfig.source === 'config' && byConfig.rejected === undefined,
+    `实际 ${JSON.stringify(byConfig)}`,
+  );
+
+  const envBeatsConfig = resolveSandboxMode(
+    { DEEPWORK_SANDBOX_MODE: 'danger-full-access' },
+    { configured: 'read-only' },
+  );
+  check(
+    '环境变量压过设置页的选择（旁路必须能压住常规入口，否则「临时只读跑一次」做不成）',
+    envBeatsConfig.mode === 'danger-full-access' && envBeatsConfig.source === 'env-override',
+    `实际 ${JSON.stringify(envBeatsConfig)}`,
+  );
+
+  // 这条是本轮真正的修法：旧写法下，一个拼错的环境变量会让设置页里的选择永远不生效
+  // 且界面上看不出原因（rejected 会说环境变量错，但用户改不掉那个环境变量）。
+  const badEnvFallsToConfig = resolveSandboxMode(
+    { DEEPWORK_SANDBOX_MODE: 'readonly' },
+    { configured: 'read-only' },
+  );
+  check(
+    '环境变量拼错时降级到设置页的选择，并同时留痕（跳过而非判死刑）',
+    badEnvFallsToConfig.mode === 'read-only' &&
+      badEnvFallsToConfig.source === 'config' &&
+      badEnvFallsToConfig.rejected === 'readonly',
+    `实际 ${JSON.stringify(badEnvFallsToConfig)}`,
+  );
+
+  const badConfig = resolveSandboxMode({}, { configured: 'nope' });
+  check(
+    '配置里那个值也被手改坏时同样留痕（回落默认，不默默当成没设过）',
+    badConfig.mode === DEFAULT_SANDBOX_MODE &&
+      badConfig.source === 'product-default' &&
+      badConfig.rejected === 'nope',
+    `实际 ${JSON.stringify(badConfig)}`,
+  );
+
+  const blankEnv = resolveSandboxMode({ DEEPWORK_SANDBOX_MODE: '   ' }, { configured: 'read-only' });
+  check(
+    '空白环境变量视为「没设」而不是「设了个空值」（不凭空造出一条 warning）',
+    blankEnv.mode === 'read-only' && blankEnv.source === 'config' && blankEnv.rejected === undefined,
+    `实际 ${JSON.stringify(blankEnv)}`,
+  );
+
+  // 界面选项表与白名单判定住在契约层（protocol），不在 core-host 的解析模块里 ——
+  // 渲染层要用它们，从 core-host 拿会让界面依赖内核包。
+  const { isSandboxMode, SANDBOX_MODE_INFO, SANDBOX_MODES } = require(
+    path.join(ROOT, 'packages/protocol/dist/security.js'),
+  );
+  check(
+    '白名单判定只有一处实现（配置校验与启动解析共用它）',
+    isSandboxMode('read-only') === true &&
+      isSandboxMode('readonly') === false &&
+      isSandboxMode('') === false &&
+      isSandboxMode(undefined) === false,
+    `read-only=${isSandboxMode('read-only')} readonly=${isSandboxMode('readonly')}`,
+  );
+  check(
+    '界面选项表覆盖全部三档且顺序与 SANDBOX_MODES 一致（宽窄顺序不在渲染层另排一遍）',
+    SANDBOX_MODE_INFO.length === SANDBOX_MODES.length &&
+      SANDBOX_MODE_INFO.every((item, index) => item.mode === SANDBOX_MODES[index]) &&
+      SANDBOX_MODE_INFO.every((item) => item.label && item.consequence),
+    JSON.stringify(SANDBOX_MODE_INFO.map((item) => item.mode)),
+  );
+
   const launchEnv = sandboxLaunchEnv('workspace-write');
   check(
     '交给内核的键名是 DSH_PERMISSION_MODE（内核的旋钮，不是自造的）',
     Object.keys(launchEnv).length === 1 && launchEnv[KERNEL_SANDBOX_ENV] === 'workspace-write',
     `实际 ${JSON.stringify(launchEnv)}`,
+  );
+}
+
+/**
+ * 换档入口真的能用吗（FR-3.5 尾项）。
+ *
+ * ── 为什么解析规则测过了还要起一个真宿主 ──────────────────────────────
+ * 这一节的要害不是「解析函数认得 config」，而是「宿主在**重启内核那一刻**重新解析」。
+ * 少了那个调用点，界面会呈现最难受的中间态：用户改了、点了重启、什么都没发生，
+ * 而所有单元测试全绿。本项目的规矩是调用点必须有哨兵（见第 6 节的注释）。
+ *
+ * 它会真的写 config.json，所以整个宿主跑在**独立家目录**里（DEEPWORK_HOME）——
+ * 绝不能让测试写到用户真实的配置上。
+ */
+async function sandboxSwitchSection() {
+  section('10) 换档入口：存配置 → 重启内核 → 新档位真的生效（FR-3.5 尾项）');
+  const { DeepworkHost } = require(path.join(ROOT, 'packages/core-host/dist/host.js'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'deepwork-sandbox-mode-home-'));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'deepwork-sandbox-mode-ws-'));
+  process.env.DEEPWORK_HOME = home;
+  const configFile = path.join(home, 'config.json');
+
+  const host = new DeepworkHost({ scheduler: { tickMs: 60_000 } });
+  try {
+    await host.start(workspace);
+    check(
+      '起步：用户没做过选择 → 产品默认 + product-default',
+      host.status().sandbox?.mode === 'workspace-write' && host.status().sandbox?.source === 'product-default',
+      JSON.stringify(host.status().sandbox),
+    );
+
+    // 「只落盘」与「已生效」必须能被区分开：档位是内核进程的启动参数，
+    // 存下来的那一瞬间跑着的内核还是旧档位。界面靠这个中间态才能如实说
+    // 「已保存，重启内核后生效」，而不是假装改了立即生效。
+    host.setConfig({ sandboxMode: 'read-only' });
+    check(
+      '存下选择但还没重启：运行中的内核仍是旧档位（落盘不等于生效）',
+      host.status().sandbox?.mode === 'workspace-write',
+      JSON.stringify(host.status().sandbox),
+    );
+    check(
+      '选择确实写进了 config.json（不是只改了内存）',
+      fs.existsSync(configFile) && JSON.parse(fs.readFileSync(configFile, 'utf8')).sandboxMode === 'read-only',
+      fs.existsSync(configFile) ? fs.readFileSync(configFile, 'utf8') : '无 config.json',
+    );
+
+    await host.restartKernel();
+    check(
+      '重启内核后新档位真的生效，来源标为 config（调用点哨兵）',
+      host.status().sandbox?.mode === 'read-only' && host.status().sandbox?.source === 'config',
+      JSON.stringify(host.status().sandbox),
+    );
+
+    // 旁路压住常规入口。界面必须能看出这一点，否则用户会以为自己刚存的选择丢了。
+    process.env.DEEPWORK_SANDBOX_MODE = 'danger-full-access';
+    try {
+      await host.restartKernel();
+      check(
+        '环境变量在时压过配置（界面据此提示「设置里的选择这次不生效」）',
+        host.status().sandbox?.mode === 'danger-full-access' &&
+          host.status().sandbox?.source === 'env-override',
+        JSON.stringify(host.status().sandbox),
+      );
+    } finally {
+      delete process.env.DEEPWORK_SANDBOX_MODE;
+    }
+
+    await host.restartKernel();
+    check(
+      '撤掉环境变量后再重启，回到配置里的选择（旁路是临时的，不是永久覆盖）',
+      host.status().sandbox?.mode === 'read-only' && host.status().sandbox?.source === 'config',
+      JSON.stringify(host.status().sandbox),
+    );
+
+    let junkError = null;
+    try {
+      host.setConfig({ sandboxMode: 'readonly' });
+    } catch (error) {
+      junkError = error.message;
+    }
+    check(
+      '非法档位在落盘前被拒（坏值进不了 config.json，下次启动不会带着它跑）',
+      typeof junkError === 'string' && junkError.includes('不是合法值'),
+      String(junkError),
+    );
+  } finally {
+    try {
+      await host.stop();
+    } catch {
+      /* 宿主可能本来就没起成 */
+    }
+    try {
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 3 });
+      fs.rmSync(workspace, { recursive: true, force: true, maxRetries: 3 });
+    } catch (error) {
+      console.log(`  [注意] 临时目录未清理干净：${error.message}`);
+    }
+  }
+}
+
+/**
+ * 换档入口的界面接线（读源码，不跑 Electron）。
+ *
+ * ── 读源码为什么也算一条断言 ──────────────────────────────────────────
+ * 这里每一条都对应一个「逻辑写得通、界面却是错的」的具体失败：档位表在渲染层
+ * 又被抄了一遍（两处会漂）、换档只改配置不重启（用户以为生效了、实际没有）、
+ * 最宽那一档与另外两档长得一样（把最危险的选项伪装成同等安全）。
+ * 渲染层在本机没有能跑的验收手段（Electron 二进制装不上，见 DEVLOG 第七轮），
+ * 读源码证明不了「渲染正确」，但能证明「该调的东西调了」—— 这是当前唯一
+ * 能挂进 verify 的守线方式，所以写清楚它守的是什么。
+ */
+function uiWiringSection() {
+  section('11) 换档入口的界面接线（读源码）');
+  const ui = fs.readFileSync(path.join(ROOT, 'apps/desktop/src/components/SettingsPanel.tsx'), 'utf8');
+  const main = fs.readFileSync(path.join(ROOT, 'apps/desktop/electron/main.js'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'apps/desktop/src/styles.css'), 'utf8');
+
+  check(
+    '设置页从契约层取档位表与合法值清单（SANDBOX_MODE_INFO / SANDBOX_MODES），不是自己再写一份',
+    ui.includes('SANDBOX_MODE_INFO') && ui.includes('SANDBOX_MODES'),
+    `SANDBOX_MODE_INFO=${ui.includes('SANDBOX_MODE_INFO')} SANDBOX_MODES=${ui.includes('SANDBOX_MODES')}`,
+  );
+  check(
+    '渲染层不出现档位值字面量（第二份枚举必然会与契约层漂）',
+    !ui.includes("'read-only'") && !ui.includes('"read-only"') && !ui.includes("'danger-full-access'"),
+    '扫描 SettingsPanel.tsx 里的 read-only / danger-full-access 字面量',
+  );
+  check(
+    '「哪一档最宽」也来自契约层（渲染层不自己判断哪个 mode 最危险）',
+    ui.includes("item.emphasis === 'danger'"),
+    '检查最宽档的样式判据',
+  );
+  check(
+    '换档动作真的写配置并重启内核（只落盘不重启 = 用户以为生效了）',
+    ui.includes('sandboxMode: chosen') && ui.includes('await onRestartKernel()'),
+    '检查 applySandboxMode 里那两步',
+  );
+  check(
+    '有「已保存但内核还没跟上」的中间态判据（不假装改了立即生效）',
+    ui.includes('savedMode !== status?.sandbox?.mode'),
+    '检查中间态提示的判定表达式',
+  );
+  check(
+    '壳层放行了换档所需的两条方法（config.set / kernel.restart）',
+    main.includes("'config.set'") && main.includes("'kernel.restart'"),
+    '检查 electron/main.js 的 ALLOWED_METHODS',
+  );
+  check(
+    '最宽那一档单独上色（不与另外两档长得一样）',
+    /\.sandbox-mode-danger[\s\S]{0,240}?var\(--danger\)/.test(css),
+    '检查 styles.css 的 .sandbox-mode-danger',
   );
 }
 
@@ -589,6 +814,11 @@ function hostStatusSection() {
   section('6) 宿主真的把它交出来了吗（status().sandbox）');
   const { DeepworkHost } = require(path.join(ROOT, 'packages/core-host/dist/host.js'));
 
+  // 独立家目录：本节断言的是「用户什么选择都没做时的默认值」。若读到真实
+  // config.json（里面可能已经有 sandboxMode），断的就不是这件事了 ——
+  // 一个会随开发者本机配置变化的断言等于没有断言。
+  process.env.DEEPWORK_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'deepwork-sandbox-status-home-'));
+
   const plain = new DeepworkHost();
   const s1 = plain.status();
   check('status().sandbox 有值（不是只有类型定义）', Boolean(s1.sandbox), JSON.stringify(s1.sandbox));
@@ -630,4 +860,4 @@ function hostStatusSection() {
   }
 }
 
-main();
+void main();
