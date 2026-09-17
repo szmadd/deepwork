@@ -222,6 +222,14 @@ export interface AppConfig {
   treeDepth: number;
   /** 思考过程默认折叠 */
   collapseReasoning: boolean;
+  /**
+   * 左侧活动栏是否展开显示文字标签。
+   *
+   * 收起时是 56px 纯图标栏（悬停出提示），展开后图标旁带功能名。
+   * 默认展开：图标的语义要靠使用者的先验知识，纯图标栏的「认不出哪个是哪个」
+   * 是手动调试期真实出现的反馈；收起入口留在栏底的切换按钮上。
+   */
+  railExpanded: boolean;
   /** 模型端点（见 ModelEndpoint 注释） */
   modelEndpoint: ModelEndpoint;
   /**
@@ -287,6 +295,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   terminalBufferLimit: 200_000,
   treeDepth: 3,
   collapseReasoning: false,
+  railExpanded: true,
   modelEndpoint: { kind: 'official' },
   modelPrices: {},
 };

@@ -135,9 +135,10 @@ run_scene() {
 # 而返回值看起来还是成功的 —— 表面上什么都对，只有截图里少了本该出现的东西。
 # 这个坑真出现过一次（预览弹窗怎么都不出来），所以这里宁可多写一个函数。
 #
-# M2-J 起功能入口从标题栏横排按钮换成了左侧活动栏（rail），因此这里按 title 找图标按钮。
-# 找的是 `title` 而不是文本：rail 项只有图标，没有可读文本 —— 这一点也正是
-# 「点不到就返回 no-rail」必须存在的原因。
+# M2-J 起功能入口从标题栏横排按钮换成了左侧活动栏（rail），因此这里按 title 找按钮。
+# 找的是 `title` 而不是文本：rail 收起时只有图标，展开态虽有文字标签，
+# 但 `title` 在两种状态下都稳定存在（收起/展开是用户可切换的，见 config.railExpanded）——
+# 这一点也正是「点不到就返回 no-rail」必须存在的原因。
 RAIL_HELPER='const openRail=async(label)=>{const b=[...document.querySelectorAll(".rail-item")].find(x=>x.getAttribute("title")===label);if(!b)return "no-rail:"+label;b.click();await new Promise(r=>setTimeout(r,1600));return "ok";};'
 
 SCENES="${*:-chat tree terminal preview hunk settings settings-security sandbox-denial sandbox-escalation skills memory schedule connectors usage browser chart office}"

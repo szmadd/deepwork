@@ -212,6 +212,14 @@ export default function App() {
         onSelect={openView}
         changedCount={agent.changedPaths.size}
         pendingApprovals={agent.approvals.length}
+        /*
+          展开态来自 config（落盘，下次启动保持）。config 未就绪时按默认展开渲染 ——
+          与 DEFAULT_CONFIG.railExpanded 一致，避免「先展开、配置一到又塌回去」的闪烁。
+        */
+        expanded={agent.config?.railExpanded ?? true}
+        onToggleExpand={() =>
+          void agent.updateConfig({ railExpanded: !(agent.config?.railExpanded ?? true) })
+        }
       />
 
       {view === 'chat' ? (

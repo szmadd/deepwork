@@ -8,6 +8,9 @@ interface ActivityRailProps {
   changedCount: number;
   /** 待审批请求数（对话视图的角标）——审批弹窗会盖住界面，角标只是「为什么卡住了」的线索 */
   pendingApprovals: number;
+  /** 展开时图标旁显示文字标签；状态持久化在 config.railExpanded */
+  expanded: boolean;
+  onToggleExpand: () => void;
 }
 
 /**
@@ -16,8 +19,13 @@ interface ActivityRailProps {
  * ── 为什么把横排按钮换成竖排图标 ──
  * 原来「文件 / 终端 / Trajectory / 技能 / 记忆 / 自动化 / 连接器 / 设置」是标题栏里的一排
  * 文字按钮：功能每加一个就要多占一截宽度，窄窗口下只能换行成两三排，把标题挤成一列字。
- * 竖排 rail 的宽度是固定的 56px，第 10 个功能与第 1 个功能占用同样的空间 ——
+ * 竖排 rail 收起时宽度固定 56px，第 10 个功能与第 1 个功能占用同样的空间 ——
  * 这是当前桌面端的主流形态（也是它被选中的真正原因，而不是「好看」）。
+ *
+ * ── 可展开 ──
+ * 纯图标的代价是语义要靠先验知识：手动调试期实测反馈「认不出哪个是哪个」。
+ * 栏底切换按钮在「56px 纯图标」与「148px 图标 + 文字标签」之间切换，
+ * 状态持久化在 `config.railExpanded`（默认展开）。
  *
  * ── 图标为什么是内联 SVG ──
  * 不引图标库：本项目「装完就能跑」是硬约束，多一个依赖就多一份体积与供应链面，
@@ -107,7 +115,7 @@ const ICONS: Record<AppView, ReactElement> = {
 const WORK_VIEWS: AppView[] = ['chat', 'files', 'terminal', 'browser', 'trajectory'];
 const MANAGE_VIEWS: AppView[] = ['skills', 'memory', 'schedules', 'connectors', 'usage'];
 
-export function ActivityRail({ view, onSelect, changedCount, pendingApprovals }: ActivityRailProps) {
+export function ActivityRail({ view, onSelect, changedCount, pendingApprovals, expanded, onToggleExpand }: ActivityRailProps) {
   const item = (id: AppView, label: string, badge?: number) => (
     <button
       type="button"
@@ -120,12 +128,13 @@ export function ActivityRail({ view, onSelect, changedCount, pendingApprovals }:
       <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true">
         {ICONS[id]}
       </svg>
+      {expanded ? <span className="rail-label">{label}</span> : null}
       {badge && badge > 0 ? <span className="rail-badge">{badge > 99 ? '99+' : badge}</span> : null}
     </button>
   );
 
   return (
-    <nav className="rail" aria-label="主导航">
+    <nav className={`rail${expanded ? ' rail-expanded' : ''}`} aria-label="主导航">
       <div className="rail-mark" title="深边AI Work" />
       <div className="rail-group">
         {WORK_VIEWS.map((id) => item(id, APP_VIEW_LABEL[id], id === 'chat' ? pendingApprovals : id === 'files' ? changedCount : undefined))}
@@ -135,6 +144,26 @@ export function ActivityRail({ view, onSelect, changedCount, pendingApprovals }:
         {MANAGE_VIEWS.map((id) => item(id, APP_VIEW_LABEL[id]))}
       </div>
       <div className="rail-spacer" />
+      {/*
+        展开/收起切换：与设置相邻但不是一个视图，语义是「这根栏本身长什么样」。
+        title 与 aria-label 在两种状态下各自说清「点它会变成什么」。
+      */}
+      <button
+        type="button"
+        className="rail-item rail-toggle"
+        onClick={onToggleExpand}
+        title={expanded ? '收起导航栏（只留图标）' : '展开导航栏（显示文字标签）'}
+        aria-label={expanded ? '收起导航栏' : '展开导航栏'}
+      >
+        <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true">
+          {expanded ? (
+            <path {...STROKE} d="M11 4.5 6.5 9l4.5 4.5" />
+          ) : (
+            <path {...STROKE} d="M7 4.5 11.5 9 7 13.5" />
+          )}
+        </svg>
+        {expanded ? <span className="rail-label">收起</span> : null}
+      </button>
       {/* 设置固定底部：它是最不该与日常动作抢注意力的那一项 */}
       {item('settings', APP_VIEW_LABEL.settings)}
     </nav>

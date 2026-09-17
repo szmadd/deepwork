@@ -3368,3 +3368,48 @@ build + typecheck 全清。
 
 接 **CI**（§五末行唯一剩余的运维项）；以及 §七 挂起项（FR-10.5 崩溃上报需接收端、
 跨平台打包需 CI + 双端环境）。
+
+---
+
+## 2026-09-17 · 调试期 · 左侧活动栏可展开显示文字标签
+
+**目标**
+
+手动调试期的第一个真实反馈：左侧活动栏（rail）是纯图标栏，「认不出哪个是哪个」。
+给 rail 加展开态 —— 图标旁显示文字标签，栏底切换按钮在「56px 纯图标」与
+「148px 图标 + 文字」之间切换，状态持久化在 `config.railExpanded`（默认展开）。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/config.ts` | `AppConfig.railExpanded: boolean` + `DEFAULT_CONFIG.railExpanded = true`。不进 `CONFIG_FIELDS`：切换入口在栏上，塞进设置页通用渲染器只会多一个没人找的开关 |
+| `apps/desktop/src/components/ActivityRail.tsx` | 新增 `expanded` / `onToggleExpand` props；展开时图标后渲染 `.rail-label` 文字；栏底新增收起/展开切换按钮（chevron，title/aria-label 随状态说清「点它会变成什么」）；头部注释同步 |
+| `apps/desktop/src/App.tsx` | 接线：`expanded = config?.railExpanded ?? true`，切换走 `updateConfig`（落盘往返，与 lastView 同纪律） |
+| `apps/desktop/src/styles.css` | `.rail-expanded` 一组样式：栏宽 148px、条目改左对齐行、`.rail-label`、`.rail-toggle` |
+| `tools/capture.sh` | 更新 RAIL_HELPER 注释（「rail 项只有图标没有可读文本」已过时；helper 仍按 title 找，两态下都稳定） |
+
+**验证**
+
+```
+npm run build                 # protocol + core-host tsc 通过
+npm run typecheck             # 三包（含 desktop）无输出
+npm run build:renderer -w @deepwork/desktop   # vite build 73 模块，356KB
+node tools/smoke-ipc.js       # 30/30 通过（config 往返链路无回归）
+```
+
+**踩坑与修复**
+
+- 无新技术坑。一条决策记录：默认展开（true）而不是保持收起 —— 与主题默认值是同一类问题
+  （「字段一旦开始被消费，默认值就立刻可见」），这次的可见变更是用户明确要的。
+- 排查过 `host.setConfig`：它是无白名单的浅合并（`{...prev, ...patch}`），新键直接落盘，
+  旧内核进程也能接受该 patch —— 不需要为新字段改宿主。
+
+**遗留**
+
+- 未加 rail 专属截图场景；但 `railExpanded` 默认为 true ⇒ 此后每个 capture 场景拍到的都是展开态。
+  本机 Electron 实测已确认：`rail-expanded` 宽 148px、12 项文字标签齐全（见下一节）。
+
+**下一步**
+
+继续手动调试主线（会话 / 写操作审批 / 技能 / 记忆 / 沙箱档位切换）。

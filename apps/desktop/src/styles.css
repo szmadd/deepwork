@@ -2602,6 +2602,48 @@ pre {
   text-align: center;
 }
 
+/*
+ * 活动栏展开态（config.railExpanded）：图标旁显示文字标签。
+ * 条目从居中方块变为左对齐行；选中色条依旧钉在栏的最左缘（padding 变了，-8px 不变 ——
+ * 它相对的是条目盒，条目盒现在贴着栏内边距）。
+ */
+.rail-expanded {
+  width: 148px;
+  flex-basis: 148px;
+  align-items: stretch;
+  padding: 10px 8px 12px;
+}
+
+.rail-expanded .rail-mark {
+  align-self: center;
+}
+
+.rail-expanded .rail-group {
+  align-items: stretch;
+}
+
+.rail-expanded .rail-divider {
+  width: auto;
+}
+
+.rail-expanded .rail-item {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0 10px;
+  gap: 10px;
+}
+
+.rail-label {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-toggle {
+  flex: 0 0 36px;
+}
+
 /**
  * 整页视图外壳。
  *
