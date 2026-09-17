@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   applySkillCommandCompletion,
   skillCommandCompletion,
@@ -13,12 +13,22 @@ interface ComposerProps {
    * 宿主未就绪或还没拉过清单时是空数组 —— 此时不弹补全（而不是弹一个空列表）。
    */
   skills: SkillRecord[];
+  /** 卡片左下角的附件入口；已附加的清单由 AttachmentBar 画在卡片上方 */
+  onAddAttachment: () => void;
+  /** 动作区里、发送按钮左侧的自定义控件（模式 / 模型 chip，由 App 传入） */
+  controls?: ReactNode;
   onSend: (text: string) => void;
   onAbort: () => void;
 }
 
 /**
- * 输入框 + 技能名补全。
+ * 输入卡片的正文区（输入框 + 动作栏 + 技能名补全）。
+ *
+ * ── 形态 ──────────────────────────────────────────────────────────
+ * 动作栏两端各一个动作：左下角是附件（裸图标「+」），右下角依次是模式 /
+ * 模型 chip 与圆形的发送按钮（空文本时是灰色禁用态）。
+ * 快捷键说明不再占一行文字 —— 它挂在输入框的 title 上，而「输入 / 唤起技能」
+ * 写在 placeholder 里（placeholder 是唯一必然被读到的一行）。
  *
  * ── 补全的判定与插入都在契约层 ──────────────────────────────────────
  * `skillCommandCompletion` / `applySkillCommandCompletion` 住在 protocol：
@@ -31,7 +41,7 @@ interface ComposerProps {
  * 不这样分，用户选中候选按回车会**直接把半截技能名发出去** —— 那是一次
  * 真实的、会消耗额度并可能改文件的误操作，不是「体验稍差」。
  */
-export function Composer({ disabled, running, skills, onSend, onAbort }: ComposerProps) {
+export function Composer({ disabled, running, skills, onAddAttachment, controls, onSend, onAbort }: ComposerProps) {
   const [text, setText] = useState('');
   const [caret, setCaret] = useState(0);
   const [active, setActive] = useState(0);
@@ -109,11 +119,8 @@ export function Composer({ disabled, running, skills, onSend, onAbort }: Compose
       <textarea
         ref={ref}
         className="composer-input"
-        placeholder={
-          disabled
-            ? '等待内核就绪…'
-            : '描述任务，Enter 发送，Shift+Enter 换行；输入 / 可补全技能名'
-        }
+        placeholder={disabled ? '等待内核就绪…' : '描述任务，「/」唤起技能…'}
+        title="Enter 发送 · Shift+Enter 换行 · 输入 / 唤起技能"
         value={text}
         disabled={disabled}
         rows={1}
@@ -161,19 +168,54 @@ export function Composer({ disabled, running, skills, onSend, onAbort }: Compose
           }
         }}
       />
+      {/*
+        动作栏：两端各一个动作。
+        左下角是附件（原来是一枚「+ 附件」文字按钮，现在收成裸图标 ——
+        文字说明挪到它的 title 上，那里本来也需要写清「附件路径会进会话日志」）；
+        右下角是模式 / 模型 chip 与发送，发送是这张卡的主动作，做成圆形主色按钮。
+      */}
       <div className="composer-actions">
-        {running ? (
-          <button type="button" className="btn btn-danger" onClick={onAbort}>
-            中断
-          </button>
-        ) : null}
         <button
           type="button"
-          className="btn btn-primary"
+          className="composer-icon"
+          onClick={onAddAttachment}
+          disabled={disabled}
+          title="添加附件（路径会随本轮对话进入会话日志，Agent 可按需读取）"
+          aria-label="添加附件"
+        >
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+            <path d="M8 3.4v9.2M3.4 8h9.2" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </button>
+
+        {running ? (
+          <button type="button" className="composer-icon composer-stop" onClick={onAbort} title="中断当前任务" aria-label="中断">
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <rect x="4" y="4" width="8" height="8" rx="1.6" fill="currentColor" />
+            </svg>
+          </button>
+        ) : null}
+
+        <span className="composer-actions-gap" />
+        {controls}
+        <button
+          type="button"
+          className="composer-send"
           disabled={disabled || !text.trim()}
           onClick={submit}
+          title="发送（Enter）"
+          aria-label="发送"
         >
-          发送
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+            <path
+              d="M8 12.6V3.9M4.5 7.4 8 3.8l3.5 3.6"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </button>
       </div>
     </div>

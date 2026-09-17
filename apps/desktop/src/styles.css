@@ -795,25 +795,59 @@ pre {
 
 /* ── 输入区 ───────────────────────────────────── */
 
-.composer {
-  border-top: 1px solid var(--border);
-  background: var(--bg);
-  padding: 10px 16px 12px;
+/*
+ * 输入区是「一张卡 + 一行工具」（composer-region）：
+ *   · composer-shell 包住附件清单 + 输入框 + 动作栏，一个圆角边界内完成
+ *     全部输入相关动作，而不是三条各带边框的横带叠在底部；
+ *   · composer-tools 是卡片下沿的工具行（工作区 / 技能 / 内核状态）——
+ *     它们不属于「这一句话」，但都属于「这一轮往哪儿跑、能不能跑」。
+ * 焦点环从输入框本身上移到卡片：焦点语义属于整张卡。
+ */
+.composer-region {
   display: flex;
-  gap: 10px;
-  align-items: flex-end;
-  /* 技能补全弹层相对输入区定位（贴在它上方），否则会被别的层盖住或被裁掉 */
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 16px 14px;
+}
+
+/* 提示与告警横幅在主区顶部时是通栏横带；搬进输入区后与卡片同宽 */
+.composer-region .banner {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+
+.composer-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.composer-shell {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+  box-shadow: 0 2px 10px rgba(15, 18, 24, 0.05);
+  /* 技能补全弹层相对整张卡定位（贴在它上方） */
   position: relative;
 }
 
-/*
- * `/` 技能补全弹层。
- * 右边界留出按钮列的宽度：不避让的话弹层会盖住「发送」，而用户此时正要确认候选。
- */
+.composer-shell:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(77, 107, 254, 0.12);
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 10px 8px;
+}
+
+/* `/` 技能补全弹层（相对 composer-shell 定位，贴在卡片上方） */
 .composer-complete {
   position: absolute;
-  left: 16px;
-  right: 108px;
+  left: 10px;
+  right: 10px;
   bottom: calc(100% - 6px);
   margin: 0;
   padding: 4px;
@@ -854,26 +888,219 @@ pre {
 }
 
 .composer-input {
-  flex: 1;
+  width: 100%;
   resize: none;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 9px 12px;
+  /* 输入框本身无边框无背景：边界属于整张卡（.composer-shell） */
+  background: transparent;
+  border: none;
   outline: none;
+  padding: 8px 4px 4px;
   max-height: 220px;
   line-height: 1.6;
   color: var(--text);
 }
 
-.composer-input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(77, 107, 254, 0.12);
-}
-
+/*
+ * 「+」与发送都是图标按钮：图标是 16px、按钮盒 28px，盒子的左边界因此比图标
+ * 的墨迹靠左 6px。这里往左收 2px，让「+」的墨迹与输入框里文字的起点是同一条线
+ * （输入框自己还有 4px 内边距）。
+ */
 .composer-actions {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
+  margin-left: -2px;
+}
+
+/* 左端是附件、右端是模式/模型与发送：中间的空白把两端推开 */
+.composer-actions-gap {
+  flex: 1;
+}
+
+/* 卡片里的裸图标按钮（附件 / 中断）：无边框无底色，悬停才显形 */
+.composer-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.composer-icon:hover:not(:disabled) {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+.composer-icon:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 中断只是「停下来」，不需要主色去抢发送的位置；危险色足够表达它是终止动作 */
+.composer-stop {
+  color: var(--danger);
+}
+
+.composer-stop:hover:not(:disabled) {
+  background: var(--tint-danger-bg);
+  color: var(--danger);
+}
+
+/* 发送是这张卡的主动作：圆形主色，视线终点 */
+.composer-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #ffffff;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.composer-send:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+/* 空文本或内核未就绪时是灰色禁用态：形状还在，颜色退出视线 */
+.composer-send:disabled {
+  background: var(--bg-4);
+  color: var(--text-faint);
+  cursor: default;
+}
+
+/*
+ * 模式 / 模型 chip：原本是顶栏里的「标签 + 下拉」，现在贴在发送按钮左侧。
+ * 它们决定的是「下一轮怎么跑」，用户按下发送前最后确认的就是这两项，
+ * 所以位置就在发送键旁边，而不是屏幕另一头。
+ */
+.composer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.composer-chip-tag {
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+/*
+ * 下拉是原生控件，长名字一律**硬切**（没有省略号）。两条处置：
+ *  · 宽度给够 —— mock 目录与自定义端点的名字常有二十来个字；
+ *  · 完整名字挂在 chip 的 title 上（见 App.tsx）—— 截断在原生控件里避不掉，
+ *    但「截掉的部分还能查到」是能保证的。
+ */
+.composer-chip select {
+  max-width: 240px;
+  padding: 1px 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 11.5px;
+  outline: none;
+  cursor: pointer;
+}
+
+/* ── 输入区下的工具行 ─────────────────────────── */
+
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 2px;
+}
+
+.tools-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.tools-item:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+/* 工作区只显示末级目录名（完整路径在 title 上）：这一行还要放别的入口 */
+.tools-label {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tools-spacer {
+  flex: 1;
+}
+
+/* 状态 chip 在侧栏里是带边框的独立元件；工具行里它只是行尾的一行小字 */
+.composer-tools .host-chip {
+  margin-bottom: 0;
+  padding: 2px 6px;
+  background: transparent;
+  border-color: transparent;
+}
+
+/* ── 空会话（落地态）──────────────────────────── */
+
+/*
+ * 没有会话时顶栏与对话流都没有东西可说：标题是「未选择会话」、上下文与用量都是空的。
+ * 由样式表把它们收掉，比在 JSX 里再套一层条件更少分叉 —— 而两处的判据必须一致，
+ * 所以判据只能有一处（见 App.tsx 里 `.main-landing` 的注释）。
+ */
+.main-landing .topbar,
+.main-landing .stream {
+  display: none;
+}
+
+/* 只剩输入区了：把它放到底盘中央，与上面的字标成为一个整体 */
+.main-landing .composer-region {
+  width: 100%;
+  max-width: 800px;
+  margin: auto 0;
+  align-self: center;
+}
+
+.landing-brand {
+  margin-bottom: 14px;
+  text-align: center;
+}
+
+.landing-mark {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.landing-sub {
+  margin-top: 6px;
+  color: var(--text-faint);
+  font-size: 12px;
 }
 
 /* ── 按钮 ─────────────────────────────────────── */
@@ -987,7 +1214,7 @@ pre {
 .modal-label {
   color: var(--text-faint);
   font-size: 11px;
-  margin: 8px 0 4px;
+  margin: 6px 0 3px;
 }
 
 .modal-subject {
@@ -1062,7 +1289,7 @@ pre {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  padding: 12px 16px;
+  padding: 10px 14px;
   border-top: 1px solid var(--border);
   background: var(--bg-2);
 }
@@ -1287,29 +1514,6 @@ pre {
   white-space: nowrap;
 }
 
-.topbar-workspace {
-  display: block;
-  max-width: 520px;
-  margin-top: 2px;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--text-faint);
-  font-family: var(--mono);
-  font-size: 11px;
-  text-align: left;
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl; /* 路径过长时优先保留末级目录名 */
-}
-
-.topbar-workspace:hover {
-  color: var(--accent);
-  text-decoration: underline;
-}
-
 .session-workspace {
   margin-top: 2px;
   color: var(--text-faint);
@@ -1510,10 +1714,10 @@ pre {
 }
 
 .modal-hint {
-  margin-top: 8px;
+  margin-top: 4px;
   color: var(--text-faint);
   font-size: 11.5px;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1840,19 +2044,14 @@ pre {
   border-color: var(--accent);
 }
 
-/* ── 附件栏 ───────────────────────────────────── */
+/* ── 附件栏（输入卡片的顶部区域）─────────────── */
 
 .attach-bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 18px 0;
+  padding: 8px 12px 0;
   flex-wrap: wrap;
-}
-
-.attach-empty {
-  color: var(--text-faint);
-  font-size: 11px;
 }
 
 .attach-chips {
@@ -1983,7 +2182,7 @@ pre {
 }
 
 .settings-tab {
-  padding: 8px 14px;
+  padding: 7px 12px;
   border: none;
   background: none;
   color: var(--text-dim);
@@ -1999,7 +2198,7 @@ pre {
 
 .settings-input {
   width: 100%;
-  padding: 6px 9px;
+  padding: 5px 8px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -2065,14 +2264,14 @@ pre {
 
 .settings-field > span {
   display: block;
-  margin: 10px 0 4px;
+  margin: 6px 0 3px;
   color: var(--text-faint);
   font-size: 11.5px;
 }
 
 .settings-kv {
   display: grid;
-  gap: 4px;
+  gap: 2px;
   font-size: 11.5px;
 }
 
@@ -2708,7 +2907,7 @@ pre {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 18px 22px 26px;
+  padding: 12px 20px 20px;
 }
 
 /* 内容自带内边距（文件树 / 终端 / 轨迹）时页体不再补一层，否则会出现双重留白 */

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { HostState, HostStatus, Session } from '@deepwork/protocol';
+import { HostChip } from './HostChip';
 
 interface SidebarProps {
   sessions: Session[];
@@ -14,15 +15,11 @@ interface SidebarProps {
   onRename: (id: string, title: string) => void;
 }
 
-const STATE_LABEL: Record<HostState, string> = {
-  starting: '启动中',
-  ready: '就绪',
-  restarting: '重启中',
-  stopped: '已停止',
-};
-
-/** 只取末级目录名，完整路径放 title 里 —— 侧栏宽度有限，完整路径会把标题挤掉 */
-function baseName(target: string): string {
+/**
+ * 只取末级目录名，完整路径放 title 里 —— 标题那一行宽度有限，完整路径会把别的挤掉。
+ * 侧栏与输入区工具行（App）都用它：同一个「显示哪一段路径」的判据只写一份。
+ */
+export function baseName(target: string): string {
   const parts = target.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? target;
 }
@@ -85,11 +82,7 @@ export function Sidebar({
           </div>
         </div>
 
-        <div className={`host-chip host-${hostState.state}`}>
-          <span className="dot" />
-          {STATE_LABEL[hostState.state]}
-          {status ? ` · ${status.adapter}` : ''}
-        </div>
+        <HostChip state={hostState.state} adapter={status?.adapter} detail={hostState.detail} />
 
         <button type="button" className="btn btn-primary btn-block" onClick={onCreate}>
           新建会话

@@ -11,7 +11,7 @@ import {
 import { formatBytes, describeError } from './api';
 import { ActivityRail } from './components/ActivityRail';
 import { PanelPage } from './components/PanelPage';
-import { Sidebar } from './components/Sidebar';
+import { Sidebar, baseName } from './components/Sidebar';
 import { ChatStream } from './components/ChatStream';
 import { Composer } from './components/Composer';
 import { ApprovalDialog } from './components/ApprovalDialog';
@@ -26,6 +26,7 @@ import { ConnectorsPanel } from './components/ConnectorsPanel';
 import { UsagePanel, formatTokens } from './components/UsagePanel';
 import { BrowserPanel } from './components/BrowserPanel';
 import { AttachmentBar } from './components/AttachmentBar';
+import { HostChip } from './components/HostChip';
 import { useAgent } from './useAgent';
 import { useTheme } from './useTheme';
 
@@ -48,6 +49,18 @@ function modelSourceHint(item: ModelDescriptor): string {
     default:
       return `${item.id} · ${item.label}`;
   }
+}
+
+/**
+ * 下拉里那一行文字。
+ *
+ * 「（自定义端点）」是**显示名的一部分** —— 同一个 id 可能同时来自内核与端点，
+ * 不标记的话两个条目长得一模一样。抽成函数是因为它现在有两个使用点
+ * （选项文字、chip 的 title）：各写一遍的结果是长名字被截断时，
+ * 悬停看到的「全名」和被截断的那一行说的不是同一个东西。
+ */
+function modelOptionLabel(item: ModelDescriptor): string {
+  return `${item.label}${item.source === 'endpoint' ? '（自定义端点）' : ''}`;
 }
 
 /** 打开某个视图前要拉的数据：面板的唯一事实来源在内核侧，不缓存第二份 */
@@ -205,6 +218,88 @@ export default function App() {
 
   const backToChat = () => openView('chat');
 
+  /** 空会话 = 落地态：大字号标 + 输入区居中，顶栏与对话流都让位 */
+  const landing = agent.timeline.length === 0;
+
+  /*
+   * 当前选中的模型条目。
+   *
+   * 为什么要单独取出来：chip 里的下拉是原生控件，长名字会被**硬切**（没有省略号），
+   * 而 mock 目录与自定义端点的名字常有二十来个字。截断在原生控件里避不掉，
+   * 所以完整名字挂到 chip 的 title 上 —— 但那个 title 必须与选项文字同源，
+   * 否则「悬停看到的名字」和「列表里那一行」会各说各的。
+   */
+  const currentModelItem = (agent.catalog?.models ?? []).find((item) => item.id === model);
+
+  /*
+   * 提示与告警收在一个变量里，因为它们的**挂载位置随视图变**：
+   *  · 对话视图 → 贴在输入卡片正上方（参考形态：提示就在你打字的地方，
+   *    「内核正在启动」这句话旁边就是那个被禁用、打不了字的输入框）；
+   *  · 其余页面 → 仍在主区顶部。那几页里输入框不在场，把它藏到屏幕底部
+   *    等于让用户在「什么都点不动」时看不到原因。
+   * 只写一份、两处择一渲染：两份写法迟早只说其中一处。
+   */
+  const notices = (
+    <>
+      {agent.error ? (
+        <div className="banner banner-error">
+          <span>{agent.error}</span>
+          <button type="button" className="icon-btn" onClick={agent.dismissError}>
+            ×
+          </button>
+        </div>
+      ) : null}
+
+      {showStarting ? (
+        <div className="banner banner-warn">
+          {agent.hostState.detail || '内核正在启动，请稍候…'}
+        </div>
+      ) : null}
+
+      {endpointPending && !showStarting ? (
+        <div className="banner banner-warn">
+          <span>
+            模型端点配置已改，但内核仍是按<strong>旧端点</strong>启动的 ——
+            现在发消息会打到旧端点（内网环境下就是「一直没有回应」）。
+          </span>
+          <button
+            type="button"
+            className="btn-tiny"
+            disabled={endpointRestarting || running}
+            title={running ? '有正在运行的任务，先中断或等它结束' : '停止并重新拉起内核进程，使端点配置生效'}
+            onClick={() => void restartForEndpoint()}
+          >
+            {endpointRestarting ? '重启中…' : '重启内核使配置生效'}
+          </button>
+          {endpointRestartError ? <span className="banner-detail">{endpointRestartError}</span> : null}
+        </div>
+      ) : null}
+
+      {agent.notifyWarning ? (
+        <div className="banner banner-warn">
+          <span>桌面通知未能发出：{agent.notifyWarning}（窗口切走时不会收到提醒）</span>
+          <button type="button" className="icon-btn" onClick={agent.dismissNotifyWarning}>
+            ×
+          </button>
+        </div>
+      ) : null}
+
+      {agent.scheduleNotice ? (
+        <div className="banner banner-info schedule-notice">
+          <span>
+            定时任务「{agent.scheduleNotice.title}」已触发，正在另一个会话中运行。
+          </span>
+          <button type="button" className="btn-tiny" onClick={() => void agent.dismissScheduleNotice(true)}>
+            跳转到会话
+          </button>
+          <button type="button" className="icon-btn" onClick={() => void agent.dismissScheduleNotice(false)}>
+            ×
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+
   return (
     <div className="app">
       <ActivityRail
@@ -237,67 +332,15 @@ export default function App() {
         />
       ) : null}
 
-      <main className="main">
-        {/*
-          横幅放在视图切换之外：内核起不来时，用户在哪个页面都需要看见这一句。
-          把它塞进对话视图会让「为什么什么都点不动」只在某一个页面上有答案。
-        */}
-        {agent.error ? (
-          <div className="banner banner-error">
-            <span>{agent.error}</span>
-            <button type="button" className="icon-btn" onClick={agent.dismissError}>
-              ×
-            </button>
-          </div>
-        ) : null}
-
-        {showStarting ? (
-          <div className="banner banner-warn">
-            {agent.hostState.detail || '内核正在启动，请稍候…'}
-          </div>
-        ) : null}
-
-        {endpointPending && !showStarting ? (
-          <div className="banner banner-warn">
-            <span>
-              模型端点配置已改，但内核仍是按<strong>旧端点</strong>启动的 ——
-              现在发消息会打到旧端点（内网环境下就是「一直没有回应」）。
-            </span>
-            <button
-              type="button"
-              className="btn-tiny"
-              disabled={endpointRestarting || running}
-              title={running ? '有正在运行的任务，先中断或等它结束' : '停止并重新拉起内核进程，使端点配置生效'}
-              onClick={() => void restartForEndpoint()}
-            >
-              {endpointRestarting ? '重启中…' : '重启内核使配置生效'}
-            </button>
-            {endpointRestartError ? <span className="banner-detail">{endpointRestartError}</span> : null}
-          </div>
-        ) : null}
-
-        {agent.notifyWarning ? (
-          <div className="banner banner-warn">
-            <span>桌面通知未能发出：{agent.notifyWarning}（窗口切走时不会收到提醒）</span>
-            <button type="button" className="icon-btn" onClick={agent.dismissNotifyWarning}>
-              ×
-            </button>
-          </div>
-        ) : null}
-
-        {agent.scheduleNotice ? (
-          <div className="banner banner-info schedule-notice">
-            <span>
-              定时任务「{agent.scheduleNotice.title}」已触发，正在另一个会话中运行。
-            </span>
-            <button type="button" className="btn-tiny" onClick={() => void agent.dismissScheduleNotice(true)}>
-              跳转到会话
-            </button>
-            <button type="button" className="icon-btn" onClick={() => void agent.dismissScheduleNotice(false)}>
-              ×
-            </button>
-          </div>
-        ) : null}
+      {/*
+        `.main-landing` 是空会话（落地态）的外观开关：那一刻顶栏与对话流都没有
+        东西可说 —— 标题是「未选择会话」、上下文与用量都是空的，而模式 / 模型 /
+        工作区三项此时住在输入卡片与它的工具行里。由样式表把它们收掉，
+        比在 JSX 里再套一层条件更少分叉（两处的判据必须一致，只能有一处）。
+      */}
+      <main className={`main${landing && view === 'chat' ? ' main-landing' : ''}`}>
+        {/* 对话视图里这组横幅挂在输入卡片上方（见 composer-region），其余页面留在主区顶部 */}
+        {view === 'chat' ? null : notices}
 
         {view === 'chat' ? (
           <>
@@ -315,56 +358,9 @@ export default function App() {
                   </span>
                   {agent.current ? <span className="topbar-id">{agent.current.id}</span> : null}
                 </div>
-                {/*
-                  工作区放在标题下方并以按钮形式呈现：它是 Agent 全部文件操作的边界，
-                  用户随时能看见「它现在能碰哪些文件」，比藏在设置里更安全。
-                */}
-                {agent.current ? (
-                  <button
-                    type="button"
-                    className="topbar-workspace"
-                    title="当前会话绑定的工作区；点击可另选目录开新会话"
-                    onClick={() => void agent.openWorkspace()}
-                  >
-                    {agent.current.workspace}
-                  </button>
-                ) : null}
               </div>
 
               <div className="topbar-controls">
-                <label className="control">
-                  <span>模式</span>
-                  <select value={mode} onChange={(event) => setMode(event.target.value as AgentMode)}>
-                    {MODES.map((item) => (
-                      <option value={item} key={item}>
-                        {AGENT_MODE_LABEL[item]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                {/*
-                  模型清单的条目来源不止一种（内核真帧 / 自定义端点 / mock），
-                  标记跟着条目走而不是跟着页面走：同一次里用户可能正在看一份
-                  「内核公布的官方模型 + 自己配的端点模型」混在一起的清单。
-                */}
-                <label className="control">
-                  <span>模型</span>
-                  <select value={model} onChange={(event) => setModel(event.target.value)}>
-                    {/* 清单为空时也要能显示当前会话正在用的模型：否则用户面对一个空下拉，
-                        看到的结论是「没有模型可用」，而实际上会话正跑在某个模型上 */}
-                    {(agent.catalog?.models.length ?? 0) === 0 ? (
-                      <option value={model}>{model || '默认'}</option>
-                    ) : null}
-                    {(agent.catalog?.models ?? []).map((item) => (
-                      <option value={item.id} key={`${item.source}:${item.id}`} title={modelSourceHint(item)}>
-                        {item.label}
-                        {item.source === 'endpoint' ? '（自定义端点）' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
                 {/*
                   上下文占用：内核上报的「现在装了多少 / 最多能装多少」。
                   真实内核在每条助手消息后各报一次，取最近一次（写在会话 meta 上，
@@ -425,23 +421,151 @@ export default function App() {
               </div>
             </header>
 
+            {/*
+              对话流。空会话（落地态）下它由 `.main-landing` 收起 ——
+              那一刻没有一行内容可显示，而渲染出来只会多一个「开始一个新任务」的
+              空态块，跟居中字标抢同一句话的位置。
+            */}
             <ChatStream items={agent.timeline} onFork={(atSeq) => void agent.forkSession(atSeq)} />
 
-            <AttachmentBar
-              attachments={agent.attachments}
-              onAdd={() => void agent.addAttachments()}
-              onRemove={agent.removeAttachment}
-              onPreview={setPreviewAttachment}
-              disabled={disabled}
-            />
+            {/*
+              输入区。外框面板里放两张东西：
+                1. 卡片本体（白色、圆角）：附件清单（有才出现）+ 输入框 + 动作栏；
+                2. 工具行：左「工作区」「技能」，右内核状态。
+              `+` / 模式 / 模型 / 发送都在动作栏里（见 Composer）——
+              原先它们散在顶栏与附件行，用户每发一句话要跨半个屏幕找一遍。
 
-            <Composer
-              disabled={disabled}
-              running={running}
-              skills={agent.skills}
-              onSend={(text) => void agent.send(text, { mode, model })}
-              onAbort={() => void agent.abort()}
-            />
+              提示与告警横幅挂在这一整块的上方、与卡片同宽：它们说的是
+              「你现在为什么发不出消息」，而这句话最该出现的地方就是输入框旁边。
+            */}
+            <div className={`composer-region${landing ? ' composer-region-landing' : ''}`}>
+              {landing ? (
+                <div className="landing-brand">
+                  <div className="landing-mark">深边AI Work</div>
+                  <div className="landing-sub">
+                    内核会真实地读写工作区文件、执行命令，并在需要时向你申请授权。
+                  </div>
+                </div>
+              ) : null}
+
+              {notices}
+
+              <div className="composer-panel">
+                <div className="composer-shell">
+                  <AttachmentBar
+                    attachments={agent.attachments}
+                    onRemove={agent.removeAttachment}
+                    onPreview={setPreviewAttachment}
+                  />
+
+                  <Composer
+                    disabled={disabled}
+                    running={running}
+                    skills={agent.skills}
+                    onAddAttachment={() => void agent.addAttachments()}
+                    /*
+                      模式与模型原先住在顶栏。它们决定的是「下一轮怎么跑」，
+                      放在输入框右手边、发送按钮之前，比放在屏幕另一头更贴题 ——
+                      用户按下发送前最后确认的东西就在这里。
+                    */
+                    controls={
+                      <>
+                        <label className="composer-chip" title={`本轮对话的模式：${AGENT_MODE_LABEL[mode]}`}>
+                          <span className="composer-chip-tag">模式</span>
+                          <select value={mode} onChange={(event) => setMode(event.target.value as AgentMode)}>
+                            {MODES.map((item) => (
+                              <option value={item} key={item}>
+                                {AGENT_MODE_LABEL[item]}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        {/*
+                          模型清单的条目来源不止一种（内核真帧 / 自定义端点 / mock），
+                          标记跟着条目走而不是跟着页面走：同一次里用户可能正在看一份
+                          「内核公布的官方模型 + 自己配的端点模型」混在一起的清单。
+                          title 里同时给出「显示名」与「来源」：下拉那一行可能被硬切，
+                          而这两件事都是判断界面可信度的信息，不能被截掉。
+                        */}
+                        <label
+                          className="composer-chip"
+                          title={
+                            currentModelItem
+                              ? `本轮对话使用的模型：${modelOptionLabel(currentModelItem)}\n${modelSourceHint(currentModelItem)}`
+                              : `本轮对话使用的模型：${model || '默认（跟随内核）'}`
+                          }
+                        >
+                          <span className="composer-chip-tag">模型</span>
+                          <select value={model} onChange={(event) => setModel(event.target.value)}>
+                            {/* 清单为空时也要能显示当前会话正在用的模型：否则用户面对一个空下拉，
+                                看到的结论是「没有模型可用」，而实际上会话正跑在某个模型上 */}
+                            {(agent.catalog?.models.length ?? 0) === 0 ? (
+                              <option value={model}>{model || '默认'}</option>
+                            ) : null}
+                            {(agent.catalog?.models ?? []).map((item) => (
+                              <option value={item.id} key={`${item.source}:${item.id}`} title={modelSourceHint(item)}>
+                                {modelOptionLabel(item)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </>
+                    }
+                    onSend={(text) => void agent.send(text, { mode, model })}
+                    onAbort={() => void agent.abort()}
+                  />
+                </div>
+
+                <div className="composer-tools">
+                  {/*
+                    工作区从顶栏搬到这里：它仍然是「Agent 全部文件操作的边界」，
+                    用户随时能看见它现在能碰哪些文件。只显示末级目录名
+                    （完整路径在 title 上），因为这一行还要放别的入口。
+                  */}
+                  <button
+                    type="button"
+                    className="tools-item"
+                    onClick={() => void agent.openWorkspace()}
+                    title={`当前会话绑定的工作区：${agent.current?.workspace ?? '未选择会话'}\n点击可另选目录开新会话`}
+                  >
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                      <path
+                        d="M2.4 5.2h3.5l1.2 1.7h6.5v5.2a1 1 0 0 1-1 1H3.4a1 1 0 0 1-1-1V5.2Z"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.3"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    <span className="tools-label">
+                      {agent.current ? baseName(agent.current.workspace) : '未选择会话'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="tools-item"
+                    onClick={() => openView('skills')}
+                    title="已安装的技能：在输入框打 / 可以唤起它们"
+                  >
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                      <path
+                        d="M8 2.6 9.3 6l3.4 1.3L9.3 8.6 8 12 6.7 8.6 3.3 7.3 6.7 6 8 2.6Z"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.3"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    <span className="tools-label">技能</span>
+                  </button>
+
+                  <span className="tools-spacer" />
+                  <HostChip state={agent.hostState.state} adapter={agent.status?.adapter} detail={agent.hostState.detail} />
+                </div>
+              </div>
+            </div>
           </>
         ) : null}
 

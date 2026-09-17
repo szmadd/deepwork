@@ -141,7 +141,7 @@ run_scene() {
 # 这一点也正是「点不到就返回 no-rail」必须存在的原因。
 RAIL_HELPER='const openRail=async(label)=>{const b=[...document.querySelectorAll(".rail-item")].find(x=>x.getAttribute("title")===label);if(!b)return "no-rail:"+label;b.click();await new Promise(r=>setTimeout(r,1600));return "ok";};'
 
-SCENES="${*:-chat tree terminal preview hunk settings settings-security sandbox-denial sandbox-escalation skills memory schedule connectors usage browser chart office}"
+SCENES="${*:-chat composer tree terminal preview hunk settings settings-security sandbox-denial sandbox-escalation skills memory schedule connectors usage browser chart office}"
 
 for scene in $SCENES; do
   case "$scene" in
@@ -152,6 +152,15 @@ for scene in $SCENES; do
       # 都是这一轮新增的文案，图上分不清「没渲染」与「渲染成空」的区别。
       run_scene "ui-chat" ".stream" \
         "$RAIL_HELPER await openRail('对话'); const m=document.querySelector('.context-meter'); const u=document.querySelector('.usage-btn'); return 'ctx:'+(m?m.textContent:'none')+' | usage:'+(u?u.textContent:'none');" \
+        "0"
+      ;;
+    composer)
+      # 输入卡（附件清单 + 无边框输入框 + 动作栏）与它下方工具行的形态。
+      # 聚焦整块输入区而不是输入框本身：「一眼看全这张卡」才是要拍的画面。
+      # 回执回读动作栏的**横向次序** —— 只截图不回读的话，「chip 不见了」与
+      # 「chip 被挤出卡片」在图上分不出来，而后者正是这一版最该被看见的失败形态。
+      run_scene "ui-composer" ".composer-region" \
+        "const q=(s)=>document.querySelector(s); const kids=[...document.querySelectorAll('.composer-actions > *')].map(x=>x.className).join('>'); return 'rows:'+JSON.stringify({attach:!!q('.composer-icon'),send:!!q('.composer-send'),chips:document.querySelectorAll('.composer-chip').length,tools:document.querySelectorAll('.tools-item').length,chipsText:[...document.querySelectorAll('.composer-chip select')].map(x=>x.options[x.selectedIndex].text)})+' order:'+kids;" \
         "0"
       ;;
     tree)

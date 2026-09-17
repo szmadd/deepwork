@@ -3463,3 +3463,110 @@ node tools/chart-test.js     # 127/127 通过
 **下一步**
 
 用户重启内核后重试真实对话；继续手动调试主线。
+
+---
+
+## 2026-09-17 · 调试期 · 输入区改版：三条横带 → 一张卡 + 一行工具
+
+**目标**
+
+手动调试期的第二个真实反馈：输入区是「三条各带边框的横带」叠在窗口底部 —— 附件栏一条、
+输入框一条，而模式 / 模型两个下拉还住在屏幕另一头的顶栏里。发一句话要在半个屏幕上找三处入口。
+
+改版形态（对齐 Kimi Work / WorkBuddy 一类现代 Agent 产品的输入区）：
+
+- **一张卡**（`composer-shell`）：附件清单（有才出现）+ 无边框输入框 + 动作栏；焦点环属于整张卡；
+- **动作栏两端各一个动作**：左下角裸图标「+」（附件），右下角依序是模式 chip、模型 chip、
+  圆形主色发送键（空文本时灰色禁用态）；
+- **卡片下沿一行工具**（`composer-tools`）：工作区（末级目录名）、技能、行尾内核状态；
+- 模式 / 模型从顶栏搬进卡内；工作区从顶栏搬到工具行；
+- **提示与告警横幅**在对话视图里挂在卡片正上方（其余页面仍在主区顶部）。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `apps/desktop/src/components/HostChip.tsx`（新） | 内核状态 chip 抽成组件：它在「会话列表上方」与「输入区工具行右端」两处同框，四个状态词是同一份判据 —— 各写一遍迟早对不上，而对不上的那天画面上会同时站着两个互相矛盾的结论。外观差异留给使用方（`.composer-tools .host-chip` 收掉边框与留白） |
+| `apps/desktop/src/components/Composer.tsx` | 新增 `onAddAttachment` / `controls` props；动作栏重排（`+` / 中断 / 撑开的空隙 / 模式与模型 chip / 圆形发送）；快捷键说明从占一行的常驻小字改为输入框 `title`，placeholder 只留「描述任务，「/」唤起技能…」 |
+| `apps/desktop/src/components/AttachmentBar.tsx` | 只画清单、不再画入口：空附件时返回 `null`（不再占一行 + 一句空态说明）；说明文案（路径会随本轮进入会话日志）跟着入口移到它的 `title` 上 |
+| `apps/desktop/src/components/Sidebar.tsx` | 状态 chip 换成 `<HostChip>`；`baseName()` 导出 —— 工具行也要显示末级目录名，同一判据只写一份 |
+| `apps/desktop/src/App.tsx` | 横幅收进 `notices` 变量（挂载点随视图变）；`landing`（空会话落地态）与 `.main-landing`；`composer-region / -panel / -tools` 三段结构；模式 / 模型 chip 与工作区入口的接线；`modelOptionLabel()` 抽出（选项文字与 chip 的 `title` 同源） |
+| `apps/desktop/src/styles.css` | 新增 `.composer-region/-panel/-tools`、`.composer-icon/-send/-stop/-chip/-actions-gap`、`.tools-item/-label/-spacer`、`.main-landing`、`.landing-brand/-mark/-sub`；删掉失效的 `.topbar-workspace`、`.attach-empty`、`.composer-hint`、`.btn-send` |
+| `tools/capture.sh` | 新增 `composer` 场景并进默认场景表：聚焦 `.composer-region`，回读动作栏的横向次序与两个 chip 的当前值 |
+
+**关键设计判断**
+
+1. **入口与清单分居两处**：`+` 属于动作栏（每次输入都要看得见），附件清单属于「这一轮带了什么」
+   （有才出现，没有就不占一行）。空态说明跟着入口走，挂在它的 `title` 上。
+2. **落地态由样式表收顶栏，不在 JSX 里加条件**：判据（`timeline.length === 0`）只能有一处 ——
+   在 JSX 里再套一层 `display` 条件，就意味着两处的判据必须永远一致。
+3. **模型 chip 的长名字**：原生 `<select>` 对超长选项是**硬切**（没有省略号），而 mock 目录与
+   自定义端点的名字常有二十来个字。两条处置一起上：`max-width` 给到 240px，完整名字 + 来源
+   挂到 chip 的 `title` 上（`modelOptionLabel` / `modelSourceHint` 与选项文字同源）。
+4. **`.composer-actions { margin-left: -2px }`**：图标 16px 装在 28px 的按钮盒里，盒子左边界
+   比墨迹靠左 6px；不收这 2px，「+」的墨迹与输入框里文字的起点差 5px（像素级取证发现，见下）。
+
+**验证**
+
+```
+npm run build                                             # protocol + core-host tsc 通过
+npm run typecheck                                         # protocol + core-host
+npm run typecheck -w @deepwork/desktop                    # 渲染层
+npm run build:renderer -w @deepwork/desktop               # vite 74 模块，358KB
+node tools/verify-all.js                                  # exit 0：31/31 全绿
+```
+
+改动只落在渲染层，但读源码的套件会扫 `App.tsx` / `styles.css`，所以六个相关套件单独点过一遍：
+theme 24/24、notify 29/29、routing 39/39、completion 29/29、chart 127/127、sandbox 62/62。
+整链 `verify` 本轮 **31/31 全绿**（连两个已知环境性失败也过了 —— 它们的通过本来就随环境漂，
+不能反过来当作「本轮改好了」的证据）。
+
+本机 Electron 实测（`DEEPWORK_CAPTURE` 通道 + 一段 DOM 回读探针，脚本与图在 `artifacts/`）：
+
+| 场景 | 图 | 回读结论 |
+|---|---|---|
+| 落地态（空会话、不发提示） | `ui-composer-landing.png` | `.main-landing` 生效（顶栏 / 对话流 `display:none`）；卡片 768 宽 vs 主区 1128，卡中心与主区中心差 21px；rail `rail-expanded` 宽 148 + 12 项文字标签 |
+| 有对话（骨架 prompt 跑完一轮） | `ui-composer-chat.png` | 卡 1096×76、工具行 24px、`spill []`、`overlap []`、`textOverlap []` |
+| 输入框有字 | `ui-composer-fill.png` | `send:{disabled:false, bg:"rgb(77, 107, 254)"}` = 主色；`modelSelect:{width:226, text:"Mock Echo（无推理，仅用于链路验证）"}` 全名不再被切 |
+| 内核起不来（数据目录指向不存在的盘） | `ui-composer-error.png` | `banner:[596,398,768,38]` 落在 `.composer-region` 内、与卡片同宽同 x ⇒ 横幅确实搬到了输入框上方 |
+
+四张图里新选择器 `present` 全为真（`.composer-actions-gap` 与 `.tools-spacer` 高度为 0 是设计如此 ——
+它们是撑开两端的 flex 空隙，不是缺失）；`stale` 四项全 0（`.composer-hint` / `.btn-send` /
+`.attach-empty` / `.topbar-workspace` 在渲染层已不存在）。
+
+**踩坑与修复**
+
+1. **「宽 168px + 无省略号」= 模型名被硬切**（探针没提，只靠读源码也看不出来）。
+   像素级审查发现 chip 里显示的是「Mock Echo（无推理，仅用于」—— 最后一个字后面直接是下拉箭头，
+   没有半个残字的痕迹，说明是硬切而非折行；而 chip 的 `title` 只写了「本轮对话使用的模型」，
+   兜不住被切掉的部分。`max-width: 168px` 与 `240px` 在源码里看起来同样合理，区别只在真实名字有多长。
+   → 240px + 动态 title（全名 + id + 来源 + 上下文窗口）。
+2. **「原生 setter + `dispatchEvent('input')`」改不动 React 的受控状态**：用它把文字填进输入框后，
+   截图里出现「框里有字、发送键还是灰的」这种自相矛盾的画面 —— DOM 的值变了，`text` 状态没变
+   （React 只在重新渲染时才同步 DOM）。改用 `document.execCommand('insertText')`（走真实编辑管线）
+   后回读到 `send.disabled=false`。**要拍「有字时」的状态就得用真的输入路径，否则拍出来的是一张假画面。**
+3. **横幅只靠 `DEEPWORK_ADAPTER` 逼不出来**：宿主选型是「配置优先、环境变量兜底」，而且认不出的
+   适配器会落进 `auto` 分支 → 仍然起 mock → 内核就绪 → 横幅根本不出现（第一版 error 场景拍到的图
+   与落地态**逐字节相同**，图本身却「看起来成功」）。改为把 `DEEPWORK_HOME` 指向不存在的盘，
+   宿主落不下数据 → 横幅出现。
+4. **图对了不等于画面能复现**：`artifacts/demo-workspace` 已不在本机，而 `tools/capture.sh` 有
+   「演示工作区必须存在」的守卫 ⇒ 新增的 `composer` 场景**跑不了** `bash tools/capture.sh composer`
+   （守卫挡下的是全部场景，不只这一个）。处置：把该场景的脚本原样单独跑了一遍（同一条截图通道），
+   回执 `rows:{attach:true,send:true,chips:2,tools:2,chipsText:["程序化工具调用","Mock Echo（无推理，仅用于链路验证）"]}
+   order:composer-icon>composer-actions-gap>composer-chip>composer-chip>composer-send` 命中，
+   脚本本身可用；整链路径待演示工作区重建后再跑。
+
+**遗留**
+
+- **附件清单在卡片内的形态未取证**：`+` 会打开系统文件对话框，无头环境跑不出「已附加 N 个文件」的画面；
+  这条路径只到读源码 + `tsc`。
+- **`bash tools/capture.sh composer` 整链未跑通**：本机缺 `artifacts/demo-workspace`（gitignore 的本地脚手架），
+  守卫拒绝启动。场景已注册进默认场景表，脚本内容已单独验证。
+- 悬停 / 深色主题下的输入卡片未取证（静态截图给不了；焦点环只在 fill 那张里间接出现过 ——
+  那一帧回读到的 `boxShadow` 是 `0 0 0 3px rgba(77, 107, 254, 0.12)`）。
+- 窄窗口（`minWidth: 1080`）下两个 chip 与发送键的收缩行为未取证。
+
+**下一步**
+
+继续手动调试主线（会话 / 写操作审批 / 技能 / 记忆 / 沙箱档位切换）；补回 `artifacts/demo-workspace`
+后跑一遍完整 `capture.sh`（含新场景）。
