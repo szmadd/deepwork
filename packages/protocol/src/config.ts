@@ -11,6 +11,7 @@
  */
 
 import type { PipSource } from './deploy';
+import type { SandboxMode } from './security';
 import type { AgentMode } from './session';
 import type { ModelPrice } from './usage';
 
@@ -152,6 +153,23 @@ export interface AppConfig {
    * 「测试连通」动作，塞进通用渲染器只会得到一个渲染不出来的输入框。
    */
   pipSource?: PipSource;
+  /**
+   * 内核沙箱档位（FR-3.5 尾项：把「切换入口」从环境变量搬进设置页）。
+   *
+   * **不设默认值**：缺省 = 用户没选过，落到产品默认（与内核默认一致）。
+   * 刻意不给它写一个 `sandboxMode: 'workspace-write'` 的默认值 —— 那会让
+   * 「用户明确选了限定工作区」与「用户从没碰过这一项」变成同一件事，
+   * 界面就没法如实区分「你选的」与「产品默认」，而这两句话的下一步动作不同。
+   *
+   * 生效语义与 modelEndpoint 同类但更硬：档位是**内核进程的启动参数**
+   * （见 core-host/src/security/sandbox.ts），存下来只是记下了意图，
+   * 必须重启内核才真的换档 —— 所以宿主在 `restartKernel()` 里重新解析一次，
+   * 界面据此可以给出「已保存，重启内核后生效」这种诚实的中间态提示。
+   *
+   * 刻意不放进 CONFIG_FIELDS：它带重启语义与三档后果说明，需要专门的控件，
+   * 塞进通用渲染器只会得到一个不知道后果的普通下拉框。
+   */
+  sandboxMode?: SandboxMode;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {

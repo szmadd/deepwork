@@ -127,13 +127,70 @@ export const SANDBOX_MODES: readonly SandboxMode[] = [
 ];
 
 /**
+ * 取值是否落在合法档位里。
+ *
+ * 白名单判定只此一处：启动解析、配置校验、界面回填都调它。
+ * 各写一份 `includes` 的后果不是重复，而是**它们会分别漂**——
+ * 内核加第四档时总有一处漏改，漏掉的那处会把合法值判成非法。
+ */
+export function isSandboxMode(value: unknown): value is SandboxMode {
+  return typeof value === 'string' && (SANDBOX_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * 三个档位的界面文案与**具体后果**，顺序同 `SANDBOX_MODES`（由窄到宽）。
+ *
+ * 设置面板直接按这个数组渲染选项，不自己再排一遍顺序 —— 档位的宽窄关系是内核事实，
+ * 在渲染层复制一份，就会出现「界面上的排列顺序与内核的宽窄顺序不一致」这种
+ * 没有任何报错的错误。
+ *
+ * `consequence` 刻意写**会发生什么**，而不是「更安全 / 更自由」这类形容词：
+ * 用户要判断的是「模型能对我的文件做什么」，形容词帮不上这个判断。
+ * 三句话都与 `tools/sandbox-test.js` 当场跑出来的帧一致，不是从 README 抄的措辞。
+ */
+export const SANDBOX_MODE_INFO: readonly {
+  mode: SandboxMode;
+  label: string;
+  consequence: string;
+  /**
+   * 界面是否该对这一档另眼相看（目前只有最宽的那一档有）。
+   *
+   * 放在契约层而不是让渲染层判断「哪个 mode 字符串最危险」：那等于把
+   * 「三档的宽窄关系」这份知识又抄一份进界面，内核将来加档位时它会静默失准 ——
+   * 而失准的表现恰是「最危险的选项长得和别的选项一样」。
+   */
+  emphasis?: 'danger';
+}[] = [
+  {
+    mode: 'read-only',
+    label: '只读',
+    consequence: '模型在内核里跑的命令一个文件也写不了，工作区内同样被拒 —— 改代码这类主要用途会当场失效',
+  },
+  {
+    mode: 'workspace-write',
+    label: '限定工作区（推荐）',
+    consequence: '工作区内可写；越界写被内核拒绝，届时模型可带一次升级申请重试，那一步会弹审批问你',
+  },
+  {
+    mode: 'danger-full-access',
+    label: '不限制',
+    consequence: '模型在内核里跑的命令可写任意路径，含工作区外与系统目录 —— 这道闸不再拦任何写入',
+    emphasis: 'danger',
+  },
+];
+
+/**
  * 该模式是谁定的。
  *
  * 模式只在**内核启动**时生效（`dsh-sandbox-policy` 的 `mode` 是插件配置，
  * 而 ACP 侧没有暴露它的运行时切换 —— 见 `dsh-acp` README「不支持界面」一节），
  * 所以「当前值从哪来」必须由宿主记住并交出来，界面才有的可说。
+ *
+ * `config` = 用户在设置页里选的（存 config.json），它是**常规入口**；
+ * `env-override` = 环境变量，优先级最高，属于运维/排障用的旁路 ——
+ * 有它在时设置页的选择不生效，界面必须把这件事说出来，否则用户会以为自己的选择没保存。
  */
-export type SandboxModeSource = 'product-default' | 'env-override';
+export type SandboxModeSource = 'product-default' | 'config' | 'env-override';
 
 export interface SandboxStatus {
   /** 内核进程启动时拿到的模式 */
@@ -141,10 +198,11 @@ export interface SandboxStatus {
   /** 该值的来源 */
   source: SandboxModeSource;
   /**
-   * 覆盖值给了但不可用时留下的原值。
+   * 覆盖值给了但不可用时留下的原值（环境变量或配置里那个拼错的值）。
    *
-   * 有值时说明「有人想设一个模式，但那个值不合法，实际用的是默认值」——
-   * 界面必须把它显示出来。静默回落到默认会让设错的人以为自己的设置生效了，
+   * 有值时说明「有人想设一个档位，但那个值不合法」—— 宿主会记下它、跳过它，
+   * 继续往下找下一个来源（环境变量坏掉时，设置页里的选择仍然算数），
+   * 界面必须把这个值显示出来。静默丢弃会让设错的人以为自己的设置生效了，
    * 而权限这类设置上「以为生效了」正是最不该出现的状态。
    */
   rejected?: string;
