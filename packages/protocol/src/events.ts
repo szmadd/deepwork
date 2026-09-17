@@ -33,7 +33,8 @@ export type AgentEventType =
   | 'usage'
   | 'context.usage'
   | 'run.completed'
-  | 'run.failed';
+  | 'run.failed'
+  | 'run.notice';
 
 interface EventBase {
   /** 事件类型 */
@@ -240,6 +241,35 @@ export interface RunFailedEvent extends EventBase {
   retryable: boolean;
 }
 
+/**
+ * 非致命提示：这一轮照常跑，但有件事你该知道。
+ *
+ * ── 为什么不复用 `run.failed` ────────────────────────────────────────
+ * 两者对用户的意义完全相反：`run.failed` 是「这一轮完了」，notice 是
+ * 「我提醒你，但我不拦你」。合成一种事件后，界面只能靠读 message 猜严重程度，
+ * 而猜错的两种后果都不好 —— 把提示画成失败会让人以为任务没跑（于是重跑一遍），
+ * 把失败画成提示会让人以为没事（于是等一个永远不会来的结果）。
+ *
+ * ── 第一条用法：端点最近一次探测不可达 ──────────────────────────────
+ * 见 `endpointProbeNotice`。那里刻意**不拦**：`/models` 不是 OpenAI 兼容端点的
+ * 强制面，探不通不等于用不了，拦下会打断本来能跑的部署。
+ */
+export interface RunNoticeEvent extends EventBase {
+  type: 'run.notice';
+  runId: string;
+  level: 'info' | 'warn';
+  /** 发生了什么（一句话，不含建议） */
+  message: string;
+  /** 可行动的建议；没有就不给，不编一句「请检查配置」凑数 */
+  remedy?: string;
+  /**
+   * 结论的依据。**界面要照实显示它** ——
+   * 端点不可达这条提示的依据不是「此刻测了一次」，而是「最近一次探测（某时刻）
+   * 的结果」；不写出来的话，用户会把一条过期结论当成实时状态去排障。
+   */
+  basis?: string;
+}
+
 export type AgentEvent =
   | HostReadyEvent
   | SessionCreatedEvent
@@ -260,7 +290,8 @@ export type AgentEvent =
   | UsageEvent
   | ContextUsageEvent
   | RunCompletedEvent
-  | RunFailedEvent;
+  | RunFailedEvent
+  | RunNoticeEvent;
 
 /** 去掉 seq/ts 的事件载荷，便于适配层构造 */
 export type AgentEventInput = AgentEvent extends infer T

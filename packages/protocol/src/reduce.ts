@@ -19,7 +19,25 @@ export type TimelineItem =
   | { id: string; kind: 'reasoning'; runId: string; text: string; streaming: boolean }
   | { id: string; kind: 'message'; runId: string; text: string; streaming: boolean }
   | { id: string; kind: 'tool'; runId: string; call: ToolCall; result?: ToolResult }
-  | { id: string; kind: 'notice'; level: 'info' | 'warn' | 'error'; text: string }
+  | {
+      id: string;
+      kind: 'notice';
+      level: 'info' | 'warn' | 'error';
+      text: string;
+      /**
+       * 可行动的建议。有就单独一行显示，没有就不留空行 ——
+       * 每条提示都补一句「请检查配置」会让真正有用的那句淹没在套话里。
+       */
+      remedy?: string;
+      /**
+       * 结论的依据（例如「某时刻的探测结果，不是此刻的实时状态」）。
+       *
+       * **界面必须显示它。** 带依据的提示与不带依据的提示在用户那里是两种东西：
+       * 前者他会判断这条结论有多新，后者他会当成实时状态去排障 ——
+       * 于是去查一个早就修好的服务，或者反过来无视一个真挂了的东西。
+       */
+      basis?: string;
+    }
   | {
       id: string;
       kind: 'run';
@@ -146,6 +164,19 @@ export function applyEvent(items: TimelineItem[], event: AgentEvent): TimelineIt
           status: event.status,
           durationMs: event.durationMs,
           atSeq: event.seq,
+        },
+      ];
+
+    case 'run.notice':
+      return [
+        ...items,
+        {
+          id: `n_${event.seq}`,
+          kind: 'notice',
+          level: event.level,
+          text: event.message,
+          ...(event.remedy ? { remedy: event.remedy } : {}),
+          ...(event.basis ? { basis: event.basis } : {}),
         },
       ];
 

@@ -88,6 +88,33 @@ export interface ModelEndpoint {
 }
 
 /**
+ * 端点探测失败的**根因分类**。
+ *
+ * ── 为什么要有这个枚举，而不是从 error 字符串里认 ────────────────────
+ * `testEndpoint` 的每一句 error 都是在**它构造失败的那一刻**写下的，那里
+ * 恰好是唯一确切知道根因的地方。事后拿字符串去正则匹配，等于把「知道的事」
+ * 降级成「猜的事」—— 改一个错字就会让分类静默失效，而失效的表现是
+ * 「提示里说得含含糊糊」（或更糟：把「key 无效」说成「服务没起」，
+ * 用户去重启一个本来好好的服务）。本项目在别处栽过同类跟头
+ * （用全文搜索断言，被注释里的路径绊倒）。
+ *
+ * 四个值对应排障时**下一步动作完全不同**的四类：
+ *  - `invalid-url`：地址本身不合规 —— 改配置，不用查网络；
+ *  - `unreachable`：连不上 —— 查服务是否在跑、网络与防火墙；
+ *  - `auth`：连上了但凭据被拒 —— 换 key；
+ *  - `not-found`：连上了但路径不对（多半少了 `/v1`）—— 改地址后缀；
+ *  - `bad-response`：连上了、应答异常 —— 去看端点侧日志；
+ *  - `not-json`：连上了、但不是 OpenAI 兼容端点 —— 换端点。
+ */
+export type EndpointFailureKind =
+  | 'invalid-url'
+  | 'unreachable'
+  | 'auth'
+  | 'not-found'
+  | 'bad-response'
+  | 'not-json';
+
+/**
  * 端点连通性测试的结果（`models.testEndpoint` 的返回）。
  *
  * ok 与 error 互斥；models 是端点 `GET /models` 公布的模型 id 清单
@@ -100,6 +127,14 @@ export interface EndpointTestResult {
   latencyMs: number;
   models: string[];
   error?: string;
+  /**
+   * 失败根因分类（ok 为 true 时不带）。
+   *
+   * 由 `testEndpoint` 在构造失败的那一刻填 —— **不是**从 error 字符串反推的，
+   * 所以它比 error 文本可靠：文本给人读、可能被改写，这个字段给代码分支用。
+   * 端点不可达时的开跑提示（FR-10.2 后半）就靠它决定说哪一句话。
+   */
+  kind?: EndpointFailureKind;
 }
 
 export interface AppConfig {
@@ -170,6 +205,23 @@ export interface AppConfig {
    * 塞进通用渲染器只会得到一个不知道后果的普通下拉框。
    */
   sandboxMode?: SandboxMode;
+  /**
+   * 按**会话模式**指定模型（FR-10.2 后半：快模型 / 推理模型分工）。
+   *
+   * 例：`{ minimal: 'qwen3-8-flash', ptc: 'qwen3-8-27b' }` —— 轻问答走小模型，
+   * 要动代码的走大模型。留空的模式落到 `defaultModel`。
+   *
+   * ── 为什么按「模式」而不是按「猜任务难度」──────────────────────────
+   * 「按任务挑模型」最直觉的做法是分类用户输入（长短、有没有代码块、关键词…），
+   * 但那是一条**没有真值**的规则：判错时用户只会看到「这轮怎么换了个模型」，
+   * 既不知道为什么，也无从纠正。而会话模式是用户自己显式选的、意义明确、
+   * 且已经存在于产品里 —— 用它做路由，规则是可见的、可测的、错了能自己改。
+   *
+   * 代价要说清楚：**映射在新建会话时生效**，会话建好之后改模式不会自动换模型
+   * （在对话中途静默换模型比不换更糟）。会话建好后要换模型，用会话自己的模型
+   * 选择器 —— 那一次是用户显式的动作。
+   */
+  modeModels?: Partial<Record<AgentMode, string>>;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
