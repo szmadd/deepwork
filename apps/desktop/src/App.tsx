@@ -72,20 +72,26 @@ function modelOptionLabel(item: ModelDescriptor): string {
  * [活动栏] [会话列表?] [主区视图]
  * ```
  *  1. **活动栏（rail）只放工作台视图**：对话 / 文件 / 终端 / 浏览器 / 轨迹，
- *     外加固定在底部的设置。此前「技能 / 记忆 / 自动化 / 连接器 / 用量」也在这根栏上，
+ *     外加固定在底部的设置按钮。此前「技能 / 记忆 / 自动化 / 连接器 / 用量」也在这根栏上，
  *     结果是「天天点的」与「偶尔来配一次」的两类入口挨在一起，栏越加越长。
- *     现在那五页各自是设置页里的一节（`SettingsSection`），入口收敛成一个「设置」。
- *  2. **会话列表只在对话视图出现。** 管理类页面（技能 / 设置…）把主区全部让出来，
+ *     现在那五页各自是设置里的一节（`SettingsSection`），入口收敛成一个「设置」。
+ *  2. **会话列表只在对话视图出现。** 其余局面把主区全部让出来，
  *     否则它们又要和会话列表争宽度 —— 而那正是它们从弹窗里搬出来要解决的问题。
  *  3. **对话视图仍是「它说要改的」与「磁盘上真的变成了什么样」能对上眼的地方**：
  *     文件与终端从右侧并排改为整页，是形态上的取舍（见 DEVLOG），
  *     但两者的数据来源与高亮口径一字未改。
- *  4. **一页一个入口。** 技能 / 用量这类面板只有设置页里那一个挂载点；
+ *  4. **一页一个入口。** 技能 / 用量这类面板只有设置里那一个挂载点；
  *     输入框工具行与顶栏上的按钮不另开页面，而是 `openSettings('skills')`
  *     这样「进设置并定位到那一节」。两个入口、两套外壳的代价是同一个缺陷
  *     只在其中一个入口可见 —— 而用户不会两个都试一遍。
- *
- * 审批仍然是弹窗，且是唯一的弹窗：它的语义确实是「打断你，处理完再回来」。
+ *  5. **两层浮层，语义不同，不要合并**（2026-09-18：设置从整页改成覆盖层）：
+ *     · 审批弹窗 = **打断式**。内核停在那里等你拍板，你只能先处理它；它只有 620px，
+ *       因为要回答的问题只有一个。
+ *     · 设置 = **覆盖层**。你是专门去配一次的，配完关掉，回到进来之前那一页。
+ *       880×600，遮罩整块盖住 rail 与会话列表，所以背景是**明确地**不可点 ——
+ *       这不是 PanelPage 那段注释里反对的那个「看着还能点」的弹窗。
+ *     两者都不占 `lastView`（见 1. 的收窄）。审批压在设置之上：同 z-index 时 DOM
+ *     靠后的赢，而「内核停下来等你」不该被一层设置挡住。
  */
 export default function App() {
   const agent = useAgent();
@@ -138,6 +144,34 @@ export default function App() {
     sectionRestoredRef.current = true;
     if (!sectionPinnedRef.current) setSection(agent.config.settingsSection);
   }, [agent.config]);
+
+  /*
+   * 设置开着没有。
+   *
+   * **刻意不落盘，也刻意不是 `view` 的一个取值**（2026-09-18 起设置改成了覆盖层）。
+   * 写进 lastView 会有两个具体后果：下次启动弹一个设置对话框出来（用户的第一动作
+   * 是关掉它），以及 rail 的高亮指向一个主区里并不存在的页面。
+   * 真正该落盘的是**停在哪一节**（`settingsSection`）—— 那个才省用户一次翻找。
+   */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  /*
+   * Esc 关闭设置。
+   *
+   * 监听挂在 window 上而不是对话框上：焦点可能停在设置里的任意一个输入框/下拉上，
+   * 只有冒泡到 window 才收得到；挂在某个「可能没有焦点」的元素上等于「有时管用」。
+   *
+   * 只在开着时才挂：常驻监听会让这个动作在关着的时候也执行一遍 ——
+   * 用户按 Esc 收掉别的浮层时，这里会顺手也关一次，而他看不出来是谁做的。
+   */
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSettingsOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [settingsOpen]);
 
   const running = agent.activeRunId !== null;
 
@@ -247,23 +281,24 @@ export default function App() {
    *
    * 「技能」「用量」这类入口都走这里，而不是再开一个页面：同一个面板两个入口、
    * 两套外壳，代价是同一个缺陷只在其中一个入口可见 —— 用户不会两个都试一遍。
-   * 一次写盘带两个键（lastView + settingsSection）而不是写两次：
-   * 两次写盘中间那一刻，磁盘上的状态是「在设置页、但分节还是上一次那个」。
+   *
+   * **不写 `lastView`**（设置不是视图），只写 `settingsSection`，而且只在真的指定了
+   * 分节时才写：不指定时打开的就是「上次那一节」，磁盘上已经是它，再写一遍是
+   * 同一个值写两遍 —— 多一次写盘不会更对，只会多一次「写失败」的机会。
    */
   const openSettings = (target?: SettingsSection) => {
-    viewPinnedRef.current = true;
     const next = target ?? section;
     if (target) {
       sectionPinnedRef.current = true;
       setSection(target);
     }
+    // 拉数据在打开之前做：面板挂载时数据已经在路上，与切视图是同一个时机。
     refreshTarget(next);
-    setView('settings');
-    void agent.updateConfig({
-      lastView: 'settings',
-      ...(target ? { settingsSection: target } : {}),
-    });
+    setSettingsOpen(true);
+    if (target) void agent.updateConfig({ settingsSection: target });
   };
+
+  const closeSettings = () => setSettingsOpen(false);
 
   const backToChat = () => openView('chat');
 
@@ -434,6 +469,8 @@ export default function App() {
       <ActivityRail
         view={view}
         onSelect={openView}
+        settingsOpen={settingsOpen}
+        onOpenSettings={() => openSettings()}
         changedCount={agent.changedPaths.size}
         pendingApprovals={agent.approvals.length}
         /*
@@ -753,31 +790,11 @@ export default function App() {
         ) : null}
 
         {/*
-          技能 / 记忆 / 自动化 / 连接器 / 用量**不在这里**：它们是设置页里的五节
-          （见上面 managePanels）。这一行注释是留给下一个想加分支的人的 ——
+          技能 / 记忆 / 自动化 / 连接器 / 用量**不在这里**：它们是设置里的五节
+          （见上面 managePanels）。**设置自己也不在这里** —— 它是覆盖层，
+          与审批弹窗同层，见下面那一块。这一行注释是留给下一个想加分支的人的：
           加一个整页分支之前先问一句「它属于工作台，还是属于设置」。
         */}
-
-        {view === 'settings' && agent.config && agent.guard ? (
-          <SettingsPanel
-            config={agent.config}
-            guard={agent.guard}
-            catalog={agent.catalog}
-            status={agent.status}
-            modelKeyStatus={agent.modelKeyStatus}
-            section={section}
-            onSelectSection={openSettings}
-            panels={managePanels}
-            onUpdateConfig={(patch) => void agent.updateConfig(patch)}
-            onUpdateGuard={(patch) => void agent.updateGuard(patch)}
-            onSetApiKey={agent.setModelApiKey}
-            onClearApiKey={agent.clearModelApiKey}
-            onRefreshModels={agent.refreshModels}
-            onTestEndpoint={agent.testEndpoint}
-            onRestartKernel={agent.restartKernel}
-            onClose={backToChat}
-          />
-        ) : null}
       </main>
 
       {agent.preview ? (
@@ -805,6 +822,37 @@ export default function App() {
           truncated={previewAttachment.truncated}
           note={previewAttachment.error}
           onClose={() => setPreviewAttachment(null)}
+        />
+      ) : null}
+
+      {/*
+        设置是**覆盖层**，不是主区的一个分支（2026-09-18）。挂在 main 之外，
+        与审批弹窗同一层 —— 三件事因此自动成立：它盖住 rail 与会话列表
+        （背景明确不可点，不存在「看着能点」的错觉）、关掉后原样回到进来那一页、
+        以及它不占 `lastView`。
+
+        放在审批弹窗**前面**：两者同 z-index，DOM 靠后的赢。审批是阻塞式打断，
+        设置只是用户自己开的一层 —— 审批必须在最上面，否则「内核停下来等你拍板」
+        会被一层设置挡住。
+      */}
+      {settingsOpen && agent.config && agent.guard ? (
+        <SettingsPanel
+          config={agent.config}
+          guard={agent.guard}
+          catalog={agent.catalog}
+          status={agent.status}
+          modelKeyStatus={agent.modelKeyStatus}
+          section={section}
+          onSelectSection={openSettings}
+          panels={managePanels}
+          onUpdateConfig={(patch) => void agent.updateConfig(patch)}
+          onUpdateGuard={(patch) => void agent.updateGuard(patch)}
+          onSetApiKey={agent.setModelApiKey}
+          onClearApiKey={agent.clearModelApiKey}
+          onRefreshModels={agent.refreshModels}
+          onTestEndpoint={agent.testEndpoint}
+          onRestartKernel={agent.restartKernel}
+          onClose={closeSettings}
         />
       ) : null}
 

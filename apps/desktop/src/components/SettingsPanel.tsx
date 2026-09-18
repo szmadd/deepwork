@@ -55,6 +55,7 @@ interface SettingsPanelProps {
   onRefreshModels: () => Promise<void>;
   onTestEndpoint: (params: { baseUrl: string; apiKey?: string }) => Promise<EndpointTestResult>;
   onRestartKernel: () => Promise<void>;
+  /** 关闭。右上角 ✕ / Esc / 点遮罩三条路径都走它；语义是「回到进来之前那一页」 */
   onClose: () => void;
 }
 
@@ -87,14 +88,27 @@ function sandboxModeLabel(mode?: string): string {
 }
 
 /**
- * 设置页外壳。
+ * 设置外壳。
  *
- * ── 为什么从「顶部三个页签」改成「左侧分组导航」（2026-09-18）──
+ * ── 为什么从「顶部三个页签」改成「左侧分组导航」──
  * 三页签装得下「偏好 / 模型 / 安全」，装不下这一版要收进来的东西：技能、记忆、
  * 自动化、连接器、用量原本各自是 rail 上的一级入口，与「对话 / 文件 / 终端」
  * 这类天天点的动作挤在同一根栏上。参考形态（用户给的 WorkBuddy 截图）把管理类
- * 全部收进设置，于是设置页要从 3 节长到 12 节 —— 顶部横排页签到六七个就开始
+ * 全部收进设置，于是设置要从 3 节长到 12 节 —— 顶部横排页签到六七个就开始
  * 折行、把页头挤高，而左导航天然可分组、可扩展，且「哪一组里有什么」一眼可见。
+ *
+ * ── 同一个文件里还留着上一版「为什么不做弹窗」的理由，必须正面回答 ──
+ * `PanelPage` 的注释（以及本文件更早那版）说过：功能页不做弹窗，因为弹窗
+ * 「可用面积被压到 620px 宽」且「背后那些看起来还在、其实点不到的界面元素」。
+ * 这两条都不是「弹窗」的错，是**那个弹窗**的两条具体缺陷：
+ *   · 620px 太窄 —— 现在是 880×600（窗口更小就按窗口缩），管理类内容够用；
+ *   · 背景是「活着的界面」—— 现在遮罩整块盖住 rail 与会话列表，
+ *     背景**明确地不可点**，不存在「看起来还能点」的错觉。
+ * 所以它不是 PanelPage 讲的那种「打断式小弹窗」，而是**覆盖层**：
+ * 你专门来配一次，配完关掉，回到进来之前那一页。用户这一版的取舍是
+ * 「设置要像一层盖上去的东西，而不是又一个页面」，这里照此实现。
+ *
+ * 三条入口都要有，缺一个用户就会先怀疑自己点错了：右上角 ✕、Esc、点遮罩。
  *
  * ── 分组的顺序不是排版偏好 ──────────────────────────────────────────
  * 从「我改完立刻看得见」排到「改完要重启内核 / 动系统」：外观 → 会话默认 → 界面 →
@@ -102,8 +116,8 @@ function sandboxModeLabel(mode?: string): string {
  * 用户会把它当成又一个开关顺手改掉，而它决定的是「允许发生什么」。
  *
  * ── 管理面板的 props 为什么不在这里 ──────────────────────────────────
- * 见 `panels` 的注释：设置页不该知道技能面板需要哪些回调，否则每给某个面板加一个
- * 回调，设置页都要跟着改一次签名 —— 而它根本不关心。
+ * 见 `panels` 的注释：设置不该知道技能面板需要哪些回调，否则每给某个面板加一个
+ * 回调，设置都要跟着改一次签名 —— 而它根本不关心。
  */
 export function SettingsPanel({
   config,
@@ -124,25 +138,45 @@ export function SettingsPanel({
   onClose,
 }: SettingsPanelProps) {
   return (
-    <div className="page-mask">
-      <div className="page">
-        <header className="page-head">
-          <button type="button" className="icon-btn page-back" onClick={onClose} title="返回对话">
-            ←
-          </button>
-          <div className="page-title">
-            <span className="page-title-text">设置</span>
-            <span className="page-sub">{SETTINGS_SECTION_LABEL[section]}</span>
-          </div>
+    /*
+      点击遮罩关闭用 onMouseDown，而不是 onClick。
+      onClick 会把「在对话框里按下鼠标、拖到遮罩上松开」判成点击遮罩 ——
+      而那个手势的真实意图通常是「我在选文字，松手位置偏了一点」。
+      按 `event.target === event.currentTarget` 判「确实点在遮罩本身」而不是
+      点在对话框内部冒泡上来的事件上。
+    */
+    <div
+      className="settings-mask"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="settings-dialog" role="dialog" aria-modal="true" aria-label="设置">
+        {/*
+          顶部条只放「设置」与关闭，不放当前分节名 —— 分节名与它的一句话说明
+          就在内容列顶上（.settings-sec-head），那是用户视线真正落下的地方。
+          写两遍的后果是两处必须同步，而同步漏掉时没人看得出来。
+        */}
+        <header className="settings-dialog-head">
+          <span className="settings-dialog-title">设置</span>
           <span className="panel-spacer" />
+          <button
+            type="button"
+            className="icon-btn settings-close"
+            onClick={onClose}
+            title="关闭（Esc）"
+            aria-label="关闭设置"
+          >
+            ✕
+          </button>
         </header>
 
         <div className="settings-body">
           <SettingsNav section={section} onSelect={onSelectSection} />
 
           {/*
-            内容列自己滚动（而不是整页滚）：左导航要在长内容里保持可见 ——
-            用量页有图表、技能页有几十条记录，让导航跟着滚上去等于每换一节都要先滚回顶。
+            内容列自己滚动（而不是整个对话框滚）：左导航要在长内容里保持可见 ——
+            用量有图表、技能有几十条记录，让导航跟着滚上去等于每换一节都要先滚回顶。
           */}
           <div className="settings-content">
             <div className="settings-sec-head">
@@ -197,19 +231,14 @@ export function SettingsPanel({
 
             {/*
               管理类五节的内容由 App 传进来（见 panels 注释）。
-              外壳由这里给：它们当年是独立整页，各自的 page-mask / page-head 已经
-              在 embedded 模式下关掉了，所以现在只剩内容本身。
+              外壳由这里给：它们当年是各自独立的一整页（遮罩 + 页头 + 页脚），
+              那些在 `embedded` 模式下整块不渲染，所以现在挂进来的只剩内容本身，
+              被这个 `.settings-embed` 收在内容列里。
             */}
             {panels[section] ? <div className="settings-embed">{panels[section]}</div> : null}
           </div>
         </div>
-
-        <div className="page-foot">
-          <button type="button" className="btn" onClick={onClose}>
-            返回对话
-          </button>
-        </div>
-      </div>
+      </section>
     </div>
   );
 }
@@ -416,7 +445,9 @@ function SessionSection({ config, catalog, onUpdateConfig, onRefreshModels }: Se
         原来这里是「右侧面板默认页签」。右侧并排面板已被活动栏的整页视图取代，
         所以这个设置项升级为「启动时打开哪个视图」—— 它仍然是同一种偏好
         （我通常从哪个页面开始干活），只是可选范围跟着布局一起变宽了。
-        候选现在从 APP_VIEWS 出：收进设置页的那五页不再是视图，也就不该出现在这里。
+        候选从 APP_VIEWS 直接出：收进设置的那五页不再是视图，也就不该出现在这里；
+        **设置自己也不在候选里**（它是覆盖层，不是主区里能停下来的页）——
+        否则用户可以选一项「启动时弹一个设置对话框出来」，那不是他能用的状态。
       */}
       <div className="modal-label">启动时打开的视图</div>
       <select

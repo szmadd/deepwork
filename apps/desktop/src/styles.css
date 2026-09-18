@@ -2218,10 +2218,91 @@ pre {
 }
 
 /*
- * 设置页的两栏：左导航（定宽、自己不滚）+ 内容列（自己滚）。
+ * ── 设置：覆盖层对话框（2026-09-18）────────────────────────────────
  *
- * 为什么内容列独立滚动而不是整页滚：设置长到十二节之后，用量页里有图表、
- * 技能页里有几十条记录 —— 让导航跟着一起滚上去，每换一节都要先滚回顶部。
+ * 它从「占满主区的整页」改成「居中的一层」。遮罩与审批弹窗同一档色值
+ * （界面里就只有这两层浮层，同一个动作应该看起来是同一件事），
+ * 但尺寸差一截 —— 那不是随便定的：
+ *   · 880×600 是**上限**，窗口比它小就跟着缩（max-width / max-height: 100%
+ *     配 padding 的写法，等价于「留 40px 边距」）。窗口小到极限时仍要能用到，
+ *     所以是 max 而不是写死。
+ *   · 比整页小一圈，是为了让「这是一层盖上去的东西」一眼可见 ——
+ *     一个撑满主区的对话框在观感上就是又一个页面。
+ *
+ * padding 放在遮罩上而不是对话框上：那是「对话框最多占多大」的边界，
+ * 不是对话框自己的内边距。写在对话框上会让它的内容区也跟着缩两遍。
+ *
+ * z-index 与 .modal-mask 同为 40：审批和设置都可能同时开着，谁在上面由
+ * **DOM 顺序**决定（审批在设置之后，于是压在上面）。这不是巧合，见 App.tsx
+ * 里那一段注释 —— 「内核停下来等你拍板」不该被一层设置挡住。
+ */
+.settings-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  background: rgba(31, 35, 41, 0.42);
+}
+
+.settings-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 880px;
+  max-width: 100%;
+  height: 600px;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.18);
+}
+
+/*
+ * 顶部条只放「设置」与关闭，不放当前分节名 —— 分节名与它的一句话说明就在
+ * 内容列顶上，写两遍就得两处同步，而漏掉时没人看得出来。
+ */
+.settings-dialog-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.settings-dialog-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 关闭：给它一个真正的方块与悬停底色，让它看起来是个能点的东西 */
+.settings-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 7px;
+  font-size: 13px;
+}
+
+.settings-close:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+/*
+ * 设置的两栏：左导航（定宽、自己不滚）+ 内容列（自己滚）。
+ *
+ * 为什么内容列独立滚动而不是整个对话框滚：设置长到十二节之后，用量里有图表、
+ * 技能里有几十条记录 —— 让导航跟着一起滚上去，每换一节都要先滚回顶部。
  *
  * 三档页签（.settings-tabs）留着给记忆面板的分层用，不在这里复用：
  * 「同一层里切三种东西」与「换一整节」是两件事，长得像不等于是一件事。
@@ -2234,19 +2315,21 @@ pre {
 
 .settings-nav {
   flex: 0 0 auto;
-  width: 168px;
-  padding: 12px 8px 20px;
+  width: 152px;
+  padding: 10px 8px 16px;
+  /* 比内容列浅一档：两栏之间靠底色分层，比只画一根竖线更容易看出「这是一列导航」 */
+  background: var(--bg-2);
   border-right: 1px solid var(--border-soft);
   overflow: auto;
 }
 
 .settings-nav-group + .settings-nav-group {
-  margin-top: 14px;
+  margin-top: 11px;
 }
 
 .settings-nav-title {
-  padding: 0 10px 4px;
-  font-size: 11px;
+  padding: 0 9px 3px;
+  font-size: 10.5px;
   color: var(--text-faint);
 }
 
@@ -2254,17 +2337,22 @@ pre {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 6px 10px;
+  padding: 5px 9px;
   border: none;
-  border-radius: 8px;
+  border-radius: 7px;
   background: none;
   color: var(--text-dim);
-  font-size: 12.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 
+/*
+ * 悬停底色比导航列的底色再深一档。导航列自己已经是 --bg-2 ——
+ * 悬停还用 --bg-2 的话指针移上去什么都没有发生（这类「同一个色值被用在两层」
+ * 的错在浅色主题下几乎看不出来：两块都是 #f7f7f8，看着像「这栏就是不响应」）。
+ */
 .settings-nav-item:hover {
-  background: var(--bg-2);
+  background: var(--bg-3);
   color: var(--text);
 }
 
@@ -2281,18 +2369,25 @@ pre {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: 14px 20px 24px;
+  padding: 12px 18px 20px;
 }
 
+/*
+ * 每节的标题 + 一句话说明，下面压一根淡分割线。
+ * 对话框只有 600px 高，内容列一进去就要能看出「这一节从哪开始」——
+ * 没有这根线时，标题与它上面那一节的最后一个控件会糊成一片。
+ */
 .settings-sec-head {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-bottom: 12px;
+  gap: 1px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
 }
 
 .settings-sec-title {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
 }
 
@@ -2304,12 +2399,18 @@ pre {
  * 变成「模型与端点模型推理能力从哪来：…」——第一版截图里就是这样。
  */
 .settings-sec-note {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-faint);
 }
 
 .settings-input {
   width: 100%;
+  /*
+   * 不铺满整个内容列。内容列有 690px 宽，而一行 690px 的输入框读起来是散的
+   * （文字与控件边框之间隔了半屏）—— 限制到 520px 让每一项自己是一个「块」，
+   * 也是这一版「紧凑」的落点之一。
+   */
+  max-width: 520px;
   padding: 5px 8px;
   border-radius: 8px;
   border: 1px solid var(--border);

@@ -4,6 +4,15 @@ import { APP_VIEW_LABEL, type AppView } from '@deepwork/protocol';
 interface ActivityRailProps {
   view: AppView;
   onSelect: (view: AppView) => void;
+  /**
+   * 设置对话框是否开着。
+   *
+   * 传的是「开着没有」而不是「当前视图 === 设置」—— 后者在设置变成覆盖层之后
+   * 已经不可表达：设置盖住整根栏，`view` 仍然停在进来之前那一页，这是对的
+   * （关掉设置要回到那一页）。这个布尔只用来点亮底部那个按钮。
+   */
+  settingsOpen: boolean;
+  onOpenSettings: () => void;
   /** 本次会话改动过的文件数（文件视图的角标） */
   changedCount: number;
   /** 待审批请求数（对话视图的角标）——审批弹窗会盖住界面，角标只是「为什么卡住了」的线索 */
@@ -34,12 +43,18 @@ interface ActivityRailProps {
  * 上组是「这台机器上正在发生什么」（对话 / 文件 / 终端 / 浏览器 / 轨迹），
  * 下组曾是「配置与账本」（技能 / 记忆 / 自动化 / 连接器 / 用量 / 设置）。
  * 下组里除了设置，其余五项**天天不点、偶尔来配一次**，却和日常动作抢同一根栏：
- * 栏越加越长，而两类入口的重要性差一个数量级。现在它们各自是设置页里的一节
+ * 栏越加越长，而两类入口的重要性差一个数量级。现在它们各自是设置里的一节
  * （`SettingsSection`），入口只剩一个 ——「设置」。设置本身固定在栏底：
  * 它是最不该和日常动作抢注意力的那一项。
  *
+ * 同一天再改一次：**设置按钮不再是 `ICONS` 里的一个视图条目**。设置从整页变成了
+ * 覆盖层，`APP_VIEWS` 里没有它了，于是这里也不能再借 `item(id, label)` 那条路径
+ * 渲染它 —— 那条路径要求 id 是 `AppView`（要点亮、要落盘 `lastView`），
+ * 而设置两样都不占。这不是类型体操，是两种东西：**上面是「去哪一页」，下面是
+ * 「盖上一层」，只有长得像**。所以它有自己的图标常量和自己的一段 JSX。
+ *
  * 所以这里**不要**再往栏上加管理类入口：那不是「少点一次」，而是把刚收起来的东西
- * 又摊开一遍。新增一节 = 契约层的 `SETTINGS_SECTIONS` 加一项 + 设置页加一块内容。
+ * 又摊开一遍。新增一节 = 契约层的 `SETTINGS_SECTIONS` 加一项 + 设置里加一块内容。
  */
 
 const STROKE = {
@@ -79,24 +94,39 @@ const ICONS: Record<AppView, ReactElement> = {
       <circle {...STROKE} cx="4.5" cy="6.4" r="1.5" />
     </>
   ),
-  // 滑杆（设置）
-  settings: (
-    <>
-      <path {...STROKE} d="M3.4 6.2h11.2M3.4 11.8h11.2" />
-      <circle {...STROKE} cx="7.2" cy="6.2" r="1.7" />
-      <circle {...STROKE} cx="11.4" cy="11.8" r="1.7" />
-    </>
-  ),
 };
 
 /**
+ * 设置按钮的图标（滑杆）。
+ *
+ * 单独一个常量而不是 `ICONS.settings`：设置不在 `AppView` 里了，
+ * 留一个用不到的表项等于「栏上图标数」与「栏上该有几个图标」不再对得上。
+ */
+const SETTINGS_ICON = (
+  <>
+    <path {...STROKE} d="M3.4 6.2h11.2M3.4 11.8h11.2" />
+    <circle {...STROKE} cx="7.2" cy="6.2" r="1.7" />
+    <circle {...STROKE} cx="11.4" cy="11.8" r="1.7" />
+  </>
+);
+
+/**
  * 工作台视图。skill / memory / schedules / connectors / usage 的图标随它们一起
- * 搬进了设置页 —— 那五个图标留在这里会变成 `ICONS` 里的死条目，
+ * 搬进了设置 —— 那五个图标留在这里会变成 `ICONS` 里的死条目，
  * 而「栏上有几个图标」与「栏上该有几个图标」就不再对得上。
  */
 const WORK_VIEWS: AppView[] = ['chat', 'files', 'terminal', 'browser', 'trajectory'];
 
-export function ActivityRail({ view, onSelect, changedCount, pendingApprovals, expanded, onToggleExpand }: ActivityRailProps) {
+export function ActivityRail({
+  view,
+  onSelect,
+  settingsOpen,
+  onOpenSettings,
+  changedCount,
+  pendingApprovals,
+  expanded,
+  onToggleExpand,
+}: ActivityRailProps) {
   const item = (id: AppView, label: string, badge?: number) => (
     <button
       type="button"
@@ -141,8 +171,25 @@ export function ActivityRail({ view, onSelect, changedCount, pendingApprovals, e
         </svg>
         {expanded ? <span className="rail-label">收起</span> : null}
       </button>
-      {/* 设置固定底部：它是最不该与日常动作抢注意力的那一项 */}
-      {item('settings', APP_VIEW_LABEL.settings)}
+      {/*
+        设置固定底部：它是最不该与日常动作抢注意力的那一项。
+        它盖住整根栏，所以点亮它用的是 `settingsOpen` 而不是 `view === ...`
+        （见 props 注释）。aria-haspopup 说明「点它弹出的是对话框」——
+        与上面那些「换一页」的按钮读给屏幕阅读器的信息不同。
+      */}
+      <button
+        type="button"
+        className={`rail-item${settingsOpen ? ' rail-item-on' : ''}`}
+        onClick={onOpenSettings}
+        title="设置"
+        aria-label="设置"
+        aria-haspopup="dialog"
+      >
+        <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true">
+          {SETTINGS_ICON}
+        </svg>
+        {expanded ? <span className="rail-label">设置</span> : null}
+      </button>
     </nav>
   );
 }
