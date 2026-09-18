@@ -13,6 +13,7 @@
 import type { PipSource } from './deploy';
 import type { SandboxMode } from './security';
 import type { AgentMode } from './session';
+import { DEFAULT_TERMINAL_SHELL, TERMINAL_SHELLS, type TerminalShell } from './terminal';
 import type { ModelPrice } from './usage';
 
 /**
@@ -192,6 +193,21 @@ export interface AppConfig {
    */
   theme: ThemeMode;
   /**
+   * 终端 shell 档位（默认 `powershell`）。
+   *
+   * 从 `cmd` 改成 `powershell` 是一次**可见的默认值变更**，与 theme 那次的处理
+   * 同理：默认值一旦开始被消费就立刻生效，所以默认与实现必须同时落地，
+   * 不能先留一个「以后再说」的旧默认，否则界面上会出现一个没人解释过的差异。
+   *
+   * 三档的能力边界写在 `terminal.ts` 的 `TERMINAL_SHELL_NOTE` 里，设置页直接引用 ——
+   * 「选哪一档」的依据是「要敲什么命令」，那句话必须与档位同住契约层，
+   * 界面各写一份的话，两者会各自腐烂。
+   *
+   * 生效语义与 terminalBufferLimit 同类：**下一次执行命令时生效**，
+   * 不需要重启内核（终端是宿主里的进程，内核不参与）。
+   */
+  terminalShell: TerminalShell;
+  /**
    * 内核选择：auto = 有 DEEPWORK_HARNESS_CMD 才用真实内核；mock = 强制 mock；
    * harness = 强制真实内核（失败即报错不降级）。持久化在这里，不用每次设环境变量。
    */
@@ -286,6 +302,8 @@ export interface AppConfig {
 
 export const DEFAULT_CONFIG: AppConfig = {
   theme: 'light',
+  // 与 DEFAULT_TERMINAL_SHELL 同源引用，不各写一份 'powershell' 字面量
+  terminalShell: DEFAULT_TERMINAL_SHELL,
   adapter: 'auto',
   defaultMode: 'ptc',
   defaultModel: '',
@@ -334,6 +352,7 @@ export const CONFIG_FIELDS = {
     label: '上次所在视图',
   },
   terminalBufferLimit: { kind: 'number', label: '终端缓冲上限（字符）' },
+  terminalShell: { kind: 'enum', values: TERMINAL_SHELLS, label: '终端 shell' },
   treeDepth: { kind: 'number', label: '文件树深度' },
   collapseReasoning: { kind: 'boolean', label: '默认折叠思考过程' },
 } as const;
