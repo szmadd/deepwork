@@ -1946,6 +1946,22 @@ pre {
   max-width: 60%;
 }
 
+/*
+  终端的 shell 档位徽标。
+  与 cwd 一样是等宽小字，但给它一个底色：它回答的是「这条命令将被哪个 shell 解释」，
+  而这是用户敲命令前最需要确认的一件事（PS 5.1 的 `a && b` 会报语法错，cmd 的 `ls` 不存在）。
+*/
+.terminal-panel .terminal-shell {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
 /* 终端保留深色底（行业惯例），文字色在深色区内单独覆写 */
 .terminal-out {
   flex: 1;

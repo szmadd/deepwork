@@ -14,10 +14,14 @@ import {
   DEFAULT_ENDPOINT_CONTEXT_WINDOW,
   SANDBOX_MODE_INFO,
   SANDBOX_MODES,
+  TERMINAL_SHELL_LABEL,
+  TERMINAL_SHELL_NOTE,
+  TERMINAL_SHELLS,
   THEME_MODE_LABEL,
   THEME_MODES,
   type AgentMode,
   type SandboxMode,
+  type TerminalShell,
 } from '@deepwork/protocol';
 import { DeploySettings } from './DeploySettings';
 
@@ -424,6 +428,34 @@ export function SettingsPanel({
                     }
                   />
                 </label>
+              </div>
+
+              {/*
+                终端 shell 档位。
+                放在「终端缓冲上限」旁边，因为两者是同一件事（终端这个面板长什么样、
+                能做什么）的两个侧面；用户不会为了找它单独跑一趟别的页。
+
+                与主题同类：**选完即刻生效**，不需要重启内核 —— 终端是宿主的进程，
+                内核不参与；档位在每次执行命令时解析，所以下一条命令就换 shell。
+                这一点必须写在提示里，否则用户会按习惯去找「应用」按钮。
+              */}
+              <div className="modal-label">终端 shell</div>
+              <div className="theme-chips terminal-shell-chips">
+                {TERMINAL_SHELLS.map((kind) => (
+                  <button
+                    type="button"
+                    key={kind}
+                    className={`theme-chip${config.terminalShell === kind ? ' theme-chip-on' : ''}`}
+                    onClick={() => onUpdateConfig({ terminalShell: kind as TerminalShell })}
+                  >
+                    {TERMINAL_SHELL_LABEL[kind]}
+                  </button>
+                ))}
+              </div>
+              <div className="modal-hint">
+                {TERMINAL_SHELL_NOTE[config.terminalShell] ?? ''}
+                {' '}
+                改完即刻生效，下一条命令就换 shell，不需要重启内核。
               </div>
 
               <label className="modal-check">

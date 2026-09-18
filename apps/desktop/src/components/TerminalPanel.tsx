@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { TerminalEntry } from '@deepwork/protocol';
+import { TERMINAL_SHELL_LABEL, type TerminalEntry } from '@deepwork/protocol';
 import type { TerminalView } from '../useAgent';
 
 interface TerminalPanelProps {
@@ -55,6 +55,17 @@ export function TerminalPanel({ terminal, onRun, onWrite, onInterrupt, onClear }
         <code className="terminal-cwd" title={terminal.state?.cwd}>
           {terminal.state?.cwd ?? '未打开'}
         </code>
+        {/*
+          档位与实际可执行文件分两处显示：用户选的是「档位」，真正跑的是某个 exe，
+          而同一个档位在不同机器上可能是 pwsh.exe 或 powershell.exe。
+          合成一句话会让人以为「我选了 PowerShell」就等于「跑的一定是那个路径」。
+        */}
+        <code
+          className="terminal-shell"
+          title={terminal.state?.shell ? `实际可执行文件：${terminal.state.shell}` : '未解析到可执行文件'}
+        >
+          {terminal.state ? TERMINAL_SHELL_LABEL[terminal.state.shellKind] : '—'}
+        </code>
         <span className="panel-spacer" />
         {running ? (
           <button type="button" className="btn btn-tiny btn-danger" onClick={onInterrupt}>
@@ -65,6 +76,14 @@ export function TerminalPanel({ terminal, onRun, onWrite, onInterrupt, onClear }
           清屏
         </button>
       </div>
+
+      {/*
+        档位解析不到可执行文件时提前拦住：是在这里直接说清，而不是等用户敲完命令
+        才看到「启动失败」——后者看起来像是命令写错了，实际是这一档在本机根本没有。
+      */}
+      {terminal.state?.unavailable ? (
+        <div className="panel-note panel-note-warn">{terminal.state.unavailable}</div>
+      ) : null}
 
       {showTuiHint ? (
         <div className="panel-note panel-note-warn">
@@ -85,7 +104,9 @@ export function TerminalPanel({ terminal, onRun, onWrite, onInterrupt, onClear }
       >
         {entries.length === 0 ? (
           <div className="empty-hint">
-            在下方输入命令。工作目录已设为当前会话的工作区（{terminal.state?.shell ?? 'shell'}）。
+            在下方输入命令。工作目录已设为当前会话的工作区（当前
+            {terminal.state ? ` ${TERMINAL_SHELL_LABEL[terminal.state.shellKind]}` : ''}
+            {terminal.state?.shell ? ` · ${terminal.state.shell}` : ''}）。
           </div>
         ) : null}
 
