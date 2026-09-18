@@ -155,7 +155,7 @@ RAIL_HELPER='const openRail=async(label)=>{const b=[...document.querySelectorAll
 # 只是拍到了另一节，而回执里那个名字会被当成这一节的名字。
 SETTINGS_HELPER='const openSettings=async(section)=>{const r=await openRail("设置");if(r!=="ok")return r;const b=[...document.querySelectorAll(".settings-nav-item")].find(x=>x.textContent.trim()===section);if(!b)return "no-section:"+section;b.click();await new Promise(r2=>setTimeout(r2,1800));return "ok";};'
 
-SCENES="${*:-chat composer tree terminal terminal-shell preview hunk settings settings-prefs settings-security sandbox-denial sandbox-escalation skills memory schedule connectors usage browser chart office}"
+SCENES="${*:-chat composer tree terminal terminal-shell preview hunk settings settings-close settings-dark settings-prefs settings-security sandbox-denial sandbox-escalation skills memory schedule connectors usage browser chart office}"
 
 for scene in $SCENES; do
   case "$scene" in
@@ -213,13 +213,36 @@ for scene in $SCENES; do
         "1"
       ;;
     settings)
-      # 设置页的整体形态：左导航（分组）+ 内容列。这一场要证的是**导航与分节都渲染出来了**：
-      # 分组标题、十二个条目、当前那一节被高亮。回执回读导航条目数与选中项 ——
-      # 图上分不清「少了一节」与「那一节被挤到折叠之下」（导航这一列自己不滚动，
-      # 超出就是真的没了）。
-      run_scene "ui-settings" ".settings-nav" \
-        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('模型与端点'); if(r!=='ok') return r; const items=[...document.querySelectorAll('.settings-nav-item')]; const on=document.querySelector('.settings-nav-on'); const groups=[...document.querySelectorAll('.settings-nav-title')].map(x=>x.textContent); return 'items:'+items.length+' on:'+(on?on.textContent:'none')+' groups:'+groups.join('/');" \
+      # 设置的整体形态：**覆盖层对话框**（880×600）+ 左导航（分组）+ 内容列。
+      # 这一场要证三件事：① 十二个条目与分组都在、当前那一节被高亮；
+      # ② 对话框确实比窗口小一圈（「弹出式」这件事的判据就是尺寸，不是有没有遮罩）；
+      # ③ 遮罩铺满整个窗口 —— 这是「背景明确不可点」的证据，也是它与
+      #    「看起来还能点」的那种弹窗的分界线。
+      # 回执回读尺寸：图上分不清「对话框占满了窗口」与「窗口本来就小」。
+      run_scene "ui-settings" ".settings-dialog" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('模型与端点'); if(r!=='ok') return r; const d=document.querySelector('.settings-dialog'); const m=document.querySelector('.settings-mask'); if(!d||!m) return 'no-dialog'; const b=d.getBoundingClientRect(); const mb=m.getBoundingClientRect(); const items=[...document.querySelectorAll('.settings-nav-item')]; const on=document.querySelector('.settings-nav-on'); const groups=[...document.querySelectorAll('.settings-nav-title')].map(x=>x.textContent); return 'items:'+items.length+' on:'+(on?on.textContent:'none')+' groups:'+groups.join('/')+' dialog:'+Math.round(b.width)+'x'+Math.round(b.height)+' mask:'+Math.round(mb.width)+'x'+Math.round(mb.height);" \
         "0"
+      ;;
+    settings-close)
+      # 覆盖层的第三条退路（Esc）必须真的能关掉它 —— 这是「弹出式」与「整页」在行为上
+      # 最实的一条差别：整页没有「关掉」这个动作。回执读「关掉之后对话框与遮罩还在不在」：
+      # 图上分不清「没关掉」与「关掉了但遮罩留着」，而后者是一个点了没反应的界面。
+      run_scene "ui-settings-close" ".rail" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('外观'); if(r!=='ok') return r; const before=document.querySelectorAll('.settings-dialog').length; window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); await new Promise(r2=>setTimeout(r2,900)); const after=document.querySelectorAll('.settings-dialog').length; const mask=document.querySelectorAll('.settings-mask').length; return 'dialog:'+before+'->'+after+' mask:'+mask+(after===0&&mask===0?' closed':' still-open');" \
+        "0"
+      ;;
+    settings-dark)
+      # 深色主题下再看一眼这个覆盖层。为什么要单独一场：上一轮那处真缺陷
+      # （终端档位徽标的底色写的是从未定义过的 --surface-2）在浅色下看着完全正常，
+      # 只有对着深色才看得出那一行底色根本没生效。断言能挡住「变量没定义」，
+      # 挡不住「两个变量都定义了、但深色下两层是同一个色」—— 那只能看。
+      # 回执回读对话框底色 / 导航列底色：两者相同就是「两栏糊成一片」的那一天。
+      # 主题用预置 config.json 落盘（不是脚本里点 chip）：这既是深色场景，
+      # 也顺带证明了「主题从配置读出来」这条路是通的。
+      run_scene "ui-settings-dark" ".settings-dialog" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('外观'); if(r!=='ok') return r; const d=document.querySelector('.settings-dialog'); const n=document.querySelector('.settings-nav'); if(!d||!n) return 'no-overlay'; const on=document.querySelector('.theme-chip-on'); return 'theme:'+(on?on.textContent:'none')+' dialog-bg:'+getComputedStyle(d).backgroundColor+' nav-bg:'+getComputedStyle(n).backgroundColor+' same:'+(getComputedStyle(d).backgroundColor===getComputedStyle(n).backgroundColor?'YES':'no');" \
+        "0" \
+        "mkdir -p '$HOME_WIN' && printf '{\"theme\":\"dark\"}' > '$HOME_WIN/config.json'"
       ;;
     settings-prefs)
       # 「会话默认」这一节是「默认模型由用户自选」这条改动的落点：候选来自模型目录、
