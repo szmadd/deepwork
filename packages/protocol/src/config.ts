@@ -2,8 +2,8 @@
  * 应用设置模型。
  *
  * 这份配置存在 <home>/config.json，是**跨会话**的用户偏好：新建会话的默认模式与模型、
- * 上次用过的工作区、右侧面板停在哪个页签。注意它与 GuardPolicy（guard.json）是两份文件、
- * 两个关注点：config 是「用起来顺不顺手」，guard 是「允许发生什么」。
+ * 上次用过的工作区、上次所在的主区视图与设置分节。注意它与 GuardPolicy（guard.json）
+ * 是两份文件、两个关注点：config 是「用起来顺不顺手」，guard 是「允许发生什么」。
  * 混在一起会让「改个主题」和「放宽审批」变成同一个动作，那很危险。
  *
  * 读取一律经过 host.getConfig()，它用 DEFAULT_CONFIG 兜底并按字段合并 ——
@@ -25,19 +25,20 @@ import type { ModelPrice } from './usage';
  * 它取代了旧的 `sidePanel`（none/tree/terminal）：旧语义是「右侧面板开在哪一页」，
  * 而右侧并排面板本身已被 view 里的 `files` / `terminal` 取代表达。
  * getConfig 按字段合并默认值，旧 config.json 缺这个键就走默认 'chat'，无需迁移脚本。
+ *
+ * ── 为什么这里只剩「工作台视图」（2026-09-18 收窄）──────────────────
+ * `skills` / `memory` / `schedules` / `connectors` / `usage` 一度也是一级视图，
+ * 结果是 rail 上「天天点的」与「偶尔来配一次」的入口挨在一起，栏越加越长。
+ * 现在它们各自是**设置页里的一节**（见 `SettingsSection`），rail 只留工作台：
+ * 对话 / 文件 / 终端 / 浏览器 / 轨迹，外加固定在底部的设置。
+ *
+ * 收窄的代价必须说清：`config.lastView` 里可能存着旧值（例如 `skills`）。
+ * 那种值放过去会让下次启动落到一个没有对应页面的视图上 —— 主区一片空白，
+ * 而原因只写在配置文件里。**折回由宿主负责**（`getConfig`），不指望渲染层兜。
  */
-export type AppView =
-  | 'chat'
-  | 'files'
-  | 'terminal'
-  | 'browser'
-  | 'trajectory'
-  | 'skills'
-  | 'memory'
-  | 'schedules'
-  | 'connectors'
-  | 'usage'
-  | 'settings';
+export const APP_VIEWS = ['chat', 'files', 'terminal', 'browser', 'trajectory', 'settings'] as const;
+
+export type AppView = (typeof APP_VIEWS)[number];
 
 export const APP_VIEW_LABEL: Record<AppView, string> = {
   chat: '对话',
@@ -45,13 +46,93 @@ export const APP_VIEW_LABEL: Record<AppView, string> = {
   terminal: '终端',
   browser: '浏览器',
   trajectory: '轨迹',
+  settings: '设置',
+};
+
+export function isAppView(value: unknown): value is AppView {
+  return typeof value === 'string' && (APP_VIEWS as readonly string[]).includes(value);
+}
+
+/**
+ * 设置页的分节。
+ *
+ * ── 分节与分组是两个关注点 ──────────────────────────────────────────
+ * `SETTINGS_SECTIONS` 是**每一节是什么**（取值域，配置里存的就是它），
+ * `SETTINGS_GROUPS` 是**导航怎么排版**（哪几节挨在一起、组标题写什么）。
+ * 左导航、页头副标题、以及「打开设置并定位到某一节」三个地方共用这两份 ——
+ * 组标题一旦写进 JSX，第二天就会长出第二份清单，然后两份不一致。
+ *
+ * ── 顺序有含义：从「我用起来顺不顺手」到「这台机器上允许发生什么」──
+ * 排在前面的改动立刻看得见（外观），排在后面的一改就要重启内核甚至动系统（部署）。
+ * 把「审批与沙箱」压到后面不是不重视它，而是**它不该被顺手改掉**：
+ * 混在偏好里，用户会把它当成又一个开关。
+ */
+export const SETTINGS_SECTIONS = [
+  'appearance',
+  'session',
+  'interface',
+  'model',
+  'skills',
+  'memory',
+  'schedules',
+  'connectors',
+  'security',
+  'usage',
+  'deploy',
+  'about',
+] as const;
+
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+
+export interface SettingsGroup {
+  id: string;
+  label: string;
+  sections: readonly SettingsSection[];
+}
+
+export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
+  { id: 'general', label: '通用', sections: ['appearance', 'session', 'interface'] },
+  { id: 'model', label: '模型', sections: ['model'] },
+  { id: 'manage', label: '功能与数据', sections: ['skills', 'memory', 'schedules', 'connectors', 'usage'] },
+  { id: 'safety', label: '安全与部署', sections: ['security', 'deploy', 'about'] },
+];
+
+export const SETTINGS_SECTION_LABEL: Record<SettingsSection, string> = {
+  appearance: '外观',
+  session: '会话默认',
+  interface: '界面与终端',
+  model: '模型与端点',
   skills: '技能',
   memory: '记忆',
   schedules: '自动化',
   connectors: '连接器',
+  security: '审批与沙箱',
   usage: '用量',
-  settings: '设置',
+  deploy: '部署与运行时',
+  about: '关于',
 };
+
+/** 每一节「管什么」的一句话（设置页页头副标题）。写事实，不写形容词。 */
+export const SETTINGS_SECTION_NOTE: Record<SettingsSection, string> = {
+  appearance: '主题与思考过程的默认折叠方式；都立刻生效。',
+  session: '新会话起步用什么模式、哪个模型、多高的推理档位。',
+  interface: '文件树与终端的形态。终端这一档决定你敲的命令由谁解释。',
+  model: '推理能力从哪来：内核选择、端点、API key。改动需重启内核。',
+  skills: '已安装的技能、来源审计与逐条的启用开关。',
+  memory: '内核会持续读写的长期记忆，分用户级 / 工作区级 / 会话级三层。',
+  schedules: '定时任务：到点由内核另起一轮会话，只在应用运行期间生效。',
+  connectors: 'MCP 连接器清单：给内核挂上外部工具与数据源。',
+  security: '允许发生什么：内核沙箱、审批档位、硬拒绝模式。',
+  usage: '跨会话的 token 与费用账本，以及模型单价表。',
+  deploy: '随包 Python 运行时、内网 pip 源与安装前环境体检。',
+  about: '这台机器上实际跑着哪些东西。',
+};
+
+export const DEFAULT_SETTINGS_SECTION: SettingsSection = 'appearance';
+
+export function isSettingsSection(value: unknown): value is SettingsSection {
+  return typeof value === 'string' && (SETTINGS_SECTIONS as readonly string[]).includes(value);
+}
 
 /**
  * 模型端点。
@@ -232,6 +313,16 @@ export interface AppConfig {
   lastWorkspace: string;
   /** 上次所在的视图；下次启动停在同一页 */
   lastView: AppView;
+  /**
+   * 设置页上次所在的分节。
+   *
+   * 与 lastView 同类（下次打开停在同一页），只是粒度细一层 —— 设置仍是一个视图，
+   * 里面却有十二节；不记的话用户每次回来都要在左导航里重新找一遍。
+   *
+   * 刻意不放进 `CONFIG_FIELDS`：它的入口是设置页的左导航（与 railExpanded 同理），
+   * 塞进通用渲染器只会多一个没人会去找的下拉框。
+   */
+  settingsSection: SettingsSection;
   /** 终端回滚缓冲上限（字符） */
   terminalBufferLimit: number;
   /** 文件树展开深度 */
@@ -310,6 +401,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   defaultReasoningEffort: '',
   lastWorkspace: '',
   lastView: 'chat',
+  settingsSection: DEFAULT_SETTINGS_SECTION,
   terminalBufferLimit: 200_000,
   treeDepth: 3,
   collapseReasoning: false,
@@ -335,22 +427,7 @@ export const CONFIG_FIELDS = {
   defaultMode: { kind: 'enum', values: ['ptc', 'standard', 'minimal', 'creative'], label: '默认模式' },
   defaultModel: { kind: 'string', label: '默认模型（空 = 跟随内核默认）' },
   defaultReasoningEffort: { kind: 'string', label: '默认推理档位（空 = 不干预）' },
-  lastView: {
-    kind: 'enum',
-    values: [
-      'chat',
-      'files',
-      'terminal',
-      'trajectory',
-      'skills',
-      'memory',
-      'schedules',
-      'connectors',
-      'usage',
-      'settings',
-    ],
-    label: '上次所在视图',
-  },
+  lastView: { kind: 'enum', values: APP_VIEWS, label: '上次所在视图' },
   terminalBufferLimit: { kind: 'number', label: '终端缓冲上限（字符）' },
   terminalShell: { kind: 'enum', values: TERMINAL_SHELLS, label: '终端 shell' },
   treeDepth: { kind: 'number', label: '文件树深度' },
