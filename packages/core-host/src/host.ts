@@ -23,6 +23,7 @@ import {
   type GuardPolicy,
   type HostStatus,
   isSandboxMode,
+  isTerminalShell,
   isThemeMode,
   type MemoryEntry,
   type MemoryLayer,
@@ -33,6 +34,7 @@ import {
   type RunStatus,
   type RuntimeStatus,
   SANDBOX_MODES,
+  TERMINAL_SHELLS,
   THEME_MODES,
   type SandboxEscalation,
   type SandboxMode,
@@ -523,10 +525,24 @@ export class DeepworkHost {
     if (patch.theme !== undefined && !isThemeMode(patch.theme)) {
       throw new Error(`主题档位「${String(patch.theme)}」不是合法值（合法值：${THEME_MODES.join(' / ')}）`);
     }
+    // 终端 shell 档位同样先校验再落盘。这一项与主题同类：它一旦被消费就影响行为，
+    // 而坏值（比如手改 config.json 写成 'zsh'）的表现是「终端用了哪个 shell 说不清」——
+    // 每个平台的兜底都不一样，且不会有任何报错。校准点是「终端实际跑的是什么」，
+    // 所以只认白名单里的三档。
+    if (patch.terminalShell !== undefined && !isTerminalShell(patch.terminalShell)) {
+      throw new Error(
+        `终端 shell 档位「${String(patch.terminalShell)}」不是合法值（合法值：${TERMINAL_SHELLS.join(' / ')}）`,
+      );
+    }
     // 单价表同样先清洗再落盘：NaN / 负数单价会让整张估算表变成 NaN，
     // 而那种错误在界面上只是一个 NaN，追不回源头
     if (patch.modelPrices) next.modelPrices = sanitizeModelPrices(patch.modelPrices);
     writeJson(configPath(), next);
+    // 终端 shell 即刻生效。终端是宿主的进程、内核不参与，所以这里不需要重启内核
+    // （与端点变更那一段正好相反）。主动推给 manager 而不是「等界面下次 terminal.open
+    // 把新档位带过来」：界面上「改完设置」与「再打开终端」可能隔很久，
+    // 中间敲的命令会静默地用旧 shell —— 那与设置页写的「下一条命令就换 shell」不符。
+    if (patch.terminalShell !== undefined) this.terminals.setShellKind(next.terminalShell);
     // 端点变化：同步凭据 + 重建运行时补丁文件。补丁在内核启动的组合期应用，
     // 所以变更需要 kernel.restart 生效 —— 生效语义在日志与 UI 上如实呈现。
     if (patch.modelEndpoint && JSON.stringify(patch.modelEndpoint) !== JSON.stringify(prev.modelEndpoint)) {
@@ -1132,7 +1148,12 @@ export class DeepworkHost {
   openTerminal(sessionId: string): TerminalState {
     const session = this.store.get(sessionId);
     if (!session) throw new Error(`会话不存在: ${sessionId}`);
-    return this.terminals.open(sessionId, session.workspace, (chunk) => this.terminalSink(chunk));
+    return this.terminals.open(
+      sessionId,
+      session.workspace,
+      (chunk) => this.terminalSink(chunk),
+      this.getConfig().terminalShell,
+    );
   }
 
   runTerminal(sessionId: string, command: string): { entryId: string } {

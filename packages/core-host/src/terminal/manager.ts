@@ -3,14 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
+  DEFAULT_TERMINAL_SHELL,
   TERMINAL_LIMITS,
   type TerminalChunk,
   type TerminalEntry,
   type TerminalExit,
+  type TerminalShell,
   type TerminalState,
 } from '@deepwork/protocol';
 import { createLogger } from '../logger';
 import { OutputDecoder } from './decoder';
+import { resolveTerminalShell, terminalInvocation, type TerminalShellResolution } from './shells';
 
 const log = createLogger('terminal');
 
@@ -41,13 +44,21 @@ export type TerminalSink = (chunk: TerminalChunk) => void;
  * 后者在 Windows 上会踩进 cmd 的引号转义泥潭：Node 会按 CreateProcess 规则给参数加引号，
  * 而 cmd 的 /c 解析规则是另一套，两者叠加后 `node -e "console.log(1+1)"` 这类命令会静默失败。
  * 实测 `shell: true` 让 Node 自己拼命令行才是对的 —— 空格、嵌套引号、管道、退出码全部正确。
+ *
+ * **这条结论只对 cmd 成立。** 换成 PowerShell 后同一形态会把命令拆坏
+ * （PowerShell 重新解析原始命令行、引号被吃掉），所以 PowerShell 与 Git Bash
+ * 走显式 argv。三档的差异与实测证据集中在 `./shells.ts`，这里只负责按档位取用。
+ *
+ * ── shell 档位在这些地方生效 ──
+ * 档位在**每次执行命令时**解析，而不是在打开终端时定死：一条命令一个子进程，
+ * 所以「改设置 → 下一条命令就换 shell」是天然成立的，不需要重开终端，
+ * 也不需要重启内核（终端是宿主的进程，内核不参与）。
  */
 
 /** 单个终端的运行状态 */
 interface LiveTerminal {
   sessionId: string;
   cwd: string;
-  shell: string;
   child: ChildProcess | null;
   running: TerminalEntry | null;
   history: TerminalEntry[];
@@ -61,11 +72,6 @@ interface LiveTerminal {
   sink: TerminalSink;
 }
 
-function resolveShell(): string {
-  if (process.platform === 'win32') return process.env.ComSpec || 'cmd.exe';
-  return process.env.SHELL || '/bin/sh';
-}
-
 function isDirectory(target: string): boolean {
   try {
     return fs.statSync(target).isDirectory();
@@ -76,20 +82,39 @@ function isDirectory(target: string): boolean {
 
 export class TerminalManager {
   private terminals = new Map<string, LiveTerminal>();
+  /** 当前 shell 档位；由宿主按 config.terminalShell 写入，每次执行命令时解析 */
+  private shellKind: TerminalShell = DEFAULT_TERMINAL_SHELL;
+
+  /**
+   * 设置 shell 档位。
+   *
+   * 刻意**不**在这里重启任何东西：档位在每次执行命令时解析，所以
+   * 「改了设置 → 下一条命令就是新 shell」天然成立；而已经跑着的命令
+   * 属于它自己那次 spawn，不该被中途换掉（换不了，进程已经在了）。
+   */
+  setShellKind(kind: TerminalShell): void {
+    this.shellKind = kind;
+  }
+
+  /** 当前档位与它的解析结果（界面据此显示「实际用的是哪个 shell」与不可用原因） */
+  shellResolution(): TerminalShellResolution {
+    return resolveTerminalShell(this.shellKind);
+  }
 
   /** 打开（或接管）某个会话的终端；重复打开只是换掉出口，不重启进程状态 */
-  open(sessionId: string, workspace: string, sink: TerminalSink): TerminalState {
+  open(sessionId: string, workspace: string, sink: TerminalSink, shellKind?: TerminalShell): TerminalState {
+    if (shellKind) this.shellKind = shellKind;
     const existing = this.terminals.get(sessionId);
     if (existing) {
       existing.sink = sink;
       return this.snapshot(existing);
     }
 
+    const resolved = this.shellResolution();
     const cwd = isDirectory(workspace) ? path.resolve(workspace) : process.cwd();
     const live: LiveTerminal = {
       sessionId,
       cwd,
-      shell: resolveShell(),
       child: null,
       running: null,
       history: [],
@@ -100,7 +125,9 @@ export class TerminalManager {
       sink,
     };
     this.terminals.set(sessionId, live);
-    log.info(`终端已打开 session=${sessionId} shell=${live.shell} cwd=${cwd}`);
+    log.info(
+      `终端已打开 session=${sessionId} kind=${this.shellKind} shell=${resolved.exe ?? '(不可用)'} cwd=${cwd}`,
+    );
     return this.snapshot(live);
   }
 
@@ -133,10 +160,22 @@ export class TerminalManager {
     // 界面在块头渲染它。两处都写就成了重复，而且会让「输出」这个缓冲区混进非输出内容。
     // （中断提示之类的宿主消息仍然走 system 流 —— 那些是输出里没有、用户又必须知道的事。）
 
+    // 每次执行命令时解析档位：这样「改设置 → 下一条命令换 shell」不需要重开终端。
+    // 解析不到可执行文件时**如实失败**，而不是回退到别的 shell ——
+    // 回退会让人以为「我选的档位生效了」，而敲出来的命令语义完全不同。
+    const resolved = this.shellResolution();
+    if (!resolved.exe) {
+      this.finish(live, entry, { status: 'failed' }, resolved.unavailable);
+      return { entryId: entry.id };
+    }
+
+    const invocation = terminalInvocation(this.shellKind, resolved.exe, trimmed);
+
     let child: ChildProcess;
     try {
-      child = spawn(trimmed, {
-        shell: live.shell,
+      child = spawn(invocation.file, invocation.args, {
+        // cmd 走 Node 的 shell 选项（改动前验证过的形态）；PowerShell / bash 走显式 argv
+        ...(invocation.viaShellOption ? { shell: resolved.exe } : {}),
         cwd: live.cwd,
         windowsHide: true,
         env: process.env,
@@ -320,13 +359,24 @@ export class TerminalManager {
   }
 
   private snapshot(live: LiveTerminal): TerminalState {
+    // 每次都按**当前档位**重新解析，而不是缓存上一次的结果。
+    //
+    // 缓存过一次是个真实的缺陷：`live.shell` 只在执行命令时刷新，于是
+    // 「切到本机不可用的 gitbash → 再打开终端」拿到的仍是上一档的成功结论，
+    // 界面上既没有「未找到」的提示，也让调用方以为这一档可用。
+    // 现在解析是纯函数（查 PATH / 查注册路径），每次快照重算的成本可以忽略。
+    const resolved = this.shellResolution();
     return {
       sessionId: live.sessionId,
       cwd: live.cwd,
-      shell: live.shell,
+      shell: resolved.exe ?? '',
+      shellKind: this.shellKind,
       running: live.running,
       history: live.history,
       dropped: live.dropped,
+      // 档位解析不到可执行文件时提前告知：界面上「还没敲命令就该看见
+      // 这一档在本机不可用」，而不是等敲完才报错
+      ...(resolved.unavailable ? { unavailable: resolved.unavailable } : {}),
     };
   }
 }
