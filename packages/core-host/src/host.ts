@@ -505,8 +505,9 @@ export class DeepworkHost {
    *
    * ── 为什么要折回而不是原样返回 ──────────────────────────────────────
    * 「多字段」能靠合并兜住，**「值域变窄」兜不住**：`lastView` 曾经可以是
-   * `skills` / `memory` / …，2026-09-18 起这五个成了设置页里的分节、不再是视图。
-   * 一台升级上来的机器，config.json 里就存着 `"lastView": "skills"` ——
+   * `skills` / `memory` / …，2026-09-18 起这五个成了设置里的分节、不再是视图；
+   * 同一天设置自己也从整页改成了覆盖层，从视图清单里退出。于是升级上来的机器
+   * config.json 里可能存着 `"lastView": "skills"` 或者 `"lastView": "settings"` ——
    * 原样交给渲染层，下次启动会落在一个没有对应页面的视图上：主区**一片空白**，
    * 而原因只写在配置文件里，界面上一个字都没有。
    * 折回是这里的正确动作（容忍手改过的旧文件），与 setConfig 的「拒绝」分工明确：
@@ -561,7 +562,8 @@ export class DeepworkHost {
     // 让 UI 去兜一个已经不存在的页面，只会把「写错了」伪装成「页面加载失败」。
     if (patch.lastView !== undefined && !isAppView(patch.lastView)) {
       throw new Error(
-        `视图「${String(patch.lastView)}」不是合法值（合法值：${APP_VIEWS.join(' / ')}）—— 技能 / 记忆 / 自动化 / 连接器 / 用量已收进设置页`,
+        `视图「${String(patch.lastView)}」不是合法值（合法值：${APP_VIEWS.join(' / ')}）—— ` +
+          '技能 / 记忆 / 自动化 / 连接器 / 用量已收进设置；设置本身是覆盖层，也不再是一种视图',
       );
     }
     if (patch.settingsSection !== undefined && !isSettingsSection(patch.settingsSection)) {
