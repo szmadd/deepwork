@@ -162,6 +162,108 @@ async function main() {
     !events.some((event) => JSON.stringify(event).includes('DEEPWORK_TERMINAL_OK')),
   );
 
+  // ── shell 档位（powershell 默认 / cmd / gitbash）──────────
+  //
+  // 这一段的校准点是**终端实际用的是哪个 shell**，而不是「配置里写了什么」。
+  // 每一档都用一条只有该 shell 认得、别的 shell 会原样或报错的命令来验：
+  //   PowerShell 认 $PSVersionTable；cmd 认 %ComSpec%（PS/bash 会原样打印）；
+  //   bash 认 $BASH_VERSION 与 &&（PS 5.1 不支持 &&）。
+  // 只用「配置写进去了」当断言是不够的 —— 档位没接线时配置照样能写。
+  const defaultState = await client.invoke('terminal.open', { sessionId: session.id });
+  check('terminal.open 回报当前档位', defaultState.shellKind === 'powershell', `shellKind=${defaultState.shellKind}`);
+
+  const psCmd = await client.invoke('terminal.run', {
+    sessionId: session.id,
+    command: 'echo $PSVersionTable.PSVersion.Major',
+  });
+  await waitExit(chunks, psCmd.entryId);
+  const psOut = textOf(chunks, psCmd.entryId).trim();
+  check('默认档位真的跑在 PowerShell 上', /^\d+$/.test(psOut), `PSVersion.Major=${psOut || '(空)'}`);
+
+  const badShell = await client
+    .invoke('config.set', { patch: { terminalShell: 'zsh' } })
+    .then(() => null)
+    .catch((error) => error);
+  check('非法档位被拒绝而不是静默落盘', badShell instanceof Error, badShell ? badShell.message : '未拒绝');
+
+  const { TERMINAL_SHELLS } = require('../packages/protocol/dist/terminal');
+  const { CONFIG_FIELDS, DEFAULT_CONFIG } = require('../packages/protocol/dist/config');
+  check(
+    '设置页字段枚举与档位清单同源（不写第二份白名单）',
+    CONFIG_FIELDS.terminalShell.values.join(',') === TERMINAL_SHELLS.join(','),
+    CONFIG_FIELDS.terminalShell.values.join(','),
+  );
+  check('默认档位是 PowerShell', DEFAULT_CONFIG.terminalShell === 'powershell', DEFAULT_CONFIG.terminalShell);
+
+  await client.invoke('config.set', { patch: { terminalShell: 'cmd' } });
+  const cmdState = await client.invoke('terminal.open', { sessionId: session.id });
+  check('切档后状态同步', cmdState.shellKind === 'cmd', `shellKind=${cmdState.shellKind}`);
+
+  const cmdCmd = await client.invoke('terminal.run', { sessionId: session.id, command: 'echo %ComSpec%' });
+  await waitExit(chunks, cmdCmd.entryId);
+  const cmdOut = textOf(chunks, cmdCmd.entryId).trim();
+  check(
+    'cmd 档位真的跑在 cmd 上（%ComSpec% 被展开）',
+    cmdOut.toLowerCase().includes('cmd.exe'),
+    cmdOut || '(空)',
+  );
+
+  await client.invoke('config.set', { patch: { terminalShell: 'gitbash' } });
+  const bashState = await client.invoke('terminal.open', { sessionId: session.id });
+  if (bashState.unavailable) {
+    // 没装 Git for Windows 的机器：**必须如实报不可用并且执行失败**，
+    // 绝不能悄悄退到别的 shell —— 那是「我选的档位生效了」的假象。
+    check('gitbash 不可用时如实上报原因', /Git Bash/.test(bashState.unavailable), bashState.unavailable);
+    const refused = await client.invoke('terminal.run', { sessionId: session.id, command: 'echo X' });
+    const refusedExit = await waitExit(chunks, refused.entryId);
+    check(
+      'gitbash 不可用时执行如实失败（不静默回退别的 shell）',
+      refusedExit?.exit.status === 'failed',
+      `status=${refusedExit?.exit.status}`,
+    );
+  } else {
+    check('gitbash 解析到的是 bash 而不是 WSL 入口', !/\\system32\\bash\.exe$/i.test(bashState.shell), bashState.shell);
+    const bashCmd = await client.invoke('terminal.run', {
+      sessionId: session.id,
+      command: 'echo "bash:$BASH_VERSION" && echo CHAINED',
+    });
+    await waitExit(chunks, bashCmd.entryId);
+    const bashOut = textOf(chunks, bashCmd.entryId);
+    check('gitbash 档位真的跑在 bash 上', /bash:\d/.test(bashOut), bashOut.trim().split('\n')[0] || '(空)');
+    // `&&` 可用是「与 Linux 一致」的核心：这正是 PowerShell 5.1 缺的那一项
+    check('gitbash 支持 && 串行（Linux 语义）', bashOut.includes('CHAINED'));
+  }
+
+  // 上面这一档的断言随机器而变（装了 Git 走可用分支，没装走不可用分支）。
+  // 下面两条是**与机器无关**的：它们锁的是两条解析规则本身，不依赖本机装了什么。
+  const { resolveTerminalShell } = require('../packages/core-host/dist/terminal/shells.js');
+  const wslOverride = resolveTerminalShell(
+    'gitbash',
+    { ...process.env, DEEPWORK_GIT_BASH: 'C:\\Windows\\System32\\bash.exe' },
+    'win32',
+  );
+  check(
+    '显式指向 WSL 的 bash.exe 会被拒绝（不当 gitbash）',
+    wslOverride.exe === null || !/\\system32\\bash\.exe$/i.test(wslOverride.exe),
+    wslOverride.exe ?? wslOverride.unavailable,
+  );
+
+  const noGit = resolveTerminalShell(
+    'gitbash',
+    { PATH: 'C:\\Windows\\System32', PATHEXT: '.EXE', ComSpec: 'cmd.exe' },
+    'win32',
+  );
+  check(
+    '本机没有 Git 时如实报「未找到」而不是回退别的 shell',
+    noGit.exe === null && /未找到/.test(noGit.unavailable),
+    noGit.exe ?? noGit.unavailable,
+  );
+
+  // 恢复默认档位，避免影响后续断言
+  await client.invoke('config.set', { patch: { terminalShell: 'powershell' } });
+  const restored = await client.invoke('terminal.open', { sessionId: session.id });
+  check('档位可切回 powershell', restored.shellKind === 'powershell', `shellKind=${restored.shellKind}`);
+
   // ── 关闭 ───────────────────────────────────────────────
   await client.invoke('terminal.close', { sessionId: session.id });
   let closed = false;

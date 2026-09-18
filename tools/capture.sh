@@ -27,7 +27,15 @@ ELECTRON_MSYS="$REPO_MSYS/node_modules/electron/dist/electron.exe"
 BROWSER_PAGE_WIN="$REPO/tools/fixtures/browser-page.html"
 BROWSER_URL="file:///$BROWSER_PAGE_WIN"
 
-export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2.0/bin:/c/Windows/System32:/c/Windows:/c/Users/Administrator/.workbuddy/binaries/node/versions/22.22.2-3:$PATH"
+# 截图脚本自身要用到的命令行工具（dirname / sed / grep）。这里只需保证
+# System32 与 Git 自带的 usr/bin 在 PATH 上 —— 不写死某个用户名：
+# 写死过 `C:\Users\Administrator\...`，换机器后那几段 PATH 全是死路径，
+# 症状是 `dirname: command not found` 之类噪音，脚本却照样往下跑。
+if [ -d "$HOME/.workbuddy/binaries/PortableGit" ]; then
+  PGIT="$(ls -d "$HOME"/.workbuddy/binaries/PortableGit/versions/*/usr/bin 2>/dev/null | head -1)"
+  [ -n "$PGIT" ] && PATH="$PGIT:$PATH"
+fi
+export PATH="/usr/bin:/bin:/c/Windows/System32:$PATH"
 
 # Electron 以纯 Node 模式跑的开关必须清掉，否则它不会启动 GUI
 unset ELECTRON_RUN_AS_NODE
@@ -141,7 +149,7 @@ run_scene() {
 # 这一点也正是「点不到就返回 no-rail」必须存在的原因。
 RAIL_HELPER='const openRail=async(label)=>{const b=[...document.querySelectorAll(".rail-item")].find(x=>x.getAttribute("title")===label);if(!b)return "no-rail:"+label;b.click();await new Promise(r=>setTimeout(r,1600));return "ok";};'
 
-SCENES="${*:-chat composer tree terminal preview hunk settings settings-security sandbox-denial sandbox-escalation skills memory schedule connectors usage browser chart office}"
+SCENES="${*:-chat composer tree terminal terminal-shell preview hunk settings settings-security sandbox-denial sandbox-escalation skills memory schedule connectors usage browser chart office}"
 
 for scene in $SCENES; do
   case "$scene" in
@@ -167,8 +175,22 @@ for scene in $SCENES; do
       run_scene "ui-tree" ".tree-changed" "$RAIL_HELPER return await openRail('文件');" "0"
       ;;
     terminal)
+      # 终端默认档位已从 cmd 换成 PowerShell，所以这里的命令**不能再用 `&&`** ——
+      # Windows PowerShell 5.1 不支持它（PS 7 才支持），而 5.1 是绝大多数机器上的默认版本。
+      # 曾经这条用的是 `node -v && echo ...`，改档之后那一帧会变成一张语法错误截图。
+      # 这里改成两条独立命令分别回车：不依赖任何一档的串行语法，三档都能跑通。
+      # 回执回读 shell 徽标与两次退出码 —— 图上分不清「徽标没渲染」与「渲染成空」。
       run_scene "ui-terminal" ".terminal-block" \
-        "$RAIL_HELPER await openRail('终端'); const i=document.querySelector('.terminal-input'); if(!i) return 'no-input'; const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; s.call(i,'node -v && echo 终端中文输出正常'); i.dispatchEvent(new Event('input',{bubbles:true})); await new Promise(r=>setTimeout(r,300)); i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); await new Promise(r=>setTimeout(r,2800)); return 'ok';" \
+        "$RAIL_HELPER await openRail('终端'); const i=document.querySelector('.terminal-input'); if(!i) return 'no-input'; const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; const send=async(t)=>{s.call(i,t);i.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,250));i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await new Promise(r=>setTimeout(r,2200));}; await send('node -v'); await send('echo 终端中文输出正常'); const chip=document.querySelector('.terminal-shell'); const st=[...document.querySelectorAll('.terminal-status')].map(x=>x.textContent); return 'shell:'+(chip?chip.textContent:'none')+' status:'+st.join(',');" \
+        "0"
+      ;;
+    terminal-shell)
+      # 终端 shell 档位选择器（设置 → 偏好）。这一场要证的是**控件与说明都渲染出来了**：
+      # 三个档位 chip、当前档位被选中、以及该档的能力边界提示（PS 5.1 不支持 && 这句
+      # 是用户做选择时唯一需要的依据）。回执回读三个 chip 的文案与选中项 ——
+      # 图上分不清「chip 少了一个」与「少的那一个被挤出换行」。
+      run_scene "ui-terminal-shell" ".terminal-shell-chips" \
+        "$RAIL_HELPER await openRail('设置'); const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('偏好')); if(t){t.click();await new Promise(r=>setTimeout(r,1200));} const box=document.querySelector('.terminal-shell-chips'); if(!box) return 'no-shell-chips'; const chips=[...box.querySelectorAll('.theme-chip')]; const on=box.querySelector('.theme-chip-on'); const kvs=[...document.querySelectorAll('.page-body .modal-label')].findIndex(x=>x.textContent==='终端 shell'); return 'chips:'+chips.map(c=>c.textContent).join('/')+' on:'+(on?on.textContent:'none')+' labelAt:'+kvs;" \
         "0"
       ;;
     preview)
