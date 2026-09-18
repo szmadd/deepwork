@@ -314,9 +314,10 @@ B 档各项：契约草案 + DEVLOG 明确「为什么本地验不了、需要�
 | 界面 | ✅ **深浅主题切换器已完成（2026-09-17）**：契约 `resolveTheme(mode, prefersDark)`；`data-theme` 挂在 `document.documentElement`（**不是 body** —— 原生控件跟随 `color-scheme`）；CSS 变量抽成语义色；**默认 `theme: 'light'`**（原为 `dark` 却从未被消费，接了切换器会静默翻转整个 UI）。`tools/theme-test.js` **24 项**进 verify（含「每个 `:root` 变量在深色下都有覆盖」的完整性断言） |
 | 测试 | ~~`real-dsh-mcp` 3/8 的环境性失败根因未定位~~ → **2026-09-16 复测 8/8**（改动前后两棵树皆然），旧记录不再复现、原因未定 → **2026-09-17 又复现 3/8**，且这一次**当场做了对照**：`git stash -u` 回到 HEAD 干净树、重建、连跑，**同样是 3/8**，与本轮八项改动无关。失败形态稳定（`start()` 握手 ok、run completed，但模型工具表里**没有任何 `mcp__` 工具**，即 fake server 未被注册；无插件加载报错）。该套件仍是真实 MCP 通路唯一哨兵，**不要摘**，须留在 verify 链尾 |
 | 测试 | ⚠️ **`npm run verify` 在本沙箱跑不到底**：`browser-test`（Edge 起不来，code=0）与链尾的 `real-dsh-mcp`（上一条）都是环境性红，`&&` 链**在 browser-test 处即中断** —— 排在它之后的 office/chart/modelcfg/sandbox/sandbox-e2e/runtime/installer/pip/preflight/routing/theme/notify/branch/completion/real-dsh-mcp **不会被执行**。2026-09-17 已单独补跑这一段并全绿（见 DEVLOG）。**不要把「verify 输出停在 browser-test」误读成「后面全过了」** |
-| 界面 | **沙箱相关 UI 的渲染截图未产出**（升级审批弹窗的 `DEEPWORK_MOCK_SANDBOX_ESCALATION` mock 帧与 capture 场景已就绪、安全页的三档选择器也已接线，但缺 Electron 二进制跑不了 capture）；这两处的渲染证据目前都只到读源码断言 |
+| 界面 | **沙箱相关 UI 的渲染截图未产出**（升级审批弹窗的 `DEEPWORK_MOCK_SANDBOX_ESCALATION` mock 帧与 capture 场景已就绪、安全页的三档选择器也已接线，但缺 Electron 二进制跑不了 capture）；这两处的渲染证据目前都只到读源码断言。**注：Electron 二进制本机其实在**（`node_modules/electron/dist/electron.exe`，2026-09-18 用它跑通了 capture），此条的前提已不成立 —— 待补的是「跑一遍那几个场景」 |
+| 终端 | **终端 shell 三档已完成（2026-09-18）**：默认档换成 Windows 原生 shell，三档各自的调用形态与实测证据固化成 `core-host/src/terminal/shells.ts`，`tools/terminal-test.js` **35 项**进 verify。遗留：**非 Windows 平台未验收**（那一支只有代码路径、无实测）；**Git Bash 装在非标准路径时仍会报未找到**（候选只覆盖 PATH 推导 + 三个常见根目录，要靠 `DEEPWORK_GIT_BASH` 显式指定，没有界面入口）；**审计规则无白名单机制**（同 M2-C 行） |
 | 仓库 | `wip/m2-h` 半成品分支已并入 main，可删（未删，留给用户决定） |
-| 运维 | 已接：无。待补：**CI**（`npm run verify` 仍靠人工）、**远端推送**（`origin` 上 `main` 领先 **17** 个提交）、**版本 tag**（M0/M1 各阶段成果无回滚点） |
+| 运维 | 已接：**推远端 + 版本 tag（2026-09-17 落地）** —— `main` 已推 `origin`，第一个回滚点 annotated tag **`v0.1.0`**（指向 `b001c07`）。待补：**CI**（`npm run verify` 仍靠人工）；**本机 `git push` 需绕开被阻 IP**（路由器把 `github.com` 解析到 `20.205.243.166`，443 被阻断），处置写进用户级 skill `github-push-blocked-ip` |
 
 ---
 
@@ -485,3 +486,14 @@ M2 的剩余清单（H/J/I/K）里没有，M3 的 A/B 两档里也没有。此�
 内核自动写记忆 / 技能市场 URL 源 / 连接器 HTTP 传输 / 分支对比视图）。
 （**FR-3.5 的模式切换入口与 FR-10.2 后半均已补齐**，见 §七 对应两行。）
 运维债（CI / 推远端 / 打 tag）与跨平台打包仍按原判据挂着。
+
+### 8.8 M3 前置三项（2026-09-18 用户提出，已拍板顺序）
+
+用户在逐项试用后提了三件事，顺序为 **先终端 → 再设置 → 最后流式**：
+
+| 序 | 事项 | 状态 | 口径 |
+|---|---|---|---|
+| 1 | 终端换默认 shell，让命令与 Linux 一致 | ✅ 完成（2026-09-18） | 默认档换成 Windows 原生 shell（与 Agent 侧同族），另给 cmd / Git Bash 两档；「与 Linux 一致」由 Git Bash 档兑现（bash 语义、`&&`/`\|\|` 齐备）。三档能力边界写在契约层、直接显示在设置页 |
+| 2 | 设置改左导航分组；管理类页面收进设置 | ⏳ 未开始 | 分组：通用 / 外观 / 功能 / 数据与安全 / 关于；技能 / 记忆 / 自动化 / 连接器 / 用量从活动栏一级入口收进设置，活动栏只留工作台（对话 / 文件 / 终端 / 浏览器 / 轨迹） |
+| 3 | 流式输出 | ⏳ 未开始，**先做观感优化** | **传输层不动**：内核 ACP 桥（`dsh-acp` 的 `assistantUpdates()`）只转发**已提交**的整块消息、且按块序，没有 delta 级事件（实测一个 323 字的思考块是**原子**到达的）。真正的 token 级流式要走 `dsh-client-connection`（`text-delta`/`reasoning-delta`），那需要 dsh Host + HTTP/WS，属架构级改动。本轮只把「等一会儿然后整段出现」做成**可感知的进行中**：块级打字机追加 + 活动指示（计时 / 脉冲光标 / 思考态）。注意 `mock-harness` **伪造了 delta**，所以所有套件在真内核不流式的情况下照样全绿 —— 这条不能拿测试当依据 |
+

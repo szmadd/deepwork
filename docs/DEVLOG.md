@@ -3660,3 +3660,117 @@ node tools/verify-all.js                # exit 0，31/31 绿
 
 用户把 setup.exe 带到内网覆盖安装；回来后确认模型端点与首轮对话（本轮含图表 schema 修复，
 真端点首轮不再是 `Invalid schema`）。
+
+---
+
+## 2026-09-18 · M3 前置 · 终端换默认 shell：一个「看起来写对了」的配置面和两处陈旧的缓存
+
+**目标**
+
+用户提了三件事（流式输出、终端换默认 shell 并让命令与 Linux 一致、设置页改左导航分组）。
+按用户拍板的顺序 **先终端 → 再设置 → 最后流式**，本轮只做第一件，并且要在**不动传输层**的
+前提下把「终端能不能换 shell、换了之后命令是不是真的按新 shell 解释」做完。
+
+**现象与根因**
+
+改动前的终端只有一档：`spawn(command, { shell: true })`，Windows 上就是 cmd。
+换 shell 不是「换一个字符串」——三档的**调用形态**根本不同，踩了三个坑：
+
+| 试过的形态 | 实测结果 |
+|---|---|
+| `spawn(command, { shell: 'powershell.exe' })` | Node 在 Windows 上写死 `/d /s /c` 并自行加引号，PowerShell 会**重新解析原始命令行、把引号吃掉**。`node -e "console.log(JSON.stringify(process.argv.slice(1)))"` 变成「`process.argv.slice` 无法识别为 cmdlet」——命令被**静默拆坏** |
+| `powershell -EncodedCommand <base64>` | stderr 变成 **CLIXML**（`#< CLIXML <Objs Version=...`），终端里是一坨不可读的序列化 XML；且不额外收尾时退出码被**压成 1**（真值 3 丢失） |
+| `powershell -Command <cmd>` + 收尾尾码 | ✅ 退出码 3 → 3；cmdlet 报错给 1 且 stderr 是可读文本；双层引号不被吃；中文输出正常 |
+
+顺带查出两处**已经是坏的**东西：
+
+1. **`shell` / `shellUnavailable` 缓存在 LiveTerminal 上**，只在 `run()` 里刷新。
+   于是「切到本机不可用的 Git Bash → 再打开终端」拿到的仍是上一档的成功结论：
+   界面上既没有「未找到」提示，调用方也以为这一档可用。**它的表现是「静默显示成功」**，
+   正是最难被发现的那一类。
+2. **`resolveGitBash` 的上溯级数写死两级。** git.exe 在 Git for Windows 里有多个落点
+   （`<root>\cmd`、`<root>\bin`、`<root>\mingw64\bin`），对应到 `<root>\bin\bash.exe`
+   分别要上溯 1 / 1 / 2 级。本机 PATH 上的 `D:\Program Files\Git\cmd\git.exe` 被推导成
+   `D:\Program Files\bin\bash.exe`（不存在）→ **「装了 Git 却报未找到」**，
+   而这句话会让用户去重装一遍 Git。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/terminal.ts` | `TerminalShell` 三档 + `TERMINAL_SHELLS` / `DEFAULT_TERMINAL_SHELL` / `TERMINAL_SHELL_LABEL` / `TERMINAL_SHELL_NOTE` / `isTerminalShell()`；`TerminalState` 新增 `shellKind`，`shell` 的含义收紧为「当前档位解析到的可执行文件」 |
+| `packages/protocol/src/config.ts` | `AppConfig.terminalShell` + `DEFAULT_CONFIG` + `CONFIG_FIELDS`（白名单只此一处） |
+| `packages/core-host/src/terminal/shells.ts`（新） | 上面三个实测结论 + `which` / `isWslBash` / `resolveGitBash` / `resolveTerminalShell` / `terminalInvocation` |
+| `packages/core-host/src/terminal/manager.ts` | 档位**每次执行命令时**解析（所以「改设置 → 下一条命令换 shell」不需要重开终端）；删掉两个缓存字段，改成按当前档位即时解析 |
+| `packages/core-host/src/host.ts` | `setConfig` 校验档位；变更后**主动推给 manager**，不等界面下次 `terminal.open` 捎过来 |
+| `apps/desktop/.../SettingsPanel.tsx` | 设置 → 偏好新增「终端 shell」三个 chip + 该档能力边界提示 |
+| `apps/desktop/.../TerminalPanel.tsx` / `styles.css` | 工具栏档位徽标；档位不可用时在面板顶部提前拦住并说清原因 |
+| `tools/terminal-test.js` | 22 → **35 项** |
+| `tools/capture.sh` | 新增 `terminal-shell` 场景；终端场景的命令去掉 `&&`（见「踩坑与教训」第 3 条）；PATH 不再写死用户名 |
+
+两条**刻意不做**的事：
+
+- **不把「档位」做成「解析不到就回退别的 shell」。** 回退会让人以为「我选的档位生效了」，
+  而敲出来的命令语义完全不同。解析不到就如实失败。
+- **不把 `System32\bash.exe` 当 Git Bash。** 那是 **WSL 入口**，选中它会在另一个文件系统里
+  开 shell —— 用户以为自己在 Windows 工作区里敲 `ls`，实际看的是 WSL 的根目录，
+  而这件事**从画面上看不出来**。
+
+**验证**
+
+```
+node tools/terminal-test.js     # 35/35 通过
+npm run typecheck               # protocol / core-host / desktop 三处全过
+npm run verify                  # exit 0 —— 29/31 绿 + 2 个已知环境性（browser / real-dsh-mcp）
+
+bash tools/capture.sh terminal terminal-shell
+  ui-terminal       → shell:PowerShell status:退出 0,退出 0
+  ui-terminal-shell → chips:PowerShell/命令提示符 (cmd)/Git Bash（与 Linux 一致） on:PowerShell
+```
+
+新增的 13 项断言里，值得点名的是这几条 —— 它们用的是**只有该 shell 认得、别的 shell
+会原样打印或报错**的命令，而不是「配置写进去了」：
+
+- 默认档回读 `$PSVersionTable.PSVersion.Major` → `5`（真的是 PowerShell）
+- 切到 cmd 后 `echo %ComSpec%` → `C:\WINDOWS\system32\cmd.exe`（真的被 cmd 展开）
+- 切到 gitbash 后 `$BASH_VERSION` → `5.2.37`，且 `&&` 串行可用（**这正是旧版 PowerShell
+  缺的那一项**，「与 Linux 一致」的判据）
+- 两条**与机器无关**的解析规则：显式指向 `System32\bash.exe` 会被拒绝；
+  本机没有 Git 时如实报「未找到」而不是回退别的 shell
+
+**踩坑与教训**
+
+1. **「缓存一份解析结果」在配置类字段上是错的。** `shellUnavailable` 缓存过一次，
+   结果「刚切到不可用的档位」继续显示上一档的成功结论 —— 界面上没有报错、也没有提示，
+   只有**行为悄悄没跟上**。凡是「用户刚改、结果立刻该变」的值，就该每次从当前状态重算；
+   解析是纯函数，那点成本远小于一次静默的不一致。
+2. **推导路径的级数不能靠「布局看起来是这样」。** `<root>\cmd\git.exe` 与
+   `<root>\bin\git.exe` 是同一个安装里的两个落点，写死两级就会推出一个不存在的路径。
+   而失败表现是「装了却报未找到」—— 用户的第一反应是重装，而重装不会解决问题。
+3. **改了默认档位，就要回头搜一遍所有「依赖旧默认」的地方。** 截图脚本里那行
+   `node -v && echo ...` 在 cmd 下是对的，换成旧版 PowerShell 后是**语法错**：
+   它不会让任何测试变红（截图脚本不在 verify 里），只会安静地产出一张错的验收图。
+   ——「验收图本身是错的」比「没有验收图」更坏。
+4. **截图脚本里写死的用户名是定时炸弹。** 原先 PATH 里写的是 `C:\Users\Administrator\...`，
+   换机器后那几段全是死路径；症状只是 `dirname: command not found` 的噪音，脚本照样跑完，
+   于是没人会去查。改成从 `$HOME` 推导。
+
+**遗留**
+
+- **Git Bash 档位在「装了 Git 但不在默认位置」时可能仍报未找到**：候选只覆盖
+  `PATH` 上的 git 推导、`ProgramFiles` / `ProgramFiles(x86)` / `LOCALAPPDATA\Programs`。
+  非标准安装路径要靠 `DEEPWORK_GIT_BASH` 环境变量显式指定（已有这条出口，未做界面入口）。
+- **非 Windows 平台未验收**：`resolveTerminalShell` 在非 win32 上直接忽略档位、用 `$SHELL`，
+  但本机只有 Windows，那一支只有代码路径、没有实测证据。
+- **流式输出仍未做**（用户排第三）：内核 ACP 桥只转发**已提交**的整块消息，没有 delta 级事件；
+  真正的 token 级流式要走 `dsh-client-connection`（需要 dsh Host + HTTP/WS），属架构级改动。
+  下一轮先做**观感优化**（块级打字机 + 活动指示），不承诺传输层变化。
+- **`artifacts/demo-workspace` 已按脚本要求重建**（`package.json` / `src/index.ts` / `README.md`）。
+  它在 `.gitignore` 里，所以是本地资产 —— 换机器后 `capture.sh` 仍会因缺它而中止。
+
+**下一步**
+
+设置页改左导航分组（通用 / 外观 / 功能 / 数据与安全 / 关于），并把技能 / 记忆 / 自动化 /
+连接器 / 用量这些**管理类页面**从活动栏一级入口收进设置；活动栏只留工作台四项
+（对话 / 文件 / 终端 / 浏览器 / 轨迹）。收完之后再做流式的观感优化。
+
