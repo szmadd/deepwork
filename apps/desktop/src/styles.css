@@ -1950,13 +1950,18 @@ pre {
   终端的 shell 档位徽标。
   与 cwd 一样是等宽小字，但给它一个底色：它回答的是「这条命令将被哪个 shell 解释」，
   而这是用户敲命令前最需要确认的一件事（PS 5.1 的 `a && b` 会报语法错，cmd 的 `ls` 不存在）。
+
+  底色用 --bg-2，与 rail 胶囊、用量按钮同一档。**这里曾经写的是 `--surface-2`** ——
+  一个从来没定义过的变量：CSS 对未定义变量不报错，只是那一行静默失效，
+  于是徽标一直没有底色（看上去「样式就是这么设计的」）。
+  抓出它的是 settings-nav-test 里那条「用到的变量必须有定义」的断言。
 */
 .terminal-panel .terminal-shell {
   flex: none;
   padding: 1px 7px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: var(--surface-2);
+  background: var(--bg-2);
   color: var(--text-dim);
   font-size: 10.5px;
   white-space: nowrap;
@@ -2210,6 +2215,97 @@ pre {
 .settings-tab-on {
   color: var(--text);
   border-bottom-color: var(--accent);
+}
+
+/*
+ * 设置页的两栏：左导航（定宽、自己不滚）+ 内容列（自己滚）。
+ *
+ * 为什么内容列独立滚动而不是整页滚：设置长到十二节之后，用量页里有图表、
+ * 技能页里有几十条记录 —— 让导航跟着一起滚上去，每换一节都要先滚回顶部。
+ *
+ * 三档页签（.settings-tabs）留着给记忆面板的分层用，不在这里复用：
+ * 「同一层里切三种东西」与「换一整节」是两件事，长得像不等于是一件事。
+ */
+.settings-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.settings-nav {
+  flex: 0 0 auto;
+  width: 168px;
+  padding: 12px 8px 20px;
+  border-right: 1px solid var(--border-soft);
+  overflow: auto;
+}
+
+.settings-nav-group + .settings-nav-group {
+  margin-top: 14px;
+}
+
+.settings-nav-title {
+  padding: 0 10px 4px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.settings-nav-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.settings-nav-item:hover {
+  background: var(--bg-2);
+  color: var(--text);
+}
+
+/* 选中态靠底色 + 文字提亮，不画左边框：左边框在圆角胶囊上会显得脏 */
+.settings-nav-on,
+.settings-nav-on:hover {
+  background: var(--tint-info-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 20px 24px;
+}
+
+.settings-sec-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+
+.settings-sec-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/*
+ * 每一节的一句话说明。与左导航条目的 title 同源（都取自 SETTINGS_SECTION_NOTE）——
+ * 「悬停看到的」与「点进去看到的」必须是同一句话，否则用户会以为导航写错了。
+ *
+ * 标题与说明是**两行**：`span` 默认是行内元素，不显式分列的话两者会挤在同一行，
+ * 变成「模型与端点模型推理能力从哪来：…」——第一版截图里就是这样。
+ */
+.settings-sec-note {
+  font-size: 11.5px;
+  color: var(--text-faint);
 }
 
 .settings-input {
@@ -2872,6 +2968,46 @@ pre {
   min-width: 0;
   min-height: 0;
   background: var(--bg);
+}
+
+/*
+ * 被设置页嵌进去的管理面板（技能 / 记忆 / 自动化 / 连接器 / 用量）。
+ *
+ * 这些面板原先是独立整页：外层 .page-mask 撑满主区、.page 是列向 flex、
+ * .page-body 自己滚动。搬进设置的内容列之后这三条都要收掉 —— 否则内容列里会
+ * 套一个自己滚动的方块：页面出现两条滚动条，而内层高度由外层决定，
+ * 看起来像「内容被截断了」（功能其实没坏，但这幅画面没人敢用）。
+ *
+ * 只改**布局**属性：背景、圆角、边框留给设置页决定 ——
+ * 那些是「这一块长什么样」，属于设置页的排版，不该由被嵌的面板各定一套。
+ */
+.panel-embed {
+  display: block;
+  background: transparent;
+}
+
+.panel-embed > .page {
+  display: block;
+}
+
+.panel-embed .page-body {
+  overflow: visible;
+  padding: 0;
+}
+
+.panel-embed .page-foot {
+  padding: 0;
+  margin-top: 12px;
+  border-top: none;
+  background: transparent;
+}
+
+/* 页头整块不在时，actions（例如用量页的「刷新」）在内容顶部独占一行 */
+.panel-embed-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
 .page {

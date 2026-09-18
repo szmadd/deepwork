@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AGENT_MODE_LABEL,
-  APP_VIEW_LABEL,
   CHART_HTML_MARKER,
+  DEFAULT_SETTINGS_SECTION,
   type AgentMode,
   type AppView,
   type AttachmentPreview,
   type ModelDescriptor,
+  type SettingsSection,
 } from '@deepwork/protocol';
 import { formatBytes, describeError } from './api';
 import { ActivityRail } from './components/ActivityRail';
@@ -63,34 +64,26 @@ function modelOptionLabel(item: ModelDescriptor): string {
   return `${item.label}${item.source === 'endpoint' ? '（自定义端点）' : ''}`;
 }
 
-/** 打开某个视图前要拉的数据：面板的唯一事实来源在内核侧，不缓存第二份 */
-const VIEW_REFRESH: Partial<
-  Record<AppView, 'skills' | 'memory' | 'schedules' | 'connectors' | 'usage' | 'browser' | 'files'>
-> = {
-  skills: 'skills',
-  memory: 'memory',
-  schedules: 'schedules',
-  connectors: 'connectors',
-  usage: 'usage',
-  browser: 'browser',
-  files: 'files',
-};
-
 /**
  * 应用外壳。
  *
- * ── 布局契约（M2-J 起）──
+ * ── 布局契约（M2-J 起，2026-09-18 修订）──
  * ```
  * [活动栏] [会话列表?] [主区视图]
  * ```
- *  1. **活动栏（rail）是唯一的功能入口。** 此前八个功能挤在标题栏里横向排列，
- *     每加一个功能就多占一截宽度，窄窗口下只能换行把标题挤成一列字。竖排栏宽固定，
- *     第 10 个功能与第 1 个占用同样空间。理由见 `ActivityRail` 注释。
+ *  1. **活动栏（rail）只放工作台视图**：对话 / 文件 / 终端 / 浏览器 / 轨迹，
+ *     外加固定在底部的设置。此前「技能 / 记忆 / 自动化 / 连接器 / 用量」也在这根栏上，
+ *     结果是「天天点的」与「偶尔来配一次」的两类入口挨在一起，栏越加越长。
+ *     现在那五页各自是设置页里的一节（`SettingsSection`），入口收敛成一个「设置」。
  *  2. **会话列表只在对话视图出现。** 管理类页面（技能 / 设置…）把主区全部让出来，
  *     否则它们又要和会话列表争宽度 —— 而那正是它们从弹窗里搬出来要解决的问题。
  *  3. **对话视图仍是「它说要改的」与「磁盘上真的变成了什么样」能对上眼的地方**：
  *     文件与终端从右侧并排改为整页，是形态上的取舍（见 DEVLOG），
  *     但两者的数据来源与高亮口径一字未改。
+ *  4. **一页一个入口。** 技能 / 用量这类面板只有设置页里那一个挂载点；
+ *     输入框工具行与顶栏上的按钮不另开页面，而是 `openSettings('skills')`
+ *     这样「进设置并定位到那一节」。两个入口、两套外壳的代价是同一个缺陷
+ *     只在其中一个入口可见 —— 而用户不会两个都试一遍。
  *
  * 审批仍然是弹窗，且是唯一的弹窗：它的语义确实是「打断你，处理完再回来」。
  */
@@ -126,6 +119,24 @@ export default function App() {
     if (!agent.config || viewRestoredRef.current) return;
     viewRestoredRef.current = true;
     if (!viewPinnedRef.current) setView(agent.config.lastView);
+  }, [agent.config]);
+
+  /*
+   * 设置页停在那一节的恢复，走的是上面同一套纪律。
+   *
+   * 分节是视图内部的一层状态，但竞争的形态一模一样：配置异步到达，若写成
+   * 「config 一到就 setSection(config.settingsSection)」，用户在配置回来之前
+   * 点进设置、点了另一节，随后到达的 config 会把他刚点的那一节顶掉（表现是
+   * 「点了没反应」）。恢复只做一次，且用户亲手选过之后（sectionPinnedRef）
+   * 任何 config 变化都不再覆盖。
+   */
+  const [section, setSection] = useState<SettingsSection>(DEFAULT_SETTINGS_SECTION);
+  const sectionRestoredRef = useRef(false);
+  const sectionPinnedRef = useRef(false);
+  useEffect(() => {
+    if (!agent.config || sectionRestoredRef.current) return;
+    sectionRestoredRef.current = true;
+    if (!sectionPinnedRef.current) setSection(agent.config.settingsSection);
   }, [agent.config]);
 
   const running = agent.activeRunId !== null;
@@ -176,15 +187,15 @@ export default function App() {
   };
 
   /**
-   * 切视图。
+   * 切到某一页之前该拉什么数据。
    *
-   * 视图本身也落盘：下次打开停在同一页。刷新数据在这里做而不是在每个面板的
-   * useEffect 里各做一遍 —— 面板只是渲染，不负责「什么时候该重新问内核」。
+   * 视图名与设置分节名**取值域不相交**，所以一张 switch 就够 ——
+   * 分成两份的理由只能是「它们是两件事」，而它们不是：在用户那里都是「切到某一页」。
+   * 唯一让人意外的一条是 `model`：它要拉的不是面板数据，而是 key 的掩码状态
+   * （与当年「点开模型页签」是同一个时机）。
    */
-  const openView = (next: AppView) => {
-    // 用户一动手就锁住视图：此后配置再到达也不再把它顶回去（原因见上面的 useRef 注释）。
-    viewPinnedRef.current = true;
-    switch (VIEW_REFRESH[next]) {
+  const refreshTarget = (target: AppView | SettingsSection) => {
+    switch (target) {
       case 'skills':
         void agent.refreshSkills();
         break;
@@ -200,6 +211,9 @@ export default function App() {
       case 'usage':
         void agent.refreshUsage();
         break;
+      case 'model':
+        void agent.refreshModelKeyStatus();
+        break;
       case 'browser':
         void agent.refreshBrowser();
         break;
@@ -209,6 +223,18 @@ export default function App() {
       default:
         break;
     }
+  };
+
+  /**
+   * 切视图。
+   *
+   * 视图本身也落盘：下次打开停在同一页。刷新数据在这里做而不是在每个面板的
+   * useEffect 里各做一遍 —— 面板只是渲染，不负责「什么时候该重新问内核」。
+   */
+  const openView = (next: AppView) => {
+    // 用户一动手就锁住视图：此后配置再到达也不再把它顶回去（原因见上面的 useRef 注释）。
+    viewPinnedRef.current = true;
+    refreshTarget(next);
     setView(next);
     // 无条件写盘：这是只含 lastView 一个键的幂等 patch。
     // 「先和当前 config 比一下再决定写不写」看着更省，但 config 尚未就绪时比较的两侧
@@ -216,7 +242,110 @@ export default function App() {
     void agent.updateConfig({ lastView: next });
   };
 
+  /**
+   * 打开设置，可选地定位到某一节。
+   *
+   * 「技能」「用量」这类入口都走这里，而不是再开一个页面：同一个面板两个入口、
+   * 两套外壳，代价是同一个缺陷只在其中一个入口可见 —— 用户不会两个都试一遍。
+   * 一次写盘带两个键（lastView + settingsSection）而不是写两次：
+   * 两次写盘中间那一刻，磁盘上的状态是「在设置页、但分节还是上一次那个」。
+   */
+  const openSettings = (target?: SettingsSection) => {
+    viewPinnedRef.current = true;
+    const next = target ?? section;
+    if (target) {
+      sectionPinnedRef.current = true;
+      setSection(target);
+    }
+    refreshTarget(next);
+    setView('settings');
+    void agent.updateConfig({
+      lastView: 'settings',
+      ...(target ? { settingsSection: target } : {}),
+    });
+  };
+
   const backToChat = () => openView('chat');
+
+  /**
+   * 收进设置页的五个管理面板。
+   *
+   * 在这里构造、而不是让 SettingsPanel 去认识这几个面板的 props：这些回调全部
+   * 已经接在 App 上（它们当年是独立视图时就是这一份），设置页只负责
+   * 「把属于这一节的那块内容渲染出来」。五块都是 `embedded` ——
+   * 外壳由设置页给（遮罩、页头、返回按钮在设置页里都是重复的）。
+   *
+   * 元素在每次渲染时都构造、但只有当前那一节会被 SettingsPanel 挂载：
+   * 没被渲染的那些只是没有用到的 React 元素对象，不产生任何副作用。
+   */
+  const managePanels: Partial<Record<SettingsSection, ReactNode>> = {
+    skills: (
+      <SkillsPanel
+        embedded
+        skills={agent.skills}
+        onRefresh={agent.refreshSkills}
+        onAudit={agent.auditSkillSource}
+        onInstall={agent.installSkill}
+        onToggle={agent.toggleSkill}
+        onUninstall={agent.uninstallSkill}
+        onClose={backToChat}
+      />
+    ),
+    memory: (
+      <MemoryPanel
+        embedded
+        workspace={agent.current?.workspace ?? null}
+        memories={agent.memories}
+        stats={agent.memoryStats}
+        onRefresh={agent.refreshMemories}
+        onAdd={agent.addMemory}
+        onRemove={agent.removeMemory}
+        onSetProfile={agent.setMemoryProfile}
+        onClose={backToChat}
+      />
+    ),
+    schedules: (
+      <SchedulesPanel
+        embedded
+        workspace={agent.current?.workspace ?? null}
+        schedules={agent.schedules}
+        onRefresh={agent.refreshSchedules}
+        onAdd={agent.addSchedule}
+        onRemove={agent.removeSchedule}
+        onToggle={agent.toggleSchedule}
+        onRunNow={agent.runScheduleNow}
+        onClose={backToChat}
+      />
+    ),
+    connectors: (
+      <ConnectorsPanel
+        embedded
+        adapter={agent.status?.adapter ?? null}
+        connectors={agent.connectors}
+        onRefresh={agent.refreshConnectors}
+        onAdd={agent.addConnector}
+        onRemove={agent.removeConnector}
+        onToggle={agent.toggleConnector}
+        onRestartKernel={agent.restartKernel}
+        onClose={backToChat}
+      />
+    ),
+    usage: (
+      <UsagePanel
+        embedded
+        summary={agent.usageSummary}
+        loading={agent.usageLoading}
+        prices={agent.config?.modelPrices ?? {}}
+        onRefresh={agent.refreshUsage}
+        onSavePrices={agent.saveModelPrices}
+        onOpenSession={async (sessionId) => {
+          await agent.selectSession(sessionId);
+          backToChat();
+        }}
+        onClose={backToChat}
+      />
+    ),
+  };
 
   /** 空会话 = 落地态：大字号标 + 输入区居中，顶栏与对话流都让位 */
   const landing = agent.timeline.length === 0;
@@ -378,7 +507,7 @@ export default function App() {
                       `${agent.current.context.size.toLocaleString()} token\n` +
                       `容量来自模型条目（自定义端点模型取你在设置里填的值）`
                     }
-                    onClick={() => openView('usage')}
+                    onClick={() => openSettings('usage')}
                   >
                     上下文 {formatTokens(agent.current.context.used)} /{' '}
                     {formatTokens(agent.current.context.size)}
@@ -410,7 +539,7 @@ export default function App() {
                       ? `本会话 ${agent.usageCoverage.runs} 轮中 ${agent.usageCoverage.runs - agent.usageCoverage.runsWithUsage} 轮没有用量数据：真实内核的 ACP 通道不上报 token 与费用，只上报上下文占用。点击查看跨会话用量详情`
                       : '本会话累计用量；点击查看跨会话用量详情'
                   }
-                  onClick={() => openView('usage')}
+                  onClick={() => openSettings('usage')}
                 >
                   {agent.usageCoverage.runs === 0
                     ? '尚无用量'
@@ -546,8 +675,8 @@ export default function App() {
                   <button
                     type="button"
                     className="tools-item"
-                    onClick={() => openView('skills')}
-                    title="已安装的技能：在输入框打 / 可以唤起它们"
+                    onClick={() => openSettings('skills')}
+                    title="已安装的技能（在设置里）：在输入框打 / 可以唤起它们"
                   >
                     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
                       <path
@@ -623,71 +752,11 @@ export default function App() {
           </PanelPage>
         ) : null}
 
-        {view === 'skills' ? (
-          <SkillsPanel
-            skills={agent.skills}
-            onRefresh={agent.refreshSkills}
-            onAudit={agent.auditSkillSource}
-            onInstall={agent.installSkill}
-            onToggle={agent.toggleSkill}
-            onUninstall={agent.uninstallSkill}
-            onClose={backToChat}
-          />
-        ) : null}
-
-        {view === 'memory' ? (
-          <MemoryPanel
-            workspace={agent.current?.workspace ?? null}
-            memories={agent.memories}
-            stats={agent.memoryStats}
-            onRefresh={agent.refreshMemories}
-            onAdd={agent.addMemory}
-            onRemove={agent.removeMemory}
-            onSetProfile={agent.setMemoryProfile}
-            onClose={backToChat}
-          />
-        ) : null}
-
-        {view === 'schedules' ? (
-          <SchedulesPanel
-            workspace={agent.current?.workspace ?? null}
-            schedules={agent.schedules}
-            onRefresh={agent.refreshSchedules}
-            onAdd={agent.addSchedule}
-            onRemove={agent.removeSchedule}
-            onToggle={agent.toggleSchedule}
-            onRunNow={agent.runScheduleNow}
-            onClose={backToChat}
-          />
-        ) : null}
-
-        {view === 'connectors' ? (
-          <ConnectorsPanel
-            adapter={agent.status?.adapter ?? null}
-            connectors={agent.connectors}
-            onRefresh={agent.refreshConnectors}
-            onAdd={agent.addConnector}
-            onRemove={agent.removeConnector}
-            onToggle={agent.toggleConnector}
-            onRestartKernel={agent.restartKernel}
-            onClose={backToChat}
-          />
-        ) : null}
-
-        {view === 'usage' ? (
-          <UsagePanel
-            summary={agent.usageSummary}
-            loading={agent.usageLoading}
-            prices={agent.config?.modelPrices ?? {}}
-            onRefresh={agent.refreshUsage}
-            onSavePrices={agent.saveModelPrices}
-            onOpenSession={async (sessionId) => {
-              await agent.selectSession(sessionId);
-              backToChat();
-            }}
-            onClose={backToChat}
-          />
-        ) : null}
+        {/*
+          技能 / 记忆 / 自动化 / 连接器 / 用量**不在这里**：它们是设置页里的五节
+          （见上面 managePanels）。这一行注释是留给下一个想加分支的人的 ——
+          加一个整页分支之前先问一句「它属于工作台，还是属于设置」。
+        */}
 
         {view === 'settings' && agent.config && agent.guard ? (
           <SettingsPanel
@@ -696,11 +765,13 @@ export default function App() {
             catalog={agent.catalog}
             status={agent.status}
             modelKeyStatus={agent.modelKeyStatus}
+            section={section}
+            onSelectSection={openSettings}
+            panels={managePanels}
             onUpdateConfig={(patch) => void agent.updateConfig(patch)}
             onUpdateGuard={(patch) => void agent.updateGuard(patch)}
             onSetApiKey={agent.setModelApiKey}
             onClearApiKey={agent.clearModelApiKey}
-            onRefreshKeyStatus={agent.refreshModelKeyStatus}
             onRefreshModels={agent.refreshModels}
             onTestEndpoint={agent.testEndpoint}
             onRestartKernel={agent.restartKernel}

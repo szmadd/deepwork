@@ -13,6 +13,11 @@ interface UsagePanelProps {
   /** 跳到产生这些用量的会话 */
   onOpenSession: (sessionId: string) => Promise<void> | void;
   onClose: () => void;
+  /**
+   * 嵌进设置页时置 true（2026-09-18 起用量是设置页里的「功能与数据 → 用量」一节）。
+   * 外壳交给 PanelPage 处理（页头整块收掉、`刷新` 挪到内容顶部），页体一字不改。
+   */
+  embedded?: boolean;
 }
 
 /** 图表只画最近这些天；汇总数字恒为全量 —— 两者口径不同，界面上必须说清楚 */
@@ -60,6 +65,7 @@ export function UsagePanel({
   onSavePrices,
   onOpenSession,
   onClose,
+  embedded,
 }: UsagePanelProps) {
   const [priceDraft, setPriceDraft] = useState<Record<string, { prompt: string; completion: string }>>({});
   const [priceError, setPriceError] = useState<string | null>(null);
@@ -112,6 +118,7 @@ export function UsagePanel({
     <PanelPage
       title="用量"
       subtitle="跨会话聚合 · 数据来自会话存储，不另存一份"
+      embedded={embedded}
       onBack={onClose}
       actions={
         <button type="button" className="btn btn-tiny" onClick={() => void onRefresh()} disabled={loading}>

@@ -11,6 +11,16 @@ interface SkillsPanelProps {
   onToggle: (name: string, enabled: boolean) => Promise<void>;
   onUninstall: (name: string) => Promise<void>;
   onClose: () => void;
+  /**
+   * 嵌进设置页时置 true。
+   *
+   * 2026-09-18 起技能是设置页里的「功能与数据 → 技能」一节，不再是 rail 上的一级视图。
+   * 这个开关只影响**外壳**：不渲染页头（返回箭头与「技能」标题在设置页里是重复的），
+   * 页脚里那个「返回对话」也收掉（设置页自己有）。**页体一字不改** ——
+   * 两个入口下看到的必须是同一份内容，任何「嵌进来时少显示一点」的写法都会
+   * 让同一个缺陷只在其中一个入口可见。
+   */
+  embedded?: boolean;
 }
 
 /** 安装向导的进度：先干跑审计给用户看报告，确认后才真正安装 */
@@ -43,6 +53,7 @@ export function SkillsPanel({
   onToggle,
   onUninstall,
   onClose,
+  embedded,
 }: SkillsPanelProps) {
   const [install, setInstall] = useState<InstallState>({ step: 'idle' });
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -124,15 +135,17 @@ export function SkillsPanel({
   };
 
   return (
-    <div className="page-mask">
+    <div className={embedded ? 'panel-embed' : 'page-mask'}>
       <div className="page">
-        <div className="page-head">
-          <button type="button" className="icon-btn page-back" onClick={onClose} title="返回对话">
-            ←
-          </button>
-          <span className="page-title-text">技能</span>
-          <span className="panel-spacer" />
-        </div>
+        {embedded ? null : (
+          <div className="page-head">
+            <button type="button" className="icon-btn page-back" onClick={onClose} title="返回对话">
+              ←
+            </button>
+            <span className="page-title-text">技能</span>
+            <span className="panel-spacer" />
+          </div>
+        )}
 
         <div className="page-body">
           {error ? <div className="banner banner-error">{error}</div> : null}
@@ -289,9 +302,11 @@ export function SkillsPanel({
             </>
           ) : (
             <>
-              <button type="button" className="btn" onClick={onClose}>
-                返回对话
-              </button>
+              {embedded ? null : (
+                <button type="button" className="btn" onClick={onClose}>
+                  返回对话
+                </button>
+              )}
               <button type="button" className="btn" onClick={() => setUrlOpen(true)}>
                 从 URL 安装…
               </button>

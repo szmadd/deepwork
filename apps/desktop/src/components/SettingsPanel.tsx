@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type {
   AppConfig,
   AppView,
@@ -11,9 +11,12 @@ import type {
 import {
   AGENT_MODE_LABEL,
   APP_VIEW_LABEL,
+  APP_VIEWS,
   DEFAULT_ENDPOINT_CONTEXT_WINDOW,
   SANDBOX_MODE_INFO,
   SANDBOX_MODES,
+  SETTINGS_SECTION_LABEL,
+  SETTINGS_SECTION_NOTE,
   TERMINAL_SHELL_LABEL,
   TERMINAL_SHELL_NOTE,
   TERMINAL_SHELLS,
@@ -21,8 +24,10 @@ import {
   THEME_MODES,
   type AgentMode,
   type SandboxMode,
+  type SettingsSection,
   type TerminalShell,
 } from '@deepwork/protocol';
+import { SettingsNav } from './SettingsNav';
 import { DeploySettings } from './DeploySettings';
 
 interface SettingsPanelProps {
@@ -32,11 +37,21 @@ interface SettingsPanelProps {
   catalog: ModelCatalog | null;
   status: HostStatus | null;
   modelKeyStatus: { set: boolean; masked?: string } | null;
+  /** 当前分节（由 App 持有并落盘，见 AppConfig.settingsSection） */
+  section: SettingsSection;
+  onSelectSection: (section: SettingsSection) => void;
+  /**
+   * 收进设置页的管理面板（技能 / 记忆 / 自动化 / 连接器 / 用量）。
+   *
+   * 由 **App** 构造好再传进来，而不是让设置页去认识这几个面板的 props：
+   * 那些回调全都已经接在 App 上（与它们当年是独立视图时同一份），
+   * 设置页只需要「把属于这一节的那块内容渲染出来」。
+   */
+  panels: Partial<Record<SettingsSection, ReactNode>>;
   onUpdateConfig: (patch: Partial<AppConfig>) => void;
   onUpdateGuard: (patch: Partial<GuardPolicy>) => void;
   onSetApiKey: (key: string) => Promise<void>;
   onClearApiKey: () => Promise<void>;
-  onRefreshKeyStatus: () => Promise<void>;
   onRefreshModels: () => Promise<void>;
   onTestEndpoint: (params: { baseUrl: string; apiKey?: string }) => Promise<EndpointTestResult>;
   onRestartKernel: () => Promise<void>;
@@ -72,17 +87,23 @@ function sandboxModeLabel(mode?: string): string {
 }
 
 /**
- * 设置面板。
+ * 设置页外壳。
  *
- * ── 为什么把「偏好」与「安全」分成两栏 ──
- * 主题、默认模型这些是「用起来顺不顺手」；审批档位与拒绝模式是「允许发生什么」。
- * 它们存在两份文件里（config.json / guard.json），界面上也刻意分开。
- * 混成一栏会让「改个主题」和「放宽审批」变成同一种动作 —— 那正是最不该被顺手做掉的事。
+ * ── 为什么从「顶部三个页签」改成「左侧分组导航」（2026-09-18）──
+ * 三页签装得下「偏好 / 模型 / 安全」，装不下这一版要收进来的东西：技能、记忆、
+ * 自动化、连接器、用量原本各自是 rail 上的一级入口，与「对话 / 文件 / 终端」
+ * 这类天天点的动作挤在同一根栏上。参考形态（用户给的 WorkBuddy 截图）把管理类
+ * 全部收进设置，于是设置页要从 3 节长到 12 节 —— 顶部横排页签到六七个就开始
+ * 折行、把页头挤高，而左导航天然可分组、可扩展，且「哪一组里有什么」一眼可见。
  *
- * ── 拒绝模式的编辑方式 ──
- * 逐行文本，而不是「添加一条」的碎按钮：这些模式是可以用正则思维批量写的，
- * 让用户一次看到全部、一次改完，比让他点十次「新增」更接近他脑子里的动作。
- * 保存前会去掉空行与首尾空白，但**不**做任何模糊化或自动补全 —— 用户写什么就是什么。
+ * ── 分组的顺序不是排版偏好 ──────────────────────────────────────────
+ * 从「我改完立刻看得见」排到「改完要重启内核 / 动系统」：外观 → 会话默认 → 界面 →
+ * 模型 → 功能与数据 → 安全与部署。审批与沙箱刻意压在后面：混在偏好里，
+ * 用户会把它当成又一个开关顺手改掉，而它决定的是「允许发生什么」。
+ *
+ * ── 管理面板的 props 为什么不在这里 ──────────────────────────────────
+ * 见 `panels` 的注释：设置页不该知道技能面板需要哪些回调，否则每给某个面板加一个
+ * 回调，设置页都要跟着改一次签名 —— 而它根本不关心。
  */
 export function SettingsPanel({
   config,
@@ -90,20 +111,456 @@ export function SettingsPanel({
   catalog,
   status,
   modelKeyStatus,
+  section,
+  onSelectSection,
+  panels,
   onUpdateConfig,
   onUpdateGuard,
   onSetApiKey,
   onClearApiKey,
-  onRefreshKeyStatus,
   onRefreshModels,
   onTestEndpoint,
   onRestartKernel,
   onClose,
 }: SettingsPanelProps) {
-  const [tab, setTab] = useState<'prefs' | 'model' | 'security'>('prefs');
-  const [denyText, setDenyText] = useState(guard.denyPatterns.join('\n'));
+  return (
+    <div className="page-mask">
+      <div className="page">
+        <header className="page-head">
+          <button type="button" className="icon-btn page-back" onClick={onClose} title="返回对话">
+            ←
+          </button>
+          <div className="page-title">
+            <span className="page-title-text">设置</span>
+            <span className="page-sub">{SETTINGS_SECTION_LABEL[section]}</span>
+          </div>
+          <span className="panel-spacer" />
+        </header>
+
+        <div className="settings-body">
+          <SettingsNav section={section} onSelect={onSelectSection} />
+
+          {/*
+            内容列自己滚动（而不是整页滚）：左导航要在长内容里保持可见 ——
+            用量页有图表、技能页有几十条记录，让导航跟着滚上去等于每换一节都要先滚回顶。
+          */}
+          <div className="settings-content">
+            <div className="settings-sec-head">
+              <span className="settings-sec-title">{SETTINGS_SECTION_LABEL[section]}</span>
+              <span className="settings-sec-note">{SETTINGS_SECTION_NOTE[section]}</span>
+            </div>
+
+            {section === 'appearance' ? (
+              <AppearanceSection config={config} onUpdateConfig={onUpdateConfig} />
+            ) : null}
+
+            {section === 'session' ? (
+              <SessionSection
+                config={config}
+                catalog={catalog}
+                onUpdateConfig={onUpdateConfig}
+                onRefreshModels={onRefreshModels}
+              />
+            ) : null}
+
+            {section === 'interface' ? <InterfaceSection config={config} onUpdateConfig={onUpdateConfig} /> : null}
+
+            {section === 'model' ? (
+              <ModelSettings
+                config={config}
+                catalog={catalog}
+                status={status}
+                keyStatus={modelKeyStatus}
+                onUpdateConfig={onUpdateConfig}
+                onSetApiKey={onSetApiKey}
+                onClearApiKey={onClearApiKey}
+                onRefreshModels={onRefreshModels}
+                onTestEndpoint={onTestEndpoint}
+                onRestartKernel={onRestartKernel}
+              />
+            ) : null}
+
+            {section === 'security' ? (
+              <SecuritySection
+                config={config}
+                guard={guard}
+                status={status}
+                onUpdateConfig={onUpdateConfig}
+                onUpdateGuard={onUpdateGuard}
+                onRestartKernel={onRestartKernel}
+              />
+            ) : null}
+
+            {section === 'deploy' ? <DeploySettings config={config} onUpdateConfig={onUpdateConfig} /> : null}
+
+            {section === 'about' ? <AboutSection config={config} status={status} /> : null}
+
+            {/*
+              管理类五节的内容由 App 传进来（见 panels 注释）。
+              外壳由这里给：它们当年是独立整页，各自的 page-mask / page-head 已经
+              在 embedded 模式下关掉了，所以现在只剩内容本身。
+            */}
+            {panels[section] ? <div className="settings-embed">{panels[section]}</div> : null}
+          </div>
+        </div>
+
+        <div className="page-foot">
+          <button type="button" className="btn" onClick={onClose}>
+            返回对话
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface SectionProps {
+  config: AppConfig;
+  onUpdateConfig: (patch: Partial<AppConfig>) => void;
+}
+
+/**
+ * 外观。
+ *
+ * 只放「改完立刻能看见」的两项。它们排在最前不是偶然：用户对设置页的第一印象
+ * 来自「我一改，界面就变了」，这一节是唯一能给出这个反馈的地方。
+ * 左侧导航栏的展开/收起**不在这里** —— 它的入口是栏底那个切换按钮，
+ * 两处入口写同一个配置会让人怀疑它们是不是同一件事。
+ */
+function AppearanceSection({ config, onUpdateConfig }: SectionProps) {
+  return (
+    <>
+      <div className="modal-label">主题</div>
+      <div className="theme-chips">
+        {THEME_MODES.map((mode) => (
+          <button
+            type="button"
+            key={mode}
+            className={`theme-chip${config.theme === mode ? ' theme-chip-on' : ''}`}
+            onClick={() => onUpdateConfig({ theme: mode })}
+          >
+            {THEME_MODE_LABEL[mode]}
+          </button>
+        ))}
+      </div>
+      <div className="modal-hint">
+        {config.theme === 'system'
+          ? '跟随系统外观：系统切深色时应用一起切，不必回来改这一项。'
+          : '立即生效，不需要重启内核。'}
+      </div>
+
+      <label className="modal-check">
+        <input
+          type="checkbox"
+          checked={config.collapseReasoning}
+          onChange={(event) => onUpdateConfig({ collapseReasoning: event.target.checked })}
+        />
+        默认折叠思考过程
+      </label>
+      <div className="modal-hint">
+        只影响显示：思考内容仍然完整地产生并留在记录里，随时可以展开。
+      </div>
+    </>
+  );
+}
+
+interface SessionSectionProps extends SectionProps {
+  catalog: ModelCatalog | null;
+  onRefreshModels: () => Promise<void>;
+}
+
+/**
+ * 会话默认。
+ *
+ * 这一节回答的问题是「新建一个会话时，它从什么状态起步」——
+ * 模式、模型、推理档位、启动视图都是**新会话的初值**，而不是对已有会话的重写。
+ * 全部立即生效（不存在需要重启内核的项），但都只在**下一次新建会话**时才被读到。
+ */
+function SessionSection({ config, catalog, onUpdateConfig, onRefreshModels }: SessionSectionProps) {
   /** 「重新向内核核对」是个会真的建探针会话的动作，按钮要有忙碌态 */
-  const [modelBusy, setModelBusy] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <>
+      <div className="modal-label">新建会话的默认模式</div>
+      <select
+        className="settings-input"
+        value={config.defaultMode}
+        onChange={(event) => onUpdateConfig({ defaultMode: event.target.value as AgentMode })}
+      >
+        {MODES.map((mode) => (
+          <option value={mode} key={mode}>
+            {AGENT_MODE_LABEL[mode]}
+          </option>
+        ))}
+      </select>
+
+      {/*
+        默认模型由用户自行选定，候选来自模型目录 —— 官方内核公布的模型与
+        自定义端点上的模型在这里不做区别对待（条目标注来源即可）。
+        「跟随内核默认」是一个真实可选项而不是缺省占位：内核自己会随版本
+        换默认模型，写死一个 id 就是把「内核的默认」变成「我们的猜测」。
+      */}
+      <div className="modal-label">新建会话的默认模型</div>
+      <select
+        className="settings-input"
+        value={config.defaultModel}
+        onChange={(event) => onUpdateConfig({ defaultModel: event.target.value })}
+      >
+        <option value="">
+          跟随内核默认
+          {catalog?.kernelDefaultModel ? `（当前：${catalog.kernelDefaultModel}）` : '（内核未公布）'}
+        </option>
+        {/* 清单里没有当前值时也要显示它：否则下拉会跳到第一项，
+            用户以为「已经改回去了」，其实配置里还存着原来那个模型 */}
+        {config.defaultModel && !(catalog?.models ?? []).some((m) => m.id === config.defaultModel) ? (
+          <option value={config.defaultModel}>{config.defaultModel}（不在当前清单里）</option>
+        ) : null}
+        {(catalog?.models ?? []).map((model) => (
+          <option value={model.id} key={`${model.source}:${model.id}`}>
+            {model.label}
+            {model.source === 'endpoint' ? '（自定义端点）' : ''}
+          </option>
+        ))}
+      </select>
+      <div className="modal-hint">
+        {catalog ? catalog.note : '尚未拉取模型目录。'}
+        {catalog?.checkedAt ? ` · 核对于 ${new Date(catalog.checkedAt).toLocaleTimeString()}` : ''}
+      </div>
+      <div className="modal-foot">
+        <button
+          type="button"
+          className="btn btn-tiny"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void onRefreshModels().finally(() => setBusy(false));
+          }}
+        >
+          {busy ? '核对中…' : '重新向内核核对模型目录'}
+        </button>
+      </div>
+
+      {/*
+        按会话模式指定模型（FR-10.2 后半：快模型 / 推理模型分工）。
+        顺序沿用上面的 MODES，不在这里另排一遍 —— 两个下拉的同一批选项
+        顺序不一致，会让人以为它们是两组不同的东西。
+      */}
+      <div className="modal-label">按会话模式指定模型（可选）</div>
+      <div className="modal-hint">
+        轻问答和要动代码的活可以用不同的模型。留空的模式跟随上面的默认模型。
+        映射在<strong>新建会话</strong>时生效 —— 会话建好之后改模式不会自动换模型
+        （在对话中途静默换模型比不换更糟）；那时要换模型，用会话自己的模型选择器。
+      </div>
+      {MODES.map((item) => {
+        const value = config.modeModels?.[item] ?? '';
+        const inCatalog = !value || (catalog?.models ?? []).some((m) => m.id === value);
+        return (
+          <div className="settings-row" key={item}>
+            <label className="settings-field">
+              <span>{AGENT_MODE_LABEL[item]}</span>
+              <select
+                className="settings-input"
+                value={value}
+                onChange={(event) =>
+                  onUpdateConfig({ modeModels: { ...config.modeModels, [item]: event.target.value } })
+                }
+              >
+                <option value="">
+                  跟随默认模型{config.defaultModel ? `（${config.defaultModel}）` : '（内核默认）'}
+                </option>
+                {/* 配置里存着一个当前目录里没有的模型时也要显示它，
+                    否则下拉会静默跳到「跟随默认模型」，用户以为已经改回去了 */}
+                {inCatalog ? null : <option value={value}>{value}（不在当前清单里）</option>}
+                {(catalog?.models ?? []).map((model) => (
+                  <option value={model.id} key={`${model.source}:${model.id}`}>
+                    {model.label}
+                    {model.source === 'endpoint' ? '（自定义端点）' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        );
+      })}
+
+      {/*
+        推理档位：取值同样来自内核公布（不在这里枚举），空 = 不干预。
+        内核没公布这个选项时只留「不干预」—— 编一套看起来合理的档位
+        会做出一个「界面能选、内核不认」的开关。
+      */}
+      <div className="modal-label">默认推理档位</div>
+      <select
+        className="settings-input"
+        value={config.defaultReasoningEffort}
+        onChange={(event) => onUpdateConfig({ defaultReasoningEffort: event.target.value })}
+      >
+        <option value="">不干预（用内核默认）</option>
+        {config.defaultReasoningEffort
+        && !(catalog?.reasoningEfforts ?? []).some((item) => item.value === config.defaultReasoningEffort) ? (
+          <option value={config.defaultReasoningEffort}>{config.defaultReasoningEffort}（内核未公布）</option>
+        ) : null}
+        {(catalog?.reasoningEfforts ?? []).map((item) => (
+          <option value={item.value} key={item.value} title={item.description}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+      <div className="modal-hint">
+        {(catalog?.reasoningEfforts.length ?? 0) === 0
+          ? '内核未公布推理档位（mock 内核不提供，或尚未核对）。改动在下一轮对话生效。'
+          : `改动在下一轮对话生效；内核当前默认：${catalog?.kernelDefaultReasoningEffort ?? '未知'}`}
+      </div>
+
+      {/*
+        原来这里是「右侧面板默认页签」。右侧并排面板已被活动栏的整页视图取代，
+        所以这个设置项升级为「启动时打开哪个视图」—— 它仍然是同一种偏好
+        （我通常从哪个页面开始干活），只是可选范围跟着布局一起变宽了。
+        候选现在从 APP_VIEWS 出：收进设置页的那五页不再是视图，也就不该出现在这里。
+      */}
+      <div className="modal-label">启动时打开的视图</div>
+      <select
+        className="settings-input"
+        value={config.lastView}
+        onChange={(event) => onUpdateConfig({ lastView: event.target.value as AppView })}
+      >
+        {APP_VIEWS.map((item) => (
+          <option value={item} key={item}>
+            {APP_VIEW_LABEL[item]}
+          </option>
+        ))}
+      </select>
+    </>
+  );
+}
+
+/**
+ * 界面与终端。
+ *
+ * 这一节的两组东西看着不相干（文件树深度、终端档位），但它们回答的是同一个问题：
+ * **这两个面板长什么样、能做什么**。放在一起是因为用户找它们时的念头是
+ * 「我要调一下终端」，而不是「我要改个偏好」。
+ */
+function InterfaceSection({ config, onUpdateConfig }: SectionProps) {
+  return (
+    <>
+      <div className="settings-row">
+        <label className="settings-field">
+          <span>文件树展开深度</span>
+          <input
+            className="settings-input"
+            type="number"
+            min={1}
+            max={8}
+            value={config.treeDepth}
+            onChange={(event) =>
+              onUpdateConfig({ treeDepth: clamp(Number(event.target.value), 1, 8, config.treeDepth) })
+            }
+          />
+        </label>
+        <label className="settings-field">
+          <span>终端缓冲上限（字符）</span>
+          <input
+            className="settings-input"
+            type="number"
+            min={10_000}
+            step={10_000}
+            value={config.terminalBufferLimit}
+            onChange={(event) =>
+              onUpdateConfig({
+                terminalBufferLimit: clamp(Number(event.target.value), 10_000, 2_000_000, config.terminalBufferLimit),
+              })
+            }
+          />
+        </label>
+      </div>
+
+      {/*
+        终端 shell 档位。
+        与主题同类：**选完即刻生效**，不需要重启内核 —— 终端是宿主的进程，
+        内核不参与；档位在每次执行命令时解析，所以下一条命令就换 shell。
+        这一点必须写在提示里，否则用户会按习惯去找「应用」按钮。
+      */}
+      <div className="modal-label">终端 shell</div>
+      <div className="theme-chips terminal-shell-chips">
+        {TERMINAL_SHELLS.map((kind) => (
+          <button
+            type="button"
+            key={kind}
+            className={`theme-chip${config.terminalShell === kind ? ' theme-chip-on' : ''}`}
+            onClick={() => onUpdateConfig({ terminalShell: kind as TerminalShell })}
+          >
+            {TERMINAL_SHELL_LABEL[kind]}
+          </button>
+        ))}
+      </div>
+      <div className="modal-hint">
+        {TERMINAL_SHELL_NOTE[config.terminalShell] ?? ''}{' '}
+        改完即刻生效，下一条命令就换 shell，不需要重启内核。
+      </div>
+    </>
+  );
+}
+
+/** 关于：这台机器上实际跑着哪些东西。全是只读事实，没有任何可改的项。 */
+function AboutSection({ config, status }: { config: AppConfig; status: HostStatus | null }) {
+  return (
+    <>
+      <div className="settings-kv">
+        <div>
+          <span>内核</span>
+          <code>{status ? `${status.adapter} · ${status.version}` : '未知'}</code>
+        </div>
+        <div>
+          <span>宿主 Node</span>
+          <code>{status?.nodeVersion ?? '未知'}</code>
+        </div>
+        <div>
+          <span>数据目录</span>
+          <code>{status?.home ?? '未知'}</code>
+        </div>
+        <div>
+          <span>默认工作区</span>
+          <code>{config.lastWorkspace || status?.workspace || '未设置'}</code>
+        </div>
+      </div>
+      <div className="modal-hint">
+        这几项都不是设置，改动它们的唯一途径是换机器或改启动方式 ——
+        写在这里是为了排障时能直接报出来，而不是让用户去翻日志。
+      </div>
+    </>
+  );
+}
+
+interface SecuritySectionProps extends SectionProps {
+  guard: GuardPolicy;
+  status: HostStatus | null;
+  onUpdateGuard: (patch: Partial<GuardPolicy>) => void;
+  onRestartKernel: () => Promise<void>;
+}
+
+/**
+ * 审批与沙箱。
+ *
+ * ── 为什么沙箱排在审批档位**上面** ──
+ * 不是排版偏好：它更根本。审批档位回答「哪些命令要问人」，沙箱回答「命令能不能写成文件」——
+ * 模型跑在内核里、用内核自己的工具，命令不过宿主，所以挡住越界写入的一直是这道沙箱，
+ * 而不是下面那个档位。两者不分开说，用户会以为自己在设置的档位就是拦下写入的那道闸。
+ *
+ * ── 拒绝模式的编辑方式 ──
+ * 逐行文本，而不是「添加一条」的碎按钮：这些模式是可以用正则思维批量写的，
+ * 让用户一次看到全部、一次改完，比让他点十次「新增」更接近他脑子里的动作。
+ * 保存前会去掉空行与首尾空白，但**不**做任何模糊化或自动补全 —— 用户写什么就是什么。
+ */
+function SecuritySection({
+  config,
+  guard,
+  status,
+  onUpdateConfig,
+  onUpdateGuard,
+  onRestartKernel,
+}: SecuritySectionProps) {
+  const [denyText, setDenyText] = useState(guard.denyPatterns.join('\n'));
 
   /**
    * 沙箱档位的**草稿**选择（还没落盘前不碰配置）。
@@ -115,9 +572,9 @@ export function SettingsPanel({
    * 「用户明确选了 workspace-write」在界面上与配置里都必须是两件事。
    */
   const [chosen, setChosen] = useState<SandboxMode | null>(config.sandboxMode ?? null);
-  const [sandboxBusy, setSandboxBusy] = useState<string | null>(null);
-  const [sandboxMessage, setSandboxMessage] = useState<string | null>(null);
-  const [sandboxError, setSandboxError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const savedMode = config.sandboxMode ?? null;
   const effectiveMode = status?.sandbox?.mode ?? null;
@@ -136,13 +593,13 @@ export function SettingsPanel({
    * 否则用户会以为白选了、回去重选一遍。
    */
   const applySandboxMode = async () => {
-    setSandboxBusy('sandbox');
-    setSandboxError(null);
-    setSandboxMessage(null);
+    setBusy('sandbox');
+    setError(null);
+    setMessage(null);
     try {
       if (needsSave) onUpdateConfig({ sandboxMode: chosen as SandboxMode });
       await onRestartKernel();
-      setSandboxMessage(
+      setMessage(
         needsSave
           ? `已切到「${sandboxModeLabel(chosen ?? undefined)}」并重启内核，新档位已生效。`
           : '内核已重启，档位生效。',
@@ -152,13 +609,13 @@ export function SettingsPanel({
         cause instanceof Error
           ? cause.message.replace(/^Error invoking remote method '[^']+':\s*/, '')
           : String(cause);
-      setSandboxError(
+      setError(
         needsSave
           ? `档位已保存，但内核没能重启：${reason}。已保存的选择不会丢 —— 条件允许后点这个按钮再试一次即可生效。`
           : `内核没能重启：${reason}`,
       );
     } finally {
-      setSandboxBusy(null);
+      setBusy(null);
     }
   };
 
@@ -171,517 +628,175 @@ export function SettingsPanel({
   };
 
   return (
-    <div className="page-mask">
-      <div className="page">
-        <div className="page-head">
-          <button type="button" className="icon-btn page-back" onClick={onClose} title="返回对话">
-            ←
-          </button>
-          <span className="page-title-text">设置</span>
-          <span className="panel-spacer" />
+    <>
+      <div className="modal-label">内核沙箱（模型改文件的实际边界）</div>
+      <div className="settings-kv">
+        <div>
+          <span>当前生效</span>
+          <code>{status?.sandbox?.mode ?? '未知'}</code>
         </div>
-
-        <div className="settings-tabs">
-          <button
-            type="button"
-            className={`settings-tab${tab === 'prefs' ? ' settings-tab-on' : ''}`}
-            onClick={() => setTab('prefs')}
-          >
-            偏好
-          </button>
-          <button
-            type="button"
-            className={`settings-tab${tab === 'model' ? ' settings-tab-on' : ''}`}
-            onClick={() => {
-              setTab('model');
-              void onRefreshKeyStatus();
-            }}
-          >
-            模型
-          </button>
-          <button
-            type="button"
-            className={`settings-tab${tab === 'security' ? ' settings-tab-on' : ''}`}
-            onClick={() => setTab('security')}
-          >
-            安全
-          </button>
-        </div>
-
-        <div className="page-body">
-          {tab === 'model' ? (
-            <ModelSettings
-              config={config}
-              catalog={catalog}
-              status={status}
-              keyStatus={modelKeyStatus}
-              onUpdateConfig={onUpdateConfig}
-              onSetApiKey={onSetApiKey}
-              onClearApiKey={onClearApiKey}
-              onRefreshModels={onRefreshModels}
-              onTestEndpoint={onTestEndpoint}
-              onRestartKernel={onRestartKernel}
-            />
-          ) : null}
-          {tab === 'prefs' ? (
-            <>
-              {/*
-                主题放在偏好页最上面：它是唯一一个「改完立刻能看见」的设置，
-                排在这里用户能马上确认它生效了。三档而不是两档 ——
-                「跟随系统」是唯一不需要用户再回来管的档位。
-              */}
-              <div className="modal-label">主题</div>
-              <div className="theme-chips">
-                {THEME_MODES.map((mode) => (
-                  <button
-                    type="button"
-                    key={mode}
-                    className={`theme-chip${config.theme === mode ? ' theme-chip-on' : ''}`}
-                    onClick={() => onUpdateConfig({ theme: mode })}
-                  >
-                    {THEME_MODE_LABEL[mode]}
-                  </button>
-                ))}
-              </div>
-              <div className="modal-hint">
-                {config.theme === 'system'
-                  ? '跟随系统外观：系统切深色时应用一起切，不必回来改这一项。'
-                  : '立即生效，不需要重启内核。'}
-              </div>
-
-              <div className="modal-label">新建会话的默认模式</div>
-              <select
-                className="settings-input"
-                value={config.defaultMode}
-                onChange={(event) => onUpdateConfig({ defaultMode: event.target.value as AgentMode })}
-              >
-                {MODES.map((mode) => (
-                  <option value={mode} key={mode}>
-                    {AGENT_MODE_LABEL[mode]}
-                  </option>
-                ))}
-              </select>
-
-              {/*
-                默认模型由用户自行选定，候选来自模型目录 —— 官方内核公布的模型与
-                自定义端点上的模型在这里不做区别对待（条目标注来源即可）。
-                「跟随内核默认」是一个真实可选项而不是缺省占位：内核自己会随版本
-                换默认模型，写死一个 id 就是把「内核的默认」变成「我们的猜测」。
-              */}
-              <div className="modal-label">新建会话的默认模型</div>
-              <select
-                className="settings-input"
-                value={config.defaultModel}
-                onChange={(event) => onUpdateConfig({ defaultModel: event.target.value })}
-              >
-                <option value="">
-                  跟随内核默认
-                  {catalog?.kernelDefaultModel ? `（当前：${catalog.kernelDefaultModel}）` : '（内核未公布）'}
-                </option>
-                {/* 清单里没有当前值时也要显示它：否则下拉会跳到第一项，
-                    用户以为「已经改回去了」，其实配置里还存着原来那个模型 */}
-                {config.defaultModel && !(catalog?.models ?? []).some((m) => m.id === config.defaultModel) ? (
-                  <option value={config.defaultModel}>{config.defaultModel}（不在当前清单里）</option>
-                ) : null}
-                {(catalog?.models ?? []).map((model) => (
-                  <option value={model.id} key={`${model.source}:${model.id}`}>
-                    {model.label}
-                    {model.source === 'endpoint' ? '（自定义端点）' : ''}
-                  </option>
-                ))}
-              </select>
-              <div className="modal-hint">
-                {catalog ? catalog.note : '尚未拉取模型目录。'}
-                {catalog?.checkedAt ? ` · 核对于 ${new Date(catalog.checkedAt).toLocaleTimeString()}` : ''}
-              </div>
-              <div className="modal-foot">
-                <button
-                  type="button"
-                  className="btn btn-tiny"
-                  disabled={modelBusy}
-                  onClick={() => {
-                    setModelBusy(true);
-                    void onRefreshModels().finally(() => setModelBusy(false));
-                  }}
-                >
-                  {modelBusy ? '核对中…' : '重新向内核核对模型目录'}
-                </button>
-              </div>
-
-              {/*
-                按会话模式指定模型（FR-10.2 后半：快模型 / 推理模型分工）。
-                顺序沿用上面的 MODES，不在这里另排一遍 —— 两个下拉的同一批选项
-                顺序不一致，会让人以为它们是两组不同的东西。
-              */}
-              <div className="modal-label">按会话模式指定模型（可选）</div>
-              <div className="modal-hint">
-                轻问答和要动代码的活可以用不同的模型。留空的模式跟随上面的默认模型。
-                映射在<strong>新建会话</strong>时生效 —— 会话建好之后改模式不会自动换模型
-                （在对话中途静默换模型比不换更糟）；那时要换模型，用会话自己的模型选择器。
-              </div>
-              {MODES.map((item) => {
-                const value = config.modeModels?.[item] ?? '';
-                const inCatalog = !value || (catalog?.models ?? []).some((m) => m.id === value);
-                return (
-                  <div className="settings-row" key={item}>
-                    <label className="settings-field">
-                      <span>{AGENT_MODE_LABEL[item]}</span>
-                      <select
-                        className="settings-input"
-                        value={value}
-                        onChange={(event) =>
-                          onUpdateConfig({ modeModels: { ...config.modeModels, [item]: event.target.value } })
-                        }
-                      >
-                        <option value="">
-                          跟随默认模型{config.defaultModel ? `（${config.defaultModel}）` : '（内核默认）'}
-                        </option>
-                        {/* 配置里存着一个当前目录里没有的模型时也要显示它，
-                            否则下拉会静默跳到「跟随默认模型」，用户以为已经改回去了 */}
-                        {inCatalog ? null : (
-                          <option value={value}>{value}（不在当前清单里）</option>
-                        )}
-                        {(catalog?.models ?? []).map((model) => (
-                          <option value={model.id} key={`${model.source}:${model.id}`}>
-                            {model.label}
-                            {model.source === 'endpoint' ? '（自定义端点）' : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                );
-              })}
-
-              {/*
-                推理档位：取值同样来自内核公布（不在这里枚举），空 = 不干预。
-                内核没公布这个选项时只留「不干预」—— 编一套看起来合理的档位
-                会做出一个「界面能选、内核不认」的开关。
-              */}
-              <div className="modal-label">默认推理档位</div>
-              <select
-                className="settings-input"
-                value={config.defaultReasoningEffort}
-                onChange={(event) => onUpdateConfig({ defaultReasoningEffort: event.target.value })}
-              >
-                <option value="">不干预（用内核默认）</option>
-                {config.defaultReasoningEffort
-                && !(catalog?.reasoningEfforts ?? []).some((item) => item.value === config.defaultReasoningEffort) ? (
-                  <option value={config.defaultReasoningEffort}>{config.defaultReasoningEffort}（内核未公布）</option>
-                ) : null}
-                {(catalog?.reasoningEfforts ?? []).map((item) => (
-                  <option value={item.value} key={item.value} title={item.description}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-              <div className="modal-hint">
-                {(catalog?.reasoningEfforts.length ?? 0) === 0
-                  ? '内核未公布推理档位（mock 内核不提供，或尚未核对）。改动在下一轮对话生效。'
-                  : `改动在下一轮对话生效；内核当前默认：${catalog?.kernelDefaultReasoningEffort ?? '未知'}`}
-              </div>
-
-              {/*
-                原来这里是「右侧面板默认页签」。右侧并排面板已被活动栏的整页视图取代，
-                所以这个设置项升级为「启动时打开哪个视图」—— 它仍然是同一种偏好
-                （我通常从哪个页面开始干活），只是可选范围跟着布局一起变宽了。
-              */}
-              <div className="modal-label">启动时打开的视图</div>
-              <select
-                className="settings-input"
-                value={config.lastView}
-                onChange={(event) => onUpdateConfig({ lastView: event.target.value as AppView })}
-              >
-                {(Object.keys(APP_VIEW_LABEL) as AppView[]).map((item) => (
-                  <option value={item} key={item}>
-                    {APP_VIEW_LABEL[item]}
-                  </option>
-                ))}
-              </select>
-
-              <div className="settings-row">
-                <label className="settings-field">
-                  <span>文件树展开深度</span>
-                  <input
-                    className="settings-input"
-                    type="number"
-                    min={1}
-                    max={8}
-                    value={config.treeDepth}
-                    onChange={(event) =>
-                      onUpdateConfig({ treeDepth: clamp(Number(event.target.value), 1, 8, config.treeDepth) })
-                    }
-                  />
-                </label>
-                <label className="settings-field">
-                  <span>终端缓冲上限（字符）</span>
-                  <input
-                    className="settings-input"
-                    type="number"
-                    min={10_000}
-                    step={10_000}
-                    value={config.terminalBufferLimit}
-                    onChange={(event) =>
-                      onUpdateConfig({
-                        terminalBufferLimit: clamp(Number(event.target.value), 10_000, 2_000_000, config.terminalBufferLimit),
-                      })
-                    }
-                  />
-                </label>
-              </div>
-
-              {/*
-                终端 shell 档位。
-                放在「终端缓冲上限」旁边，因为两者是同一件事（终端这个面板长什么样、
-                能做什么）的两个侧面；用户不会为了找它单独跑一趟别的页。
-
-                与主题同类：**选完即刻生效**，不需要重启内核 —— 终端是宿主的进程，
-                内核不参与；档位在每次执行命令时解析，所以下一条命令就换 shell。
-                这一点必须写在提示里，否则用户会按习惯去找「应用」按钮。
-              */}
-              <div className="modal-label">终端 shell</div>
-              <div className="theme-chips terminal-shell-chips">
-                {TERMINAL_SHELLS.map((kind) => (
-                  <button
-                    type="button"
-                    key={kind}
-                    className={`theme-chip${config.terminalShell === kind ? ' theme-chip-on' : ''}`}
-                    onClick={() => onUpdateConfig({ terminalShell: kind as TerminalShell })}
-                  >
-                    {TERMINAL_SHELL_LABEL[kind]}
-                  </button>
-                ))}
-              </div>
-              <div className="modal-hint">
-                {TERMINAL_SHELL_NOTE[config.terminalShell] ?? ''}
-                {' '}
-                改完即刻生效，下一条命令就换 shell，不需要重启内核。
-              </div>
-
-              <label className="modal-check">
-                <input
-                  type="checkbox"
-                  checked={config.collapseReasoning}
-                  onChange={(event) => onUpdateConfig({ collapseReasoning: event.target.checked })}
-                />
-                默认折叠思考过程
-              </label>
-
-              <div className="modal-label">运行环境</div>
-              <div className="settings-kv">
-                <div>
-                  <span>内核</span>
-                  <code>{status ? `${status.adapter} · ${status.version}` : '未知'}</code>
-                </div>
-                <div>
-                  <span>宿主 Node</span>
-                  <code>{status?.nodeVersion ?? '未知'}</code>
-                </div>
-                <div>
-                  <span>数据目录</span>
-                  <code>{status?.home ?? '未知'}</code>
-                </div>
-                <div>
-                  <span>默认工作区</span>
-                  <code>{config.lastWorkspace || status?.workspace || '未设置'}</code>
-                </div>
-              </div>
-
-              {/* 部署与运行时（§8.1 / §8.2 / §8.3）：随包 Python 来源、内网 pip 源、环境体检 */}
-              <DeploySettings config={config} onUpdateConfig={onUpdateConfig} />
-            </>
-          ) : null}
-          {tab === 'security' ? (
-            <>
-              {/*
-                沙箱排在审批档位**上面**，不是排版偏好：它更根本。
-                审批档位回答「哪些命令要问人」，沙箱回答「命令能不能写成文件」——
-                模型跑在内核里、用内核自己的工具，命令不过宿主，所以挡住越界写入的
-                一直是这道沙箱，而不是下面那个档位。两者不分开说，用户会以为自己
-                在设置的档位就是拦下写入的那道闸。
-              */}
-              <div className="modal-label">内核沙箱（模型改文件的实际边界）</div>
-              <div className="settings-kv">
-                <div>
-                  <span>当前生效</span>
-                  <code>{status?.sandbox?.mode ?? '未知'}</code>
-                </div>
-                <div>
-                  <span>来源</span>
-                  <code>{sandboxSourceLabel(status?.sandbox?.source)}</code>
-                </div>
-              </div>
-
-              {/*
-                环境变量压住设置页时的提示必须排在最前面。这一档来源优先级最高
-                （它是排障用的旁路），有它在时下面选什么都不生效 —— 不说清楚的话，
-                用户会反复「选了、保存了、重启了，还是没变」，然后把问题归到软件坏了。
-              */}
-              {status?.sandbox?.source === 'env-override' ? (
-                <div className="modal-hint modal-hint-warn">
-                  档位由环境变量指定（<code>DEEPWORK_SANDBOX_MODE</code> 或内核的{' '}
-                  <code>DSH_PERMISSION_MODE</code>），它优先于这里的设置 ——
-                  你现在选什么都不会生效。要在这里控制档位，请先清掉那个环境变量。
-                </div>
-              ) : null}
-              {status?.sandbox?.rejected ? (
-                <div className="modal-hint modal-hint-warn">
-                  档位「<code>{status.sandbox.rejected}</code>」不是合法值（有人拼错了），
-                  已跳过它、实际用的是 <code>{status.sandbox.mode}</code>。
-                  合法值：{SANDBOX_MODES.join(' / ')}。
-                </div>
-              ) : null}
-
-              {/*
-                三档选项。顺序与后果说明都来自契约层的 SANDBOX_MODE_INFO ——
-                这里不自己排一遍：档位的宽窄关系是内核事实，在渲染层复制一份就会漂。
-              */}
-              <div className="sandbox-modes">
-                {SANDBOX_MODE_INFO.map((item) => (
-                  <label
-                    key={item.mode}
-                    className={[
-                      'sandbox-mode',
-                      shownMode === item.mode ? 'sandbox-mode-on' : '',
-                      item.emphasis === 'danger' ? 'sandbox-mode-danger' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ')}
-                  >
-                    <input
-                      type="radio"
-                      name="sandbox-mode"
-                      checked={shownMode === item.mode}
-                      disabled={sandboxBusy !== null}
-                      onChange={() => {
-                        setChosen(item.mode);
-                        setSandboxError(null);
-                        setSandboxMessage(null);
-                      }}
-                    />
-                    <span className="sandbox-mode-body">
-                      <span className="sandbox-mode-head">
-                        <span className="sandbox-mode-name">{item.label}</span>
-                        <code className="sandbox-mode-code">{item.mode}</code>
-                        {status?.sandbox?.mode === item.mode ? (
-                          <span className="sandbox-mode-badge">当前生效</span>
-                        ) : null}
-                      </span>
-                      <span className="sandbox-mode-consequence">{item.consequence}</span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-
-              {/*
-                「选了」与「生效了」是两个状态，必须都能看见。
-                档位是内核进程的启动参数（见 core-host/src/security/sandbox.ts），
-                存进配置只是记下意图，换档要重启内核 —— 这个中间态最容易被做成
-                「假装立即生效」，然后在用户重启后才发现没变。
-              */}
-              {savedMode !== null && savedMode !== status?.sandbox?.mode ? (
-                <div className="modal-hint modal-hint-warn">
-                  已保存为「{sandboxModeLabel(savedMode)}」，但运行中的内核还是原来的档位 ——
-                  点下面的按钮重启内核后生效（重启不会动你的文件与会话记录）。
-                </div>
-              ) : null}
-
-              <div className="modal-hint">
-                {status?.adapter === 'harness' ? (
-                  <>
-                    由内核强制执行，作用于模型在内核里执行的命令。
-                    {status?.sandbox?.note ? ` ${status.sandbox.note}。` : ''}
-                  </>
-                ) : (
-                  <>当前跑的是 mock 内核，模型的命令不经内核执行，这道沙箱不参与 —— 档位只在真实内核下才有意义。</>
-                )}
-              </div>
-
-              <div className="modal-foot">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={sandboxBusy !== null || !canApply}
-                  onClick={() => void applySandboxMode()}
-                >
-                  {sandboxBusy === 'sandbox' ? '切换中…' : '保存并重启内核'}
-                </button>
-                {canApply ? null : (
-                  <span className="modal-hint">
-                    {chosen === null ? '先选一个档位。' : '当前已是你选中的档位，无需改动。'}
-                  </span>
-                )}
-              </div>
-              {sandboxMessage ? <div className="modal-hint">{sandboxMessage}</div> : null}
-              {sandboxError ? <div className="modal-hint modal-hint-warn">{sandboxError}</div> : null}
-
-              <div className="modal-label">审批档位（哪些命令要问你）</div>
-              <select
-                className="settings-input"
-                value={guard.mode}
-                onChange={(event) => onUpdateGuard({ mode: event.target.value as GuardPolicy['mode'] })}
-              >
-                <option value="normal">标准 —— 只读自动放行，写操作逐次确认</option>
-                <option value="strict">严格 —— 一切命令都要确认</option>
-                <option value="auto">宽松 —— 写操作也自动放行（仅建议在隔离环境中使用）</option>
-              </select>
-              <div className="modal-hint">
-                这一档管的是<strong>宿主自己执行的命令</strong>与逐 hunk 写授权。
-                模型在内核里跑的命令不经过它 —— 那些命令的写入边界由上面的内核沙箱决定。
-              </div>
-              {guard.mode === 'auto' ? (
-                <div className="modal-hint modal-hint-warn">
-                  宽松档位下，Agent 的写操作不再需要你逐次点头。审批链路本身不会失效，
-                  但你将失去「看差异再授权」这一步 —— 请确认你清楚这一点。
-                </div>
-              ) : null}
-
-              <div className="modal-label">硬拒绝模式（每行一条，包含即阻断）</div>
-              <textarea
-                className="settings-input settings-textarea"
-                rows={8}
-                value={denyText}
-                spellCheck={false}
-                onChange={(event) => setDenyText(event.target.value)}
-                onBlur={saveDeny}
-              />
-              <div className="modal-hint">
-                命中即永久阻断，不询问、不执行。改动会在离开输入框时保存。
-              </div>
-
-              <div className="modal-label">已记住的「始终允许」前缀</div>
-              {guard.alwaysAllow.length === 0 ? (
-                <div className="empty-hint">暂无。勾选「以后同类命令不再询问」后会累积在这里。</div>
-              ) : (
-                <div className="settings-chips">
-                  {guard.alwaysAllow.map((prefix) => (
-                    <span className="settings-chip" key={prefix}>
-                      <code>{prefix}</code>
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        title="撤销这条授权"
-                        onClick={() =>
-                          onUpdateGuard({ alwaysAllow: guard.alwaysAllow.filter((item) => item !== prefix) })
-                        }
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </>
-          ) : null}
-        </div>
-
-        <div className="page-foot">
-          <button type="button" className="btn" onClick={onClose}>
-            返回对话
-          </button>
+        <div>
+          <span>来源</span>
+          <code>{sandboxSourceLabel(status?.sandbox?.source)}</code>
         </div>
       </div>
-    </div>
+
+      {/*
+        环境变量压住设置页时的提示必须排在最前面。这一档来源优先级最高
+        （它是排障用的旁路），有它在时下面选什么都不生效 —— 不说清楚的话，
+        用户会反复「选了、保存了、重启了，还是没变」，然后把问题归到软件坏了。
+      */}
+      {status?.sandbox?.source === 'env-override' ? (
+        <div className="modal-hint modal-hint-warn">
+          档位由环境变量指定（<code>DEEPWORK_SANDBOX_MODE</code> 或内核的{' '}
+          <code>DSH_PERMISSION_MODE</code>），它优先于这里的设置 ——
+          你现在选什么都不会生效。要在这里控制档位，请先清掉那个环境变量。
+        </div>
+      ) : null}
+      {status?.sandbox?.rejected ? (
+        <div className="modal-hint modal-hint-warn">
+          档位「<code>{status.sandbox.rejected}</code>」不是合法值（有人拼错了），
+          已跳过它、实际用的是 <code>{status.sandbox.mode}</code>。
+          合法值：{SANDBOX_MODES.join(' / ')}。
+        </div>
+      ) : null}
+
+      {/*
+        三档选项。顺序与后果说明都来自契约层的 SANDBOX_MODE_INFO ——
+        这里不自己排一遍：档位的宽窄关系是内核事实，在渲染层复制一份就会漂。
+      */}
+      <div className="sandbox-modes">
+        {SANDBOX_MODE_INFO.map((item) => (
+          <label
+            key={item.mode}
+            className={[
+              'sandbox-mode',
+              shownMode === item.mode ? 'sandbox-mode-on' : '',
+              item.emphasis === 'danger' ? 'sandbox-mode-danger' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+          >
+            <input
+              type="radio"
+              name="sandbox-mode"
+              checked={shownMode === item.mode}
+              disabled={busy !== null}
+              onChange={() => {
+                setChosen(item.mode);
+                setError(null);
+                setMessage(null);
+              }}
+            />
+            <span className="sandbox-mode-body">
+              <span className="sandbox-mode-head">
+                <span className="sandbox-mode-name">{item.label}</span>
+                <code className="sandbox-mode-code">{item.mode}</code>
+                {status?.sandbox?.mode === item.mode ? (
+                  <span className="sandbox-mode-badge">当前生效</span>
+                ) : null}
+              </span>
+              <span className="sandbox-mode-consequence">{item.consequence}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+
+      {/*
+        「选了」与「生效了」是两个状态，必须都能看见。
+        档位是内核进程的启动参数（见 core-host/src/security/sandbox.ts），
+        存进配置只是记下意图，换档要重启内核 —— 这个中间态最容易被做成
+        「假装立即生效」，然后在用户重启后才发现没变。
+      */}
+      {savedMode !== null && savedMode !== status?.sandbox?.mode ? (
+        <div className="modal-hint modal-hint-warn">
+          已保存为「{sandboxModeLabel(savedMode)}」，但运行中的内核还是原来的档位 ——
+          点下面的按钮重启内核后生效（重启不会动你的文件与会话记录）。
+        </div>
+      ) : null}
+
+      <div className="modal-hint">
+        {status?.adapter === 'harness' ? (
+          <>
+            由内核强制执行，作用于模型在内核里执行的命令。
+            {status?.sandbox?.note ? ` ${status.sandbox.note}。` : ''}
+          </>
+        ) : (
+          <>当前跑的是 mock 内核，模型的命令不经内核执行，这道沙箱不参与 —— 档位只在真实内核下才有意义。</>
+        )}
+      </div>
+
+      <div className="modal-foot">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy !== null || !canApply}
+          onClick={() => void applySandboxMode()}
+        >
+          {busy === 'sandbox' ? '切换中…' : '保存并重启内核'}
+        </button>
+        {canApply ? null : (
+          <span className="modal-hint">
+            {chosen === null ? '先选一个档位。' : '当前已是你选中的档位，无需改动。'}
+          </span>
+        )}
+      </div>
+      {message ? <div className="modal-hint">{message}</div> : null}
+      {error ? <div className="modal-hint modal-hint-warn">{error}</div> : null}
+
+      <div className="modal-label">审批档位（哪些命令要问你）</div>
+      <select
+        className="settings-input"
+        value={guard.mode}
+        onChange={(event) => onUpdateGuard({ mode: event.target.value as GuardPolicy['mode'] })}
+      >
+        <option value="normal">标准 —— 只读自动放行，写操作逐次确认</option>
+        <option value="strict">严格 —— 一切命令都要确认</option>
+        <option value="auto">宽松 —— 写操作也自动放行（仅建议在隔离环境中使用）</option>
+      </select>
+      <div className="modal-hint">
+        这一档管的是<strong>宿主自己执行的命令</strong>与逐 hunk 写授权。
+        模型在内核里跑的命令不经过它 —— 那些命令的写入边界由上面的内核沙箱决定。
+      </div>
+      {guard.mode === 'auto' ? (
+        <div className="modal-hint modal-hint-warn">
+          宽松档位下，Agent 的写操作不再需要你逐次点头。审批链路本身不会失效，
+          但你将失去「看差异再授权」这一步 —— 请确认你清楚这一点。
+        </div>
+      ) : null}
+
+      <div className="modal-label">硬拒绝模式（每行一条，包含即阻断）</div>
+      <textarea
+        className="settings-input settings-textarea"
+        rows={8}
+        value={denyText}
+        spellCheck={false}
+        onChange={(event) => setDenyText(event.target.value)}
+        onBlur={saveDeny}
+      />
+      <div className="modal-hint">命中即永久阻断，不询问、不执行。改动会在离开输入框时保存。</div>
+
+      <div className="modal-label">已记住的「始终允许」前缀</div>
+      {guard.alwaysAllow.length === 0 ? (
+        <div className="empty-hint">暂无。勾选「以后同类命令不再询问」后会累积在这里。</div>
+      ) : (
+        <div className="settings-chips">
+          {guard.alwaysAllow.map((prefix) => (
+            <span className="settings-chip" key={prefix}>
+              <code>{prefix}</code>
+              <button
+                type="button"
+                className="icon-btn"
+                title="撤销这条授权"
+                onClick={() => onUpdateGuard({ alwaysAllow: guard.alwaysAllow.filter((item) => item !== prefix) })}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -705,7 +820,7 @@ interface ModelSettingsProps {
 }
 
 /**
- * 模型设置页。
+ * 模型与端点。
  *
  * 三组动作分得很清楚，因为它们的影响面完全不同：
  *  - 内核选择（mock / 真实 Harness）：决定「有没有推理能力」；
@@ -880,8 +995,8 @@ function ModelSettings({
             onChange={(event) => setContextWindow(event.target.value)}
           />
           <div className="modal-hint">
-            端点不会告诉我们这个数，而内核的模型目录必须有它。留空即按
-            {' '}{DEFAULT_ENDPOINT_CONTEXT_WINDOW.toLocaleString()} 估计（是估计值，不是探测结果）。
+            端点不会告诉我们这个数，而内核的模型目录必须有它。留空即按{' '}
+            {DEFAULT_ENDPOINT_CONTEXT_WINDOW.toLocaleString()} 估计（是估计值，不是探测结果）。
             实测提醒：端点请求里的 max_tokens 与这里填多少无关，所以别指望它决定压缩时机。
           </div>
           <div className="modal-foot">
@@ -927,7 +1042,7 @@ function ModelSettings({
       && !catalog.models.some((item) => item.id === config.defaultModel) ? (
         <div className="modal-hint modal-hint-warn">
           默认模型「{config.defaultModel}」不在这份目录里 —— 发送时会被宿主在开跑前拦下。
-          请到「偏好」修改默认模型，或先点下面「重新向内核核对」。
+          请到「会话默认」修改默认模型，或先点下面「重新向内核核对」。
         </div>
       ) : null}
       {catalog && catalog.models.length > 0 ? (

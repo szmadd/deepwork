@@ -12,6 +12,12 @@ interface MemoryPanelProps {
   onRemove: (id: string) => Promise<void>;
   onSetProfile: (text: string) => Promise<void>;
   onClose: () => void;
+  /**
+   * 嵌进设置页时置 true（2026-09-18 起记忆是设置页里的「功能与数据 → 记忆」一节）。
+   * 只影响外壳：不渲染页头与页脚里的「返回对话」，页体一字不改 ——
+   * 两个入口下看到的必须是同一份内容。
+   */
+  embedded?: boolean;
 }
 
 const LAYER_TABS: Array<{ id: MemoryLayer; label: string; hint: string }> = [
@@ -43,6 +49,7 @@ export function MemoryPanel({
   onRemove,
   onSetProfile,
   onClose,
+  embedded,
 }: MemoryPanelProps) {
   const [tab, setTab] = useState<MemoryLayer>('profile');
   const [error, setError] = useState<string | null>(null);
@@ -52,15 +59,17 @@ export function MemoryPanel({
   const tabMeta = LAYER_TABS.find((item) => item.id === tab)!;
 
   return (
-    <div className="page-mask">
+    <div className={embedded ? 'panel-embed' : 'page-mask'}>
       <div className="page">
-        <div className="page-head">
-          <button type="button" className="icon-btn page-back" onClick={onClose} title="返回对话">
-            ←
-          </button>
-          <span className="page-title-text">记忆</span>
-          <span className="panel-spacer" />
-        </div>
+        {embedded ? null : (
+          <div className="page-head">
+            <button type="button" className="icon-btn page-back" onClick={onClose} title="返回对话">
+              ←
+            </button>
+            <span className="page-title-text">记忆</span>
+            <span className="panel-spacer" />
+          </div>
+        )}
 
         <div className="settings-tabs">
           {LAYER_TABS.map((item) => (
@@ -144,9 +153,11 @@ export function MemoryPanel({
           <button type="button" className="btn" onClick={() => void onRefresh()}>
             刷新
           </button>
-          <button type="button" className="btn btn-primary" onClick={onClose}>
-            返回对话
-          </button>
+          {embedded ? null : (
+            <button type="button" className="btn btn-primary" onClick={onClose}>
+              返回对话
+            </button>
+          )}
         </div>
       </div>
     </div>

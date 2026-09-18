@@ -28,13 +28,18 @@ interface ActivityRailProps {
  * 状态持久化在 `config.railExpanded`（默认展开）。
  *
  * ── 图标为什么是内联 SVG ──
- * 不引图标库：本项目「装完就能跑」是硬约束，多一个依赖就多一份体积与供应链面，
- * 而这十个图标加起来不到三行路径。
+ * 不引图标库：本项目「装完就能跑」是硬约束，多一个依赖就多一份体积与供应链面。
  *
- * ── 分两组 ──
- * 上组是「这台机器上正在发生什么」（对话 / 文件 / 终端 / 轨迹），
- * 下组是「配置与账本」（技能 / 记忆 / 自动化 / 连接器 / 用量 / 设置）。
- * 设置固定在底部：它是最不该和日常动作抢注意力的那一项。
+ * ── 2026-09-18：这根栏只剩「工作台」（原来分上下两组）──────────────
+ * 上组是「这台机器上正在发生什么」（对话 / 文件 / 终端 / 浏览器 / 轨迹），
+ * 下组曾是「配置与账本」（技能 / 记忆 / 自动化 / 连接器 / 用量 / 设置）。
+ * 下组里除了设置，其余五项**天天不点、偶尔来配一次**，却和日常动作抢同一根栏：
+ * 栏越加越长，而两类入口的重要性差一个数量级。现在它们各自是设置页里的一节
+ * （`SettingsSection`），入口只剩一个 ——「设置」。设置本身固定在栏底：
+ * 它是最不该和日常动作抢注意力的那一项。
+ *
+ * 所以这里**不要**再往栏上加管理类入口：那不是「少点一次」，而是把刚收起来的东西
+ * 又摊开一遍。新增一节 = 契约层的 `SETTINGS_SECTIONS` 加一项 + 设置页加一块内容。
  */
 
 const STROKE = {
@@ -74,34 +79,6 @@ const ICONS: Record<AppView, ReactElement> = {
       <circle {...STROKE} cx="4.5" cy="6.4" r="1.5" />
     </>
   ),
-  // 拼图（技能）
-  skills: (
-    <path {...STROKE} d="M7.2 3.4a1.5 1.5 0 0 1 3 0v.9h1.9a1 1 0 0 1 1 1v1.9h.9a1.5 1.5 0 0 1 0 3h-.9v1.9a1 1 0 0 1-1 1h-1.9v.9a1.5 1.5 0 0 1-3 0v-.9H5.3a1 1 0 0 1-1-1v-1.9h-.9a1.5 1.5 0 0 1 0-3h.9V5.3a1 1 0 0 1 1-1h1.9z" />
-  ),
-  // 书签（记忆）
-  memory: <path {...STROKE} d="M5.4 3.2h7.2a1 1 0 0 1 1 1v10.4l-4.6-2.6-4.6 2.6V4.2a1 1 0 0 1 1-1z" />,
-  // 时钟（自动化）
-  schedules: (
-    <>
-      <circle {...STROKE} cx="9" cy="9" r="6.2" />
-      <path {...STROKE} d="M9 5.6V9l2.4 1.6" />
-    </>
-  ),
-  // 插头（连接器）
-  connectors: (
-    <>
-      <path {...STROKE} d="M6.4 3v3.2M11.6 3v3.2" />
-      <path {...STROKE} d="M4.6 6.2h8.8v1.6a4.4 4.4 0 0 1-4.4 4.4 4.4 4.4 0 0 1-4.4-4.4z" />
-      <path {...STROKE} d="M9 12.2V15" />
-    </>
-  ),
-  // 柱状图（用量）
-  usage: (
-    <>
-      <path {...STROKE} d="M3.4 15h11.2" />
-      <path {...STROKE} d="M5.6 15V9.6M9 15V5.6M12.4 15v-3.4" />
-    </>
-  ),
   // 滑杆（设置）
   settings: (
     <>
@@ -112,8 +89,12 @@ const ICONS: Record<AppView, ReactElement> = {
   ),
 };
 
+/**
+ * 工作台视图。skill / memory / schedules / connectors / usage 的图标随它们一起
+ * 搬进了设置页 —— 那五个图标留在这里会变成 `ICONS` 里的死条目，
+ * 而「栏上有几个图标」与「栏上该有几个图标」就不再对得上。
+ */
 const WORK_VIEWS: AppView[] = ['chat', 'files', 'terminal', 'browser', 'trajectory'];
-const MANAGE_VIEWS: AppView[] = ['skills', 'memory', 'schedules', 'connectors', 'usage'];
 
 export function ActivityRail({ view, onSelect, changedCount, pendingApprovals, expanded, onToggleExpand }: ActivityRailProps) {
   const item = (id: AppView, label: string, badge?: number) => (
@@ -138,10 +119,6 @@ export function ActivityRail({ view, onSelect, changedCount, pendingApprovals, e
       <div className="rail-mark" title="深边AI Work" />
       <div className="rail-group">
         {WORK_VIEWS.map((id) => item(id, APP_VIEW_LABEL[id], id === 'chat' ? pendingApprovals : id === 'files' ? changedCount : undefined))}
-      </div>
-      <div className="rail-divider" />
-      <div className="rail-group">
-        {MANAGE_VIEWS.map((id) => item(id, APP_VIEW_LABEL[id]))}
       </div>
       <div className="rail-spacer" />
       {/*

@@ -19,6 +19,11 @@ interface ConnectorsPanelProps {
   /** 重启内核使清单生效；失败会抛出，由面板原样展示 */
   onRestartKernel: () => Promise<void>;
   onClose: () => void;
+  /**
+   * 嵌进设置页时置 true（2026-09-18 起连接器是设置页里的「功能与数据 → 连接器」一节）。
+   * 只影响外壳：不渲染页头与页脚里的「返回对话」，页体一字不改。
+   */
+  embedded?: boolean;
 }
 
 /**
@@ -42,6 +47,7 @@ export function ConnectorsPanel({
   onToggle,
   onRestartKernel,
   onClose,
+  embedded,
 }: ConnectorsPanelProps) {
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,15 +82,17 @@ export function ConnectorsPanel({
   };
 
   return (
-    <div className="page-mask">
+    <div className={embedded ? 'panel-embed' : 'page-mask'}>
       <div className="page">
-        <div className="page-head">
-          <button type="button" className="icon-btn page-back" onClick={onClose} title="返回对话">
-            ←
-          </button>
-          <span className="page-title-text">连接器</span>
-          <span className="panel-spacer" />
-        </div>
+        {embedded ? null : (
+          <div className="page-head">
+            <button type="button" className="icon-btn page-back" onClick={onClose} title="返回对话">
+              ←
+            </button>
+            <span className="page-title-text">连接器</span>
+            <span className="panel-spacer" />
+          </div>
+        )}
 
         <div className="page-body">
           {error ? <div className="banner banner-error">{error}</div> : null}
@@ -192,9 +200,11 @@ export function ConnectorsPanel({
               添加连接器
             </button>
           ) : null}
-          <button type="button" className="btn" onClick={onClose}>
-            返回对话
-          </button>
+          {embedded ? null : (
+            <button type="button" className="btn" onClick={onClose}>
+              返回对话
+            </button>
+          )}
         </div>
       </div>
     </div>
