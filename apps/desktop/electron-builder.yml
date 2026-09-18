@@ -116,9 +116,14 @@ nsis:
   # 每一条都对应 packages/protocol/src/deploy.ts 里 INSTALL_POLICY 的一个字段，
   # tools/installer-test.js 会断言两边一致。改这里必须同时改那份契约。
   #
-  # 降级安装不静默覆盖：装一个比已装版本旧的包会被拦下并提示。
-  # 静默降级 = 用户以为升级了、其实退回了旧版，而这件事没有任何迹象。
-  allowDowngrade: false
+  # **降级闸门：这里没有，也写不了。** 曾经写过 `allowDowngrade: false`，
+  # 而它不是 electron-builder 26.15.3 的合法 NSIS 选项 —— 症状不是被忽略，
+  # 而是整个打包中断（`configuration.nsis should be one of these: null`，
+  # 2026-09-17 实测；那段时间 `npm run dist` 一直是坏的，而测试只读 yml 文本，看不出来）。
+  # 该版本的 NSIS **不做任何版本比较**：装一个更旧的包不会被拦。
+  # 真要拦降级只能自写 `nsis.include`，且必须有能验证「装旧包被拦下」的环境才算验收过。
+  # 契约里如实记成 `downgradeGuard: 'unavailable'`，不留一个看着像保护的字段。
+  #
   # 卸载不动 Electron 的 userData（%APPDATA%\深边AI Work）。
   # 真正的用户数据（会话/配置/记忆/技能）在 <主目录>\.deepwork，本来就不在
   # 安装树与 userData 里 —— 这条只是把「连 Chromium 缓存也留着」显式化，

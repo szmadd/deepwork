@@ -431,8 +431,12 @@ M2 的剩余清单（H/J/I/K）里没有，M3 的 A/B 两档里也没有。此�
 > 用户原话："node、python，以及本身已经安装过的，也要考虑是覆盖还是怎样"。
 > 这一条是安装器语义，定错了会动到用户机器上不属于我们的东西。
 
-- **应用本体**：NSIS 同 appId 重装 = **修复式覆盖**（同版本允许、升级覆盖）；
-  **降级安装要明确提示**而不是静默覆盖。用户数据 `~/.deepwork/`（会话/配置/记忆/技能）
+- **应用本体**：NSIS 同 appId 重装 = **修复式覆盖**（同版本允许、升级覆盖）。
+  ~~**降级安装要明确提示**而不是静默覆盖~~ → **修正（2026-09-17）：当前没有降级闸门。**
+  electron-builder 26.15.3 的 NSIS 不做任何版本比较，也没有 `allowDowngrade` 这个选项
+  （写进去会让 `npm run dist` 整个失败，见 DEVLOG 该轮）；要拦降级只能自写 `nsis.include`，
+  而本机没有能验证「装旧包被拦下」的环境 —— 契约里如实记成 `downgradeGuard: 'unavailable'`。
+  **现实后果：装一个更旧的包不会被拦。** 用户数据 `~/.deepwork/`（会话/配置/记忆/技能）
   **覆盖安装与卸载都不动**；卸载时是否清数据由用户显式勾选，默认保留。
 - **随包 Node / Python vs 系统已装**：**一律不动系统环境** —— 不写 PATH、不写注册表、
   不做文件关联、不替换系统运行时。随包与系统**并存**，解析顺序（8.1）保证随包优先；
@@ -458,7 +462,7 @@ M2 的剩余清单（H/J/I/K）里没有，M3 的 A/B 两档里也没有。此�
 
 | 节 | 落地物 | 验收（进 verify） |
 |---|---|---|
-| 8.4 | `deploy.ts` 的 `INSTALL_POLICY` + electron-builder.yml 的 nsis 显式配置（`allowDowngrade: false` / `deleteAppDataOnUninstall: false`） | `tools/installer-test.js` **29 项** |
+| 8.4 | `deploy.ts` 的 `INSTALL_POLICY` + electron-builder.yml 的 nsis 显式配置（`deleteAppDataOnUninstall: false`；**降级闸门 2026-09-17 修正为 `downgradeGuard: 'unavailable'`** —— 该版本的 NSIS 没有版本比较，原写的 `allowDowngrade` 不是合法选项、会让打包整体失败） | `tools/installer-test.js` **31 项**（含「nsis 段的每个键都在 electron-builder schema 里」这条防回归断言） |
 | 8.1 | `core-host/src/runtime/python.ts` 的 `resolvePythonRuntime()` + 随包 Python 3.12.10 + extraResources 落位 + 设置页「随包 Python 运行时」 | `tools/runtime-test.js` **21 项** |
 | 8.2 | `deploy.ts` 的 `PipSource` / `validatePipSource` / `pipSourceArgs` + `runtime/pip.ts` 的 `pipArgv`/`pipEnv`/`runPip` + 设置页表单 | `tools/pip-test.js` **31 项** |
 | 8.3 | `runtime/preflight.ts` 的 `runPreflight()` + `runtime.preflight` RPC + 设置页「运行环境体检」 | `tools/preflight-test.js` **28 项** |

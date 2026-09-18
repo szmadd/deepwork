@@ -97,7 +97,11 @@ console.log(`契约：packages/protocol/src/deploy.ts  配置：apps/desktop/ele
 section('契约（deploy.ts）');
 
 check('应用本体走修复式覆盖', INSTALL_POLICY.appOverwrite === 'repair-in-place');
-check('降级安装不静默覆盖', INSTALL_POLICY.allowDowngrade === false);
+check(
+  '降级闸门如实记为 unavailable（electron-builder 26 的 NSIS 没有这个能力）',
+  INSTALL_POLICY.downgradeGuard === 'unavailable',
+  INSTALL_POLICY.downgradeGuard,
+);
 check('覆盖安装不动用户数据', INSTALL_POLICY.userDataSurvivesUpgrade === true);
 check('卸载不动用户数据', INSTALL_POLICY.userDataSurvivesUninstall === true);
 check('清数据是显式动作，不是卸载默认分支', INSTALL_POLICY.userDataPurge === 'manual-explicit');
@@ -120,6 +124,21 @@ section('NSIS 安装器配置（electron-builder.yml）');
 
 const nsis = yamlBlock(builderText, 'nsis');
 
+/**
+ * nsis 段的每个键都必须在 electron-builder 的 schema 里存在。
+ *
+ * 为什么要断言这件事：`allowDowngrade` 曾经写在这里，而它不是 26.15.3 的合法选项 ——
+ * 症状不是「被忽略」，是 `npm run dist` **整个中断**
+ * （`configuration.nsis should be one of these: null`）。而这条测试只读 yml 文本，
+ * 一直是绿的：**「我写了这个键」与「工具认这个键」是两件事**，
+ * 只有拿工具自己的 schema 对一遍，才算落到了真实出口。
+ */
+const builderSchema = JSON.parse(
+  fs.readFileSync(path.join(ROOT, 'node_modules', 'app-builder-lib', 'scheme.json'), 'utf8'),
+);
+const knownNsisKeys = new Set(Object.keys(builderSchema.definitions.NsisOptions.properties));
+const unknownNsisKeys = [...nsis.keys()].filter((key) => !knownNsisKeys.has(key));
+
 check('安装器配置可读（nsis 段存在）', nsis.size > 0);
 check('不做全机安装（perMachine: false）', nsis.get('perMachine') === 'false', nsis.get('perMachine'));
 check('不做一键安装（oneClick: false）', nsis.get('oneClick') === 'false', nsis.get('oneClick'));
@@ -128,9 +147,17 @@ check(
   nsis.get('allowToChangeInstallationDirectory') === 'true',
 );
 check(
-  `降级被拦下（allowDowngrade = ${INSTALL_POLICY.allowDowngrade}）`,
-  nsis.get('allowDowngrade') === String(INSTALL_POLICY.allowDowngrade),
-  `配置值 ${nsis.get('allowDowngrade')}`,
+  '写入的每个 nsis 键都是 electron-builder schema 里的合法键（非法键会让整个打包失败）',
+  unknownNsisKeys.length === 0,
+  unknownNsisKeys.length ? `schema 里没有：${unknownNsisKeys.join(', ')}` : `${nsis.size} 个键全部合法`,
+);
+check(
+  'electron-builder.yml 里不写 allowDowngrade（该键非法：不是被忽略，是让 npm run dist 整个失败）',
+  !nsis.has('allowDowngrade'),
+);
+check(
+  '降级闸门在配置与契约两侧都如实记为「没有」（不留看着像保护的写法）',
+  INSTALL_POLICY.downgradeGuard === 'unavailable' && !nsis.has('allowDowngrade'),
 );
 check(
   '卸载不动 Electron userData（deleteAppDataOnUninstall: false）',

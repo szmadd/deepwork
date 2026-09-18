@@ -410,7 +410,10 @@ npm run verify          # 差异引擎随机对拍 + 写工具守卫 19 项 + �
                         #   Python 独立实现复核 SVG 良构与无脚本 / 界面接线与依赖纪律）
                         # + 随包运行时解析 21 项（§8.1 起新增：三档解析顺序 / 显式 env 覆盖 / 随包命中改 PATH
                         #   并删 PYTHONHOME / 「确实没有」要能构造（bundledDirs 给了就只用这些）；见 docs/DEPLOY.md）
-                        # + 安装器与打包 29 项（§8.4 起新增：yaml 结构对拍 / 升级不降级 allowDowngrade:false /
+                        # + 安装器与打包 31 项（§8.4 起新增：yaml 结构对拍 / **nsis 段每个键都必须在
+                        #   electron-builder schema 里**（2026-09-17 起：allowDowngrade 不是合法键，
+                        #   写了它 npm run dist 会整个失败，而只读 yml 的断言是绿的 ← 「我写了这个键」
+                        #   与「工具认这个键」是两件事）/ 降级闸门如实记为 unavailable /
                         #   卸载不清用户数据 deleteAppDataOnUninstall:false / 运行时进 extraResources 且不带
                         #   __pycache__ / 断言只看 from·to·files 条目，不看注释）
                         # + 内网 pip 源 31 项（§8.2 起新增：源参数只走 --index-url 不定配置 / PIP_CONFIG_FILE 指空设备

@@ -118,7 +118,7 @@ DEEPWORK_NODE_BIN / DEEPWORK_PYTHON_BIN   ← 显式指定
 
 | 对象 | 策略 |
 |---|---|
-| 应用本体 | 同 appId 重装 = **修复式覆盖**；升级直接覆盖；**降级被拦下并提示**（`allowDowngrade: false`） |
+| 应用本体 | 同 appId 重装 = **修复式覆盖**；升级直接覆盖；**降级没有闸门**（见下） |
 | 用户数据 `<主目录>\.deepwork` | 覆盖安装与卸载**都不动**；清理是显式动作，不是卸载流程的默认分支 |
 | Electron userData（`%APPDATA%\深边AI Work`） | 卸载保留（`deleteAppDataOnUninstall: false`） |
 | 随包 Node / Python vs 系统已装 | **一律不动系统环境**：不写 PATH、不写注册表、不做文件关联、不替换系统运行时；两者并存，靠解析顺序保证随包优先 |
@@ -127,6 +127,16 @@ DEEPWORK_NODE_BIN / DEEPWORK_PYTHON_BIN   ← 显式指定
 「覆盖安装不动数据」不只是承诺，而是一条**结构性事实**：用户数据在用户主目录下，
 与安装树不同树。卸载器只处理自己装下去的文件，所以「卸载删数据」在结构上无法发生 ——
 `tools/installer-test.js` 直接断言这个路径关系，而不是断言文案。
+
+**降级闸门：没有，而且当前写不出来（2026-09-17 修正）。**
+配置里曾经写着 `allowDowngrade: false`，但 electron-builder 26.15.3 的 NSIS **没有**这个选项 ——
+后果不是「被忽略」，而是 `npm run dist` **整个中断**
+（schema 报 `configuration.nsis should be one of these: null`）。
+该版本的 NSIS 也不做任何版本比较：**装一个更旧的包不会被拦**。
+要真拦降级，唯一的路径是自写 `nsis.include`（在 `customInit` 里读已装版本的
+`DisplayVersion` 并比较），且必须有能验证「装旧包被拦下」的环境才算验收过 ——
+本机没有，所以契约里如实记成 `INSTALL_POLICY.downgradeGuard = 'unavailable'`，
+`installer-test.js` 同时断言「配置里不许再出现 `allowDowngrade`」。
 
 清数据的路径（显式）：删掉 `<用户主目录>\.deepwork` 即可。
 `DEEPWORK_HOME` 改过位置的，删那个位置。
@@ -142,6 +152,11 @@ DEEPWORK_NODE_BIN / DEEPWORK_PYTHON_BIN   ← 显式指定
 - **真机装/卸行为未验收**：`tools/installer-test.js` 断言的是**配置与契约一致**
   以及**路径归属**。真正的「装一遍、卸一遍、看数据还在不在」需要在一台干净机器上
   跑一次 `npm run dist` 之后手工确认 —— 本机没有 NSIS 工具链，这一步做不了。
+  （**2026-09-17 修正**：这里原先写「本机没有 NSIS 工具链」是错的 ——
+  electron-builder 自带 NSIS，`npm run dist` 会真的编译安装器，所以「编译得过」是能验的；
+  验不了的是**装完之后的行为**。）
+- **降级闸门未实现**（见上文 §四）——electron-builder 26 的 NSIS 没有版本比较，
+  自写 `nsis.include` 才能拦，而「装旧包被拦下」这一步同样只能在真机上验。
 - **卸载向导里的「是否删除数据」勾选项未做**：ROADMAP §8.4 原文提过这个形态。
   实现它要写自定义 NSIS 页面（含中文，NSIS 脚本默认 ANSI 编码，容易乱码），
   且**无法在本机验收**。因此本轮只声明「默认保留 + 显式清理路径」，

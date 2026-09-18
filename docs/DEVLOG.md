@@ -3570,3 +3570,93 @@ theme 24/24、notify 29/29、routing 39/39、completion 29/29、chart 127/127、
 
 继续手动调试主线（会话 / 写操作审批 / 技能 / 记忆 / 沙箱档位切换）；补回 `artifacts/demo-workspace`
 后跑一遍完整 `capture.sh`（含新场景）。
+
+---
+
+## 2026-09-17 · 调试期 · 「重新打包」第一次就失败：一个不存在的 NSIS 选项挡死整条链
+
+**目标**
+
+重新打包给内网做覆盖安装。第一次 `npm run dist` 直接失败 —— 定位、修复、重新出包。
+
+**现象与根因**
+
+```
+Invalid configuration object. electron-builder 26.15.3 has been initialized using a
+configuration object that does not match the API schema.
+ - configuration.nsis should be one of these: null
+```
+
+`apps/desktop/electron-builder.yml` 的 `nsis:` 段里写着 `allowDowngrade: false`，而
+electron-builder 26.15.3 **没有这个选项**：`node_modules/app-builder-lib/scheme.json` 的
+`NsisOptions.properties` 里查不到它，整个 `app-builder-lib` + `electron-builder` 产物里
+连 "downgrade" 这个词都搜不到。schema 校验**不是忽略未知键**，而是让构建中断。
+
+**为什么一整天没人发现**：它由 2026-09-16 23:55 的离线部署提交（`a540e7d`）引入，
+而验证只到 `tools/installer-test.js` —— 那份套件**读的是 yml 文本**，
+断言的是「我写了这个键、值与契约一致」，所以**一直绿着**。
+上一次成功的打包在 09-16 10:13，**在那次改动之前**，之后没人跑过 `npm run dist`。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `apps/desktop/electron-builder.yml` | 删掉 `allowDowngrade: false`；§8.4 那段注释改写为事实：该版本的 NSIS 不做版本比较、也没有这个选项，写了会让打包中断 |
+| `packages/protocol/src/deploy.ts` | `InstallPolicy.allowDowngrade: boolean` → **`downgradeGuard: 'unavailable'`**（附完整理由）—— 不留一个看着像保护、实际不存在的字段，与 `userDataPurge` 那条「不假装完成」同一纪律 |
+| `tools/installer-test.js` | 29 → **31 项**：新增「nsis 段的每个键都必须是 electron-builder schema 里的合法键」（直接拿 `scheme.json` 对拍）、「不许再写 `allowDowngrade`」、「契约与配置两侧都如实记为没有」；删掉原来那条假的「降级被拦下」 |
+| `docs/DEPLOY.md` / `ROADMAP.md` / `CONVENTIONS.md` | §8.4 的降级那条改成事实；DEPLOY 里「本机没有 NSIS 工具链」纠正（electron-builder 自带 NSIS，`npm run dist` 会真的编译安装器 —— 能验的是「编译得过」，验不了的是「装完之后的行为」） |
+
+**验证**
+
+```
+node tools/installer-test.js            # 31/31 通过
+npm run dist                            # exit 0，7 分 42 秒 → NSIS setup.exe + 免安装 zip
+node tools/package-verify.js --launch   # 9/9 通过（含打包后应用启动截图）
+node tools/verify-all.js                # exit 0，31/31 绿
+```
+
+交付产物（`release/`，本轮 16:45–16:46）：
+
+| 文件 | 体积 | SHA256 |
+|---|---|---|
+| `DeepWork-0.1.0-setup.exe` | 187,310,899 B | `e3e41500a8622ab5ed9b33169d4d8991b79b4a49d4f45a3e662e051940380370` |
+| `DeepWork-0.1.0-win-x64.zip` | 251,560,341 B | `154e4d3b3a9f955e13886bc0e7ab4e37bd6973dcebca46b295ddf2269fd06ca5` |
+
+`package-verify --launch` 的两条关键回执：打包后的应用优先命中**随包** node-runtime
+（`resources/node-runtime/node.exe`）拉起**随包** dsh 并握手成功（`adapter=harness`）——
+即离线机零依赖那条路真的通；以及应用启动截图写入 `artifacts/packaged-app.png`。
+
+另外对**打包后的 exe**（而不是开发态）单独跑了一次 DOM 回读，确认交付的包里装的是本轮改版后的界面：
+`{"composerRegion":true,"composerShell":true,"sendCircle":"50%","chipCount":2,`
+`"rail":"rail rail-expanded w=148","railLabels":12,"staleLegacy":"none","hostChipInTools":true}`
+（图：`artifacts/ui-packaged-composer.png`）。**「开发态对、打包态是旧的」正是这类交付里最坏的一种**，
+所以这条单独验。
+
+**踩坑与教训**
+
+1. **「我写了这个键」≠「工具认这个键」。** 断言落在**配置文件文本**上，看起来比读源码强，
+   实际仍然绕过了真实出口：真正会失败的是 electron-builder 的 schema 校验，而那份校验
+   只有 `npm run dist` 会跑。修法是拿工具**自己的 `scheme.json`** 对拍 —— 这才叫落到出口。
+2. **「测试全绿」与「这条链有人跑过」是两件事。** 29 项安装器断言全绿的同时，`npm run dist`
+   已经坏了一整天。凡是**只在某条命令里才会被执行**的配置面，就得有断言真的对着那条命令的
+   输入契约（这里是工具 schema）对拍，而不是只对着我们写的那几行字。
+3. **交付前要对产物本身验一遍**，不是对开发态验一遍：本次是拿打包后的 exe 跑同一段 DOM 回读，
+   确认新界面真的在 asar 里。
+4. 顺带记一条环境事实：打包时 electron-builder 会对**随包 Python** 里的 `t32.exe`/`w64.exe`
+   与 dsh 的 `OpenConsole.exe`/`rg.exe` 逐个走一遍 signtool（无证书时为 no-op）——
+   这是正常的，别被日志里的 "signing with signtool.exe" 吓到。
+
+**遗留**
+
+- **降级闸门仍未实现**：要拦降级只能自写 `nsis.include`（在 `customInit` 里读已装版本的
+  `DisplayVersion` 并比较），且必须在真机上验「装旧包被拦下」——本机做不了。
+  现实后果：装一个更旧的包不会被拦。
+- **真机装/卸行为未验收**：`package-verify` 验的是产物结构与「能启动能握手」，
+  真正「装一遍、卸一遍、看 `~/.deepwork` 还在不在」要在一台干净机器上做 —— 这次正好由用户在内网完成。
+- **版本号仍是 0.1.0**：与内网已装版本同号（同版本覆盖安装本来就允许）。代价是装完后从版本号
+  看不出装的是哪一版；若要区分，得把四个 `package.json` 同步抬到 0.1.1 再打一次。
+
+**下一步**
+
+用户把 setup.exe 带到内网覆盖安装；回来后确认模型端点与首轮对话（本轮含图表 schema 修复，
+真端点首轮不再是 `Invalid schema`）。

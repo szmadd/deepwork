@@ -124,10 +124,18 @@ export interface InstallPolicy {
    */
   appOverwrite: 'repair-in-place';
   /**
-   * 降级安装**不静默覆盖**：装一个比已装版本旧的包，安装器拦下并提示。
-   * 静默降级会让「用户以为升级了、其实退回了旧版」，而这件事毫无迹象。
+   * 降级安装的闸门：**当前不存在**。
+   *
+   * 原意是「装一个比已装版本旧的包，安装器拦下并提示」。但 electron-builder 26.15.3 的
+   * NSIS **没有版本闸门**：`nsis.allowDowngrade` 不是它的合法选项，写进配置**不是被忽略**，
+   * 而是让整个 `npm run dist` 直接失败（schema 校验报
+   * `configuration.nsis should be one of these: null`，2026-09-17 实测；
+   * 那段时间打包一直是坏的，而测试只读 yml 文本，绿着）。
+   * 要真拦降级只能自写 `nsis.include`，而本机没有能验证「装旧包被拦下」的环境 ——
+   * 按「不假装完成」的纪律记成 unavailable，而不是留一个看着像保护的布尔字段。
+   * 现实后果：装一个更旧的包不会被拦。
    */
-  allowDowngrade: boolean;
+  downgradeGuard: 'unavailable';
   /** 用户数据目录名（位于用户主目录下，与安装目录**不同树**） */
   userDataDirName: string;
   /** 覆盖安装（升级/修复）不动用户数据 */
@@ -151,7 +159,7 @@ export interface InstallPolicy {
 
 export const INSTALL_POLICY: InstallPolicy = {
   appOverwrite: 'repair-in-place',
-  allowDowngrade: false,
+  downgradeGuard: 'unavailable',
   userDataDirName: DATA_DIR_NAME,
   userDataSurvivesUpgrade: true,
   userDataSurvivesUninstall: true,
