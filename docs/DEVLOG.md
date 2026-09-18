@@ -3774,3 +3774,116 @@ bash tools/capture.sh terminal terminal-shell
 连接器 / 用量这些**管理类页面**从活动栏一级入口收进设置；活动栏只留工作台四项
 （对话 / 文件 / 终端 / 浏览器 / 轨迹）。收完之后再做流式的观感优化。
 
+## 2026-09-18 · M3 前置 · 设置改左导航分组：管理类页面收进设置，活动栏只剩工作台
+
+**目标**
+
+用户拍板的顺序是 **先终端 → 再设置 → 最后流式**，上一轮交完终端，本轮做第二件：
+设置页的摆布改成参考形态（左导航分组），并把技能 / 记忆 / 自动化 / 连接器 / 用量
+这些**管理类页面**从活动栏一级入口收进设置 —— 活动栏只留工作台
+（对话 / 文件 / 终端 / 浏览器 / 轨迹）+ 底部的设置。用户的另一句话是
+「有些指令就是配置项，应该转到设置中去」。
+
+**现象与根因**
+
+活动栏分两组已经很挤：上组「正在发生什么」是天天点的，下组「配置与账本」是
+偶尔来配一次的，两者挤同一根栏的代价是栏随功能增长而变长 —— 而这根栏当初被选中
+的理由恰恰是「第 10 个功能与第 1 个占用同样空间」。设置页那边则是另一种挤：
+顶部三页签（偏好 / 模型 / 安全）装得下三节，装不下要收进来的五节。
+
+收窄 `AppView` 引出一条**升级路径上的静默失败**，这是本轮最该记住的一条：
+
+- 一台机器上的 `config.json` 是上一版写的，里面存着 `"lastView": "skills"`。
+  `getConfig` 只做「默认值 + 磁盘值」的按字段合并 —— 这能兜住**少字段**，
+  兜不住**值域变窄**。原样交给渲染层的结果是：启动后主区**一片空白**，
+  没有任何报错，原因只写在配置文件里。用户能看到的只有「界面坏了」。
+
+**改动**
+
+| 位置 | 内容 |
+|---|---|
+| `packages/protocol/src/config.ts` | `AppView` 收窄为 `APP_VIEWS`（六个，含 settings）；新增 `isAppView()`；新增设置分节契约：`SETTINGS_SECTIONS`（12 节）/ `SETTINGS_GROUPS`（4 组）/ `SETTINGS_SECTION_LABEL` / `SETTINGS_SECTION_NOTE` / `DEFAULT_SETTINGS_SECTION` / `isSettingsSection()`；`AppConfig.settingsSection` + `DEFAULT_CONFIG`；`CONFIG_FIELDS.lastView.values` 改用 `APP_VIEWS`（原来是手抄一份视图名清单 —— 第二份真源） |
+| `packages/core-host/src/host.ts` | `getConfig`：磁盘上的 `lastView` / `settingsSection` 不合法时**折回**默认并在日志里点名（容忍手改过的旧文件）；`setConfig`：两者不合法时**拒绝**，错误里写清合法值与「这一页去哪了」 |
+| `apps/desktop/src/components/SettingsNav.tsx` | **新增**：左导航。分组与条目名全部从契约渲染，JSX 里一个字符串都没有 |
+| `apps/desktop/src/components/SettingsPanel.tsx` | 从「三页签 + 一大坨 JSX」重写为「左导航 + 12 节」；原来的偏好页拆成 `AppearanceSection` / `SessionSection` / `InterfaceSection`，安全页整块挪进 `SecuritySection`（连同沙箱草稿态与拒绝模式草稿 —— 那些状态本来就只属于那一节），新增 `AboutSection`；五个管理面板由 App 通过 `panels` 注入 |
+| `apps/desktop/src/components/ActivityRail.tsx` | 去掉下组与五个管理类图标，只留工作台五项 + 设置；注释改写为「不要再往栏上加管理类入口」 |
+| `apps/desktop/src/App.tsx` | `openView` 与新增的 `openSettings(section)` 合成一张 `refreshTarget` 刷新表（视图名与分节名取值域不相交）；五个管理面板在 App 里构造并标 `embedded`；顶栏的「上下文 / 用量」与输入框旁的「技能」都改成 `openSettings(...)`；分节的恢复沿用视图恢复那一套 ref 纪律 |
+| 五个面板 + `PanelPage.tsx` | 新增 `embedded` 形态：不渲染页头与页脚里的「返回对话」（`PanelPage` 额外把 `actions` 挪到内容顶部，否则用量页的「刷新」会跟着页头一起消失），容器从 `page-mask` 换成 `panel-embed`。**页体一字不改** |
+| `apps/desktop/src/styles.css` | 新增 `.settings-body` / `.settings-nav*` / `.settings-content` / `.settings-sec-*` / `.panel-embed*`；顺手修掉一处真缺陷（见下） |
+| `tools/settings-nav-test.js` | **新增** 35 项断言，挂进 `verify-all.js` 的 `SUITES` 与 `package.json` 的 `verify:strict`（新增套件必须同时改这两处） |
+| `tools/capture.sh` | 五个管理类场景从「点 rail」改成「开设置 + 按左导航文字点那一节」；`settings` / `settings-prefs` / `settings-security` / `terminal-shell` 四个场景的选择器从 `.page-body` / `.settings-tabs` 换成 `.settings-nav` / `.settings-content` |
+
+**顺带修掉的一处真缺陷：一个从未定义过的 CSS 变量**
+
+终端 shell 档位徽标的底色写的是 `var(--surface-2)` —— 这份样式表里从来没有这个变量。
+CSS 对未定义变量**不报错**，只是那一行静默失效，于是徽标一直没有底色
+（看上去「样式就是这么设计的」）。它活过了一整轮验收，因为没有任何断言会去看
+「用到的变量是否有定义」。本轮新增的 `settings-nav-test` 里那条断言（把样式表里
+所有 `var(--x)` 抓出来，逐个核对是否有定义）当场把它揪了出来，底色改用 `--bg-2`
+（与 rail 胶囊、用量按钮同一档）。
+
+另有一处**新写出来的**同类问题也是截图发现的：节标题用的是 `<span>`，默认行内，
+第一版截图里标题与说明挤在同一行（「模型与端点模型推理能力从哪来：…」）——
+改成两行（`.settings-sec-head` 用 flex column）。这条印证了老规矩：
+**回执（`items:12 on:模型与端点 groups:…`）能证明接线对不对，证明不了排版好不好**。
+
+**验证**
+
+```
+node tools/settings-nav-test.js   # 35/35 通过（新套件，已挂进 verify-all 与 verify:strict）
+npm run typecheck                 # protocol / core-host / desktop 三处全过
+npm run verify                    # exit 0 —— 31/32 绿 + 1 个已知环境性（browser）
+                                                  ^ 本轮从 30 涨到 31：real-dsh-mcp 这次真绿了
+bash tools/capture.sh settings settings-prefs settings-security terminal-shell \
+                      skills memory schedule connectors usage
+  ui-settings          → items:12 on:模型与端点 groups:通用/模型/功能与数据/安全与部署
+  ui-settings-prefs    → model:(跟随) options:2 effort:2
+  ui-settings-security → sandbox:"当前生效 workspace-write 来源 产品默认（你没选过）" guard:["normal"]
+  ui-terminal-shell    → chips:PowerShell/命令提示符 (cmd)/Git Bash（与 Linux 一致） on:PowerShell
+  ui-skills            → skill:demo-notes
+  ui-memory            → entry:所有项目的提交信息用中文书写
+  ui-schedule          → task:每周晨会纪要
+  ui-connectors        → connector:fs-local
+  ui-usage             → total:69.3k | warn:共 10 轮里有 2 轮没有任何用量数据…
+```
+
+新套件的 35 项断言分三段：**契约**（视图收窄后五个旧视图名必须都不在 `APP_VIEWS`、
+并且都各有对应分节；`SETTINGS_GROUPS` 覆盖 `SETTINGS_SECTIONS` **恰好一次** ——
+漏掉的那一节在设置页里永远打不开，重复的那一节会让导航出现两个同名条目）、
+**宿主**（旧 `lastView` 被拒绝的报错要点名它去哪了；手写的旧 `config.json` 要被折回
+且只动这两个键、不改写磁盘）、**渲染层接线**（活动栏的视图清单必须等于契约里的
+工作台视图；活动栏不再出现任何管理类视图名；五个面板都以内嵌形态挂载；
+样式表里用到的每个变量都有定义）。
+
+**踩坑与教训**
+
+1. **值域收窄是「兼容性」这件事里最容易被漏掉的一半。** 按字段合并默认值只能兜住
+   少字段，兜不住旧值 —— 而两者的失败表现完全不同：前者无感，后者是主区空白。
+   规矩因此定死两条：读的路径折回（并留痕），写的路径拒绝（并说清去处）。
+2. **同一件事有两个入口，缺陷就会只在其中一个入口可见。** 技能曾经既是 rail 上的
+   视图、又是输入框旁的按钮，各自渲染外壳。本轮把它们统一成「进设置并定位到那一节」，
+   面板外壳只有一份实现 —— 这也是 `embedded` 只收外壳、页体一字不改的原因。
+3. **「新写出来的」和「早就写坏的」一样需要断言。** 拼错变量名、行内元素忘了分列，
+   这两类问题都不会报错、也不会让任何测试变红，只能靠断言与截图分工去抓：
+   断言管「结构关系」（集合覆盖、同源、变量有定义），截图管「长什么样」。
+4. **并行改同一个文件会丢改动。** 本轮有两次「工具报告成功、文件其实没变」
+   （同一文件的两个编辑在同一批里发出去，后者按旧快照写回，把前者覆盖掉），
+   还有一次 `EBUSY`。处置：**同一个文件的编辑一律串行发**，改完立刻用 `grep` 核对，
+   不靠「成功」这两个字。
+
+**遗留**
+
+- **设置页没有搜索**。12 节 × 各自的若干项之后，找一项要按分组逐节翻。参考形态有搜索框，
+  本轮没做（要先想清楚「搜的是条目还是分节」）。
+- **`settingsSection` 没有设置页内的默认入口**：只有「上次打开的是哪一节」这一种恢复，
+  没有「每次打开都回到某一节」的偏好项（`lastView` 有对应的下拉，分节没有）。
+- **`.settings-tabs` 仍在使用**（记忆面板的三层切换）。它与左导航长得不同、语义也不同，
+  但两套「切换」控件并存这件事本身值得下次留一眼。
+- **流式输出仍未做**（用户排第三）。内核 ACP 桥只转发**已提交**的整块消息，没有 delta
+  级事件；真正的 token 级流式要走 `dsh-client-connection`（需 dsh Host + HTTP/WS）。
+
+**下一步**
+
+流式的**观感优化**：在传输层不动的前提下，把「等一会儿然后整段出现」做成可感知的
+进行中 —— 块级打字机追加 + 活动指示（计时 / 脉冲光标 / 思考态）。
+
