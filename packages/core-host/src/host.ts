@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  APP_VIEWS,
   DEFAULT_CONFIG,
+  isAppView,
+  isSettingsSection,
+  SETTINGS_SECTIONS,
   sumUsage,
   type AgentEvent,
   type AgentEventInput,
@@ -498,10 +502,27 @@ export class DeepworkHost {
    * 用 `{...默认值, ...磁盘值}` 而不是直接返回磁盘内容：旧版本写下的 config.json 少几个字段时
    * 也能正常读，于是永远不需要写迁移脚本。代价是「删掉某个键」无法用配置文件表达 ——
    * 对这份配置来说不存在这种需求，换来的是升级永不出问题。
+   *
+   * ── 为什么要折回而不是原样返回 ──────────────────────────────────────
+   * 「多字段」能靠合并兜住，**「值域变窄」兜不住**：`lastView` 曾经可以是
+   * `skills` / `memory` / …，2026-09-18 起这五个成了设置页里的分节、不再是视图。
+   * 一台升级上来的机器，config.json 里就存着 `"lastView": "skills"` ——
+   * 原样交给渲染层，下次启动会落在一个没有对应页面的视图上：主区**一片空白**，
+   * 而原因只写在配置文件里，界面上一个字都没有。
+   * 折回是这里的正确动作（容忍手改过的旧文件），与 setConfig 的「拒绝」分工明确：
+   * 那条路走的是我们自己的设置页，给调用方一个明确报错比替它选一个值有用。
    */
   getConfig(): AppConfig {
     const stored = readJson<Partial<AppConfig>>(configPath(), {});
-    return { ...DEFAULT_CONFIG, ...stored };
+    const merged: AppConfig = { ...DEFAULT_CONFIG, ...stored };
+    if (!isAppView(merged.lastView)) {
+      log.warn(`config.json 里的 lastView「${String(merged.lastView)}」不是合法视图，已折回 ${DEFAULT_CONFIG.lastView}`);
+      merged.lastView = DEFAULT_CONFIG.lastView;
+    }
+    if (!isSettingsSection(merged.settingsSection)) {
+      merged.settingsSection = DEFAULT_CONFIG.settingsSection;
+    }
+    return merged;
   }
 
   setConfig(patch: Partial<AppConfig>): AppConfig {
@@ -532,6 +553,20 @@ export class DeepworkHost {
     if (patch.terminalShell !== undefined && !isTerminalShell(patch.terminalShell)) {
       throw new Error(
         `终端 shell 档位「${String(patch.terminalShell)}」不是合法值（合法值：${TERMINAL_SHELLS.join(' / ')}）`,
+      );
+    }
+    // 视图与设置分节是「界面停在哪」的两个键，同样只认白名单。
+    // 它们看着无害（写错了顶多停错页），实际后果比主题更硬：视图名写错 =
+    // 主区什么都不渲染。旧的 `skills` 这类已经收进设置页的值也必须在这里被拦下 ——
+    // 让 UI 去兜一个已经不存在的页面，只会把「写错了」伪装成「页面加载失败」。
+    if (patch.lastView !== undefined && !isAppView(patch.lastView)) {
+      throw new Error(
+        `视图「${String(patch.lastView)}」不是合法值（合法值：${APP_VIEWS.join(' / ')}）—— 技能 / 记忆 / 自动化 / 连接器 / 用量已收进设置页`,
+      );
+    }
+    if (patch.settingsSection !== undefined && !isSettingsSection(patch.settingsSection)) {
+      throw new Error(
+        `设置分节「${String(patch.settingsSection)}」不是合法值（合法值：${SETTINGS_SECTIONS.join(' / ')}）`,
       );
     }
     // 单价表同样先清洗再落盘：NaN / 负数单价会让整张估算表变成 NaN，
