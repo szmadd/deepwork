@@ -23,7 +23,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { SkillAuditReport, SkillInstallResult, SkillRecord } from '@deepwork/protocol';
+import type { SkillAuditFinding, SkillAuditReport, SkillInstallResult, SkillManifest, SkillRecord } from '@deepwork/protocol';
 import { homeDir, readJson, writeJson } from '../paths';
 import { parseSkillMd, SkillManifestError } from './manifest';
 import { auditSkillDir } from './audit';
@@ -76,9 +76,19 @@ export class SkillStore {
       const message = err instanceof SkillManifestError ? err.message : String(err);
       return { ok: false, audit: emptyReport(), reason: `清单不合法：${message}` };
     }
+    const { manifest } = parsed;
+
+    // 同版本已安装 = no-op：契约承诺「只比较字符串相等性做同版本已安装判断」。
+    // 刻意放在审计之前 —— no-op 不落任何磁盘内容，源里即使查出 critical
+    // 也阻止不了「什么都不做」这件事；把 no-op 伪装成全新安装成功才是要拦的。
+    // list() 已剔除「目录被手删」的幽灵记录，能查到即视为真实已装。
+    const existing = this.list().find((r) => r.manifest.name === manifest.name);
+    if (existing && existing.manifest.version === manifest.version) {
+      return { ok: true, reinstalled: true, audit: existing.audit, record: existing };
+    }
 
     // 审计发生在源目录上、任何拷贝之前
-    const audit = auditSkillDir(src);
+    const audit = withManifestFindings(auditSkillDir(src), manifest);
     const critical = audit.findings.filter((f) => f.severity === 'critical');
     if (critical.length > 0) {
       return {
@@ -88,7 +98,6 @@ export class SkillStore {
       };
     }
 
-    const { manifest } = parsed;
     const target = this.skillDir(manifest.name);
     const staging = path.join(this.root, `.staging-${manifest.name}`);
 
@@ -182,13 +191,21 @@ export class SkillStore {
     return record;
   }
 
-  /** 干跑审计：只看报告，不动任何状态 */
+  /** 干跑审计：只看报告，不动任何状态。附带清单解析结果 —— 「这个包根本
+   *  装不上」必须在用户确认安装之前就能看到，而不是确认之后才报。 */
   auditOnly(source: string): SkillAuditReport {
     const src = path.resolve(source);
     if (!fs.existsSync(path.join(src, SKILL_MD))) {
       throw new Error(`源目录缺 ${SKILL_MD}：${src}`);
     }
-    return auditSkillDir(src);
+    const audit = auditSkillDir(src);
+    try {
+      const { manifest } = parseSkillMd(fs.readFileSync(path.join(src, SKILL_MD), 'utf8'));
+      return { ...withManifestFindings(audit, manifest), manifest };
+    } catch (err) {
+      const message = err instanceof SkillManifestError ? err.message : String(err);
+      return { ...audit, manifestError: message };
+    }
   }
 
   /** 供宿主把已启用技能目录交给内核（触发匹配是内核侧职责） */
@@ -229,4 +246,27 @@ function copyDir(from: string, to: string): void {
 
 function emptyReport(): SkillAuditReport {
   return { findings: [], scannedFiles: 0, totalBytes: 0, auditedAt: new Date().toISOString() };
+}
+
+/**
+ * 清单层面的发现补进审计报告：缺 description 不阻断安装（有 '' 兜底），
+ * 但 description 是语义匹配与「/」补全的输入，缺失会让触发质量静默打折 ——
+ * 记一条 warn 让作者/用户看见，而不是装完才发现「装了但没被匹配到过」。
+ * 插入位置保持在 info 级发现之前，不破坏「severity 降序」的排列纪律。
+ */
+function withManifestFindings(audit: SkillAuditReport, manifest: SkillManifest): SkillAuditReport {
+  if (manifest.description.trim()) return audit;
+  const finding: SkillAuditFinding = {
+    rule: 'missing-description',
+    severity: 'warn',
+    file: SKILL_MD,
+    line: 0,
+    message: 'frontmatter 缺 description：该技能仍会被启用，但语义匹配与「/」补全缺少输入，触发质量会打折',
+    snippet: '',
+  };
+  const infoAt = audit.findings.findIndex((f) => f.severity === 'info');
+  const findings = [...audit.findings];
+  if (infoAt === -1) findings.push(finding);
+  else findings.splice(infoAt, 0, finding);
+  return { ...audit, findings };
 }

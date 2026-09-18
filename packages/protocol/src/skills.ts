@@ -124,7 +124,7 @@ export interface SkillManifest {
   name: string;
   /** 一句话描述（列表页与语义匹配的输入之一） */
   description: string;
-  /** 作者声明的版本 */
+  /** 作者声明的版本（semver 写法，manifest 层强制校验：x.y.z，可带 -/+ 后缀） */
   version: string;
   /**
    * 触发提示：作者建议的触发场景描述。
@@ -179,9 +179,21 @@ export interface SkillAuditReport {
   totalBytes: number;
   /** 审计时刻（ISO 8601） */
   auditedAt: string;
+  /**
+   * SKILL.md 清单解析结果（干跑审计路径也会给出）。
+   *
+   * 存在 manifestError 时这个包根本装不上 —— 必须在用户确认安装**之前**
+   * 暴露，而不是等他点完「确认安装」才看到「清单不合法」。manifest 解析成功时
+   * 附带 name/version，让确认页能显示「将要安装的是哪个技能」。
+   */
+  manifest?: SkillManifest;
+  /** 清单解析失败的人读原因；与 manifest 互斥 */
+  manifestError?: string;
 }
 
-/** 安装结果：要么成功带回记录，要么被 critical 阻断并给出报告 */
+/**
+ * 安装结果：要么成功带回记录，要么被 critical 阻断并给出报告。
+ */
 export interface SkillInstallResult {
   ok: boolean;
   /** ok=false 且被审计阻断时给出完整报告；成功时与记录内的 audit 相同 */
@@ -190,6 +202,12 @@ export interface SkillInstallResult {
   record?: SkillRecord;
   /** ok=false 时的人读原因 */
   reason?: string;
+  /**
+   * 同名同 version 重复安装时为 true：磁盘与清单不做任何改动，
+   * record 是已存在的那条。契约承诺「只比较字符串相等性做同版本已安装判断」，
+   * 兑现就在这里 —— 不让重复安装伪装成一次全新的「安装成功」。
+   */
+  reinstalled?: boolean;
   /**
    * 来源拉取的摘要（仅 URL 来源有值）。
    *

@@ -189,12 +189,15 @@ export function SkillsPanel({
               {install.step === 'done' ? (
                 install.result.ok ? (
                   <div className="modal-hint">
-                    已安装「{install.result.record?.manifest.name}」v
-                    {install.result.record?.manifest.version}
-                    {install.result.audit.findings.length > 0
-                      ? `；审计留有 ${install.result.audit.findings.length} 条发现（见下方记录）`
-                      : '，审计零发现'}
-                    。
+                    {install.result.reinstalled
+                      ? `「${install.result.record?.manifest.name}」v${install.result.record?.manifest.version} 已安装，未做改动。`
+                      : `已安装「${install.result.record?.manifest.name}」v${
+                          install.result.record?.manifest.version
+                        }${
+                          install.result.audit.findings.length > 0
+                            ? `；审计留有 ${install.result.audit.findings.length} 条发现（见下方记录）`
+                            : '，审计零发现'
+                        }。`}
                     {/* URL 来源多两个看不见的中间步骤，摘要必须显示 ——
                         「装上的到底是不是我以为的那个包」是这里唯一能回答它的地方 */}
                     {install.result.source
@@ -271,6 +274,18 @@ export function SkillsPanel({
               <div className="skill-source" title={install.source}>
                 源目录：{install.source}
               </div>
+              {install.audit.manifestError ? (
+                <div className="modal-hint modal-hint-warn">
+                  清单不合法，这个包装不上：{install.audit.manifestError}
+                </div>
+              ) : install.audit.manifest ? (
+                <div className="modal-hint">
+                  将要安装：{install.audit.manifest.name} v{install.audit.manifest.version}
+                  {install.audit.manifest.description
+                    ? ` —— ${install.audit.manifest.description}`
+                    : '（无描述，会记一条警告）'}
+                </div>
+              ) : null}
               <div className="modal-hint">
                 扫描 {install.audit.scannedFiles} 个文本文件 / 共 {install.audit.totalBytes} 字节，
                 {install.audit.findings.length === 0
@@ -294,10 +309,10 @@ export function SkillsPanel({
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={busy}
+                disabled={busy || Boolean(install.audit.manifestError)}
                 onClick={() => void confirmInstall(install.source)}
               >
-                {busy ? '安装中…' : '确认安装'}
+                {busy ? '安装中…' : install.audit.manifestError ? '清单不合法，无法安装' : '确认安装'}
               </button>
             </>
           ) : (

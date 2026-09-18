@@ -130,6 +130,17 @@ export function applyEvent(items: TimelineItem[], event: AgentEvent): TimelineIt
       ];
     }
 
+    case 'skill.skipped':
+      return [
+        ...items,
+        {
+          id: `n_${event.seq}`,
+          kind: 'notice',
+          level: 'warn',
+          text: `以下技能已启用但 SKILL.md 读取/解析失败，本轮已跳过（对内核不可见）：${event.skills.join('、')}。请到技能面板检查或重装。`,
+        },
+      ];
+
     case 'memory.attached': {
       const count = (layer: string) => event.layers.find((stat) => stat.layer === layer)?.entries ?? 0;
       return [

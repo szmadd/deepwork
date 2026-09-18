@@ -19,6 +19,16 @@ export class SkillManifestError extends Error {
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
+ * semver 格式（契约层承诺的 version 形态）。
+ *
+ * 只校验「写法的合法性」，不做 semver 排序/范围比较 —— 升级判断仍是
+ * 字符串相等性（同名不同 version = 升级）。这里拦截的是 `version: abc`
+ * 这类笔误：它们能装进来，但会让「同版本已安装」判断与用户的版本预期
+ * 全部失真。
+ */
+const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+/**
  * 解析 SKILL.md 全文：frontmatter（--- 围栏）+ 正文（返回给审计引擎）。
  * 抛 SkillManifestError 表示清单不合法（缺字段、名字含路径分隔符等）。
  */
@@ -75,6 +85,11 @@ export function parseSkillMd(raw: string): { manifest: SkillManifest; body: stri
     throw new SkillManifestError(`name "${name}" 含路径分隔符，拒绝`);
   }
   if (!version) throw new SkillManifestError('frontmatter 缺少 version');
+  if (!VERSION_RE.test(version)) {
+    throw new SkillManifestError(
+      `version "${version}" 不是合法的 semver（应为 x.y.z，可带 - prerelease 与 + build 后缀）`,
+    );
+  }
 
   return {
     manifest: {

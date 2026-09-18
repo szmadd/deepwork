@@ -1075,7 +1075,9 @@ export class DeepworkHost {
       this.emit({ type: 'skill.attached', runId, skills: skillContext.attached });
     }
     if (skillContext.skipped.length > 0) {
+      // 只写 log 用户看不见 —— 「装了但没生效」必须通过事件流到界面
       log.warn(`技能启用但 SKILL.md 不可用，已跳过: ${skillContext.skipped.join(', ')}`);
+      this.emit({ type: 'skill.skipped', runId, skills: skillContext.skipped });
     }
 
     // 记忆上下文：每轮重建（与技能同理，面板里删掉一条，下一轮就不能再看到它）。

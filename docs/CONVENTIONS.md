@@ -288,7 +288,8 @@ Esc 挂在 `window` 上（焦点可能停在任何输入框里）且**只在开�
   正文由内核按需自取（路径已给出）；只有 `/技能名` 显式调用才注入全文，且受
   `SKILL_BODY_LIMIT` 截断并在 attached 记录里如实标 `truncated`。
 - **截断与跳过都必须可见。** 正文截断标 truncated；已启用但 SKILL.md 损坏的技能记名
-  skipped 并写日志 —— 「注入了但少了一截」「该在的没在」都不能静默。
+  skipped 并写日志、发 `skill.skipped` 事件（带 runId、先于 run.started，与 skill.attached
+  同一归属纪律）—— 「注入了但少了一截」「该在的没在」都不能静默。
 - **注入文本不得被适配层改写。** `skill.attached` 记录里说的与内核实际看到的必须一致，
   中间任何一层「顺手改一下」都会让这条记录失去意义。
 

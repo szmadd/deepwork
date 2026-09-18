@@ -206,6 +206,31 @@ async function main() {
     host.toggleSkill('alpha-skill', true);
   }
 
+  {
+    // 已启用但 SKILL.md 损坏：不阻断对话，但必须以事件形式可见（不只 log）
+    store.install(makeSkill(path.join(root, 'src-broken'), 'broken-skill', '会坏的技能', '正文。'));
+    fs.writeFileSync(path.join(home, 'skills', 'broken-skill', 'SKILL.md'), '没有 frontmatter 的内容', 'utf8');
+    const events = await runRound(host, session.id, '看看工作区');
+    const skipped = events.find((e) => e.type === 'skill.skipped');
+    const runStarted = events.find((e) => e.type === 'run.started');
+    check(
+      'skill.skipped 事件发出且点名被跳过的技能',
+      skipped?.skills.includes('broken-skill') ?? false,
+      JSON.stringify(skipped?.skills),
+    );
+    check(
+      'skill.skipped 先于 run.started 且 runId 一致',
+      Boolean(skipped && runStarted) && skipped.runId === runStarted.runId && skipped.seq < runStarted.seq,
+      `skipped.seq=${skipped?.seq} started.seq=${runStarted?.seq}`,
+    );
+    const timeline = buildTimeline(events);
+    check(
+      '回放视图含跳过警告（warn 级，可复现）',
+      timeline.some((item) => item.kind === 'notice' && item.level === 'warn' && item.text.includes('broken-skill')),
+    );
+    store.uninstall('broken-skill');
+  }
+
   await host.stop();
 
   const failed = results.filter((r) => !r.ok);

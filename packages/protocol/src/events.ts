@@ -20,6 +20,7 @@ export type AgentEventType =
   | 'session.forked'
   | 'user.message'
   | 'skill.attached'
+  | 'skill.skipped'
   | 'memory.attached'
   | 'schedule.fired'
   | 'run.started'
@@ -107,6 +108,21 @@ export interface SkillAttachedEvent extends EventBase {
   type: 'skill.attached';
   runId: string;
   skills: SkillAttachment[];
+}
+
+/**
+ * 已启用但 SKILL.md 读取/解析失败、本轮被跳过的技能记录。
+ *
+ * 与 skill.attached 同一条纪律：必须带 runId、先于 run.started、进日志。
+ * 它不阻断对话（那是刻意设计 —— 一个手改坏的 SKILL.md 不该让整轮发不出去），
+ * 但「装了却没生效」用户必须看得见：只写 log.warn 的话，技能会在静默中
+ * 永远失效，用户还以为它在工作。没有任何跳过技能时不发这个事件。
+ */
+export interface SkillSkippedEvent extends EventBase {
+  type: 'skill.skipped';
+  runId: string;
+  /** 被跳过的技能名列表 */
+  skills: string[];
 }
 
 /**
@@ -277,6 +293,7 @@ export type AgentEvent =
   | SessionForkedEvent
   | UserMessageEvent
   | SkillAttachedEvent
+  | SkillSkippedEvent
   | MemoryAttachedEvent
   | ScheduleFiredEvent
   | RunStartedEvent

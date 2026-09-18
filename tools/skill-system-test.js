@@ -68,10 +68,13 @@ console.log('\n── 清单解析 ──');
 for (const [label, raw] of [
   ['缺 name', '---\nversion: 1.0.0\n---\n'],
   ['缺 version', '---\nname: a\n---\n'],
-  ['围栏未闭合', '---\nname: a\nversion: 1\n'],
+  ['version 非 semver', '---\nname: a\nversion: abc\n---\n'],
+  ['version 缺段', '---\nname: a\nversion: 1.0\n---\n'],
+  ['围栏未闭合', '---\nname: a\nversion: 1.0.0\n'],
   ['无 frontmatter', '# 直接正文\n'],
-  ['name 含路径分隔符', '---\nname: "../escape"\nversion: 1\n---\n'],
-  ['name 含大写', '---\nname: BadName\nversion: 1\n---\n'],
+  ['name 含路径分隔符', '---\nname: "../escape"\nversion: 1.0.0\n---\n'],
+  ['name 含大写', '---\nname: BadName\nversion: 1.0.0\n---\n'],
+  ['semver 带 prerelease / build 合法', '---\nname: a\nversion: 1.0.0-rc.1+build.5\n---\n'],
 ]) {
   let threw = false;
   try {
@@ -79,7 +82,9 @@ for (const [label, raw] of [
   } catch {
     threw = true;
   }
-  check(`非法清单被拒：${label}`, threw);
+  // 最后一项是合法形状，走反向断言
+  check(label.startsWith('semver') ? 'semver 带 -/+ 后缀合法' : `非法清单被拒：${label}`,
+    label.startsWith('semver') ? !threw : threw);
 }
 
 // ══════════════════════════════════════════════════════════
@@ -209,6 +214,43 @@ const skillsDir = path.join(home, 'skills');
   check('资源文件随技能拷贝', fs.existsSync(path.join(skillsDir, 'good-skill', 'template.txt')));
   check('默认启用', result.record?.enabled === true);
   check('安装来源被记录', result.record?.source === good);
+  var goodInstalledAt = result.record?.installedAt;
+}
+
+{
+  // 同版本重复安装 = no-op：契约承诺「字符串相等性做同版本已安装判断」
+  const again = store.install(path.join(root, 'src-good'));
+  check('同版本重复安装标记 reinstalled', again.ok === true && again.reinstalled === true);
+  check('no-op 未改动磁盘内容', fs.readFileSync(path.join(skillsDir, 'good-skill', 'SKILL.md'), 'utf8').includes('怎么写好提交信息'));
+  const record = store.list().find((r) => r.manifest.name === 'good-skill');
+  check('no-op 未改动安装时间与来源', record?.installedAt === goodInstalledAt && record?.source === path.join(root, 'src-good'));
+  const staged = fs.readdirSync(skillsDir).filter((e) => e.startsWith('.staging') || e.startsWith('.trash'));
+  check('no-op 不残留暂存/回收目录', staged.length === 0, staged.join(','));
+}
+
+{
+  const badVer = path.join(root, 'src-badver');
+  fs.mkdirSync(badVer, { recursive: true });
+  fs.writeFileSync(path.join(badVer, 'SKILL.md'), '---\nname: badver-skill\nversion: abc\n---\n', 'utf8');
+  const result = store.install(badVer);
+  check('非 semver version 被拒且带原因', result.ok === false && (result.reason ?? '').includes('semver'), result.reason);
+  check('被拒版本未落盘', !fs.existsSync(path.join(skillsDir, 'badver-skill')));
+}
+
+{
+  // 缺 description：允许安装，但记一条 warn（语义匹配的输入缺失要可见）
+  const noDesc = makeSkill(path.join(root, 'src-nodesc'), { name: 'nodesc-skill', version: '1.0.0' }, '正文。');
+  const result = store.install(noDesc);
+  check('缺 description 允许安装', result.ok === true);
+  const findings = result.record?.audit.findings ?? [];
+  check('缺 description 记 warn 级发现',
+    findings.some((f) => f.rule === 'missing-description' && f.severity === 'warn'),
+    JSON.stringify(findings.map((f) => f.rule)));
+  const warnAt = findings.findIndex((f) => f.rule === 'missing-description');
+  const firstInfo = findings.findIndex((f) => f.severity === 'info');
+  check('合成发现不破坏严重度排序（warn 在 info 之前）', firstInfo === -1 || warnAt < firstInfo);
+  check('干跑审计同样给出缺 description 警告',
+    store.auditOnly(noDesc).findings.some((f) => f.rule === 'missing-description'));
 }
 
 {
@@ -277,11 +319,19 @@ const skillsDir = path.join(home, 'skills');
 }
 
 {
-  // 干跑审计：不改变安装状态
+  // 干跑审计：不改变安装状态；附带清单解析结果，「装不上」在确认前可见
   const before = store.list().length;
   const report = store.auditOnly(path.join(root, 'src-dang'));
   check('干跑审计返回报告', report.findings.some((f) => f.rule === 'destructive-command'));
   check('干跑审计不改变安装状态', store.list().length === before);
+  const okReport = store.auditOnly(path.join(root, 'src-good'));
+  check('干跑审计附带清单解析结果',
+    okReport.manifest?.name === 'good-skill' && okReport.manifest?.version === '1.2.0' && !okReport.manifestError,
+    JSON.stringify(okReport.manifest));
+  const badReport = store.auditOnly(path.join(root, 'src-badfm'));
+  check('干跑审计暴露清单不合法（缺 version）',
+    Boolean(badReport.manifestError) && badReport.manifestError.includes('version') && !badReport.manifest,
+    badReport.manifestError);
 }
 
 // ══════════════════════════════════════════════════════════
