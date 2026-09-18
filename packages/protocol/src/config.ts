@@ -26,17 +26,25 @@ import type { ModelPrice } from './usage';
  * 而右侧并排面板本身已被 view 里的 `files` / `terminal` 取代表达。
  * getConfig 按字段合并默认值，旧 config.json 缺这个键就走默认 'chat'，无需迁移脚本。
  *
- * ── 为什么这里只剩「工作台视图」（2026-09-18 收窄）──────────────────
- * `skills` / `memory` / `schedules` / `connectors` / `usage` 一度也是一级视图，
- * 结果是 rail 上「天天点的」与「偶尔来配一次」的入口挨在一起，栏越加越长。
- * 现在它们各自是**设置页里的一节**（见 `SettingsSection`），rail 只留工作台：
- * 对话 / 文件 / 终端 / 浏览器 / 轨迹，外加固定在底部的设置。
+ * ── 这个清单只装「工作台视图」（2026-09-18 两次收窄）────────────────
+ * 第一次：`skills` / `memory` / `schedules` / `connectors` / `usage` 一度也是一级
+ * 视图，结果是 rail 上「天天点的」与「偶尔来配一次」的入口挨在一起，栏越加越长。
+ * 现在它们各自是**设置里的一节**（见 `SettingsSection`）。
  *
- * 收窄的代价必须说清：`config.lastView` 里可能存着旧值（例如 `skills`）。
+ * 第二次（同一轮内）：**设置自己也不再是一个视图**。它从「占满主区的整页」改成了
+ * 覆盖层（`.settings-mask` 之上的对话框），理由见 `SettingsSection` 的注释。
+ * 判断标准只有一条：**它是不是主区里一个能停下来的页**。设置现在不是 ——
+ * 它盖在所有页上面，关掉就回到原来那一页，自己不留位置。
+ *
+ * 于是 `lastView` 的含义收紧为「下次启动停在工作台的哪一页」，而「上次开着设置」
+ * 不再是需要恢复的状态：启动时弹一个对话框出来，用户的第一动作是关掉它。
+ *
+ * 收窄的代价必须说清 —— 而且这是**两次**都成立的同一条：
+ * `config.lastView` 里可能存着旧值（`skills`，或者上一版的 `settings`）。
  * 那种值放过去会让下次启动落到一个没有对应页面的视图上 —— 主区一片空白，
  * 而原因只写在配置文件里。**折回由宿主负责**（`getConfig`），不指望渲染层兜。
  */
-export const APP_VIEWS = ['chat', 'files', 'terminal', 'browser', 'trajectory', 'settings'] as const;
+export const APP_VIEWS = ['chat', 'files', 'terminal', 'browser', 'trajectory'] as const;
 
 export type AppView = (typeof APP_VIEWS)[number];
 
@@ -46,7 +54,6 @@ export const APP_VIEW_LABEL: Record<AppView, string> = {
   terminal: '终端',
   browser: '浏览器',
   trajectory: '轨迹',
-  settings: '设置',
 };
 
 export function isAppView(value: unknown): value is AppView {
@@ -54,7 +61,21 @@ export function isAppView(value: unknown): value is AppView {
 }
 
 /**
- * 设置页的分节。
+ * 设置的分节。
+ *
+ * ── 设置在界面上是「覆盖层」，不是一个视图（2026-09-18）──────────────
+ * 它从占满主区的整页改成了居中的对话框：盖住一切，按 Esc / 点遮罩 / 点右上角关闭，
+ * 关掉就回到进来之前那一页 —— 它自己不留位置。
+ *
+ * 因此这里**不需要**回答「它是哪一页」（那是 `AppView` 的事，而设置已经不在里面）；
+ * 这一层要回答的是「打开设置时停在哪一节」。两个状态必须分开：
+ * 「开着没有」是渲染层的临时状态、**不落盘**（落盘的后果是每次启动都弹一个对话框
+ * 出来，而用户的第一动作是关掉它）；「上次停在哪一节」落盘，否则用户每次回来
+ * 都要在左导航十二节里重新找一遍。
+ *
+ * 尺寸上的取舍也记在这里：对话框宽 880 / 高 600，窗口更小就按窗口缩。
+ * 管理类内容（技能几十条、用量带图表）在这个宽度里够用，而「比整页小一圈」
+ * 换来的是**它一眼就是盖上去的一层**，而不是又一个页面。
  *
  * ── 分节与分组是两个关注点 ──────────────────────────────────────────
  * `SETTINGS_SECTIONS` 是**每一节是什么**（取值域，配置里存的就是它），
@@ -314,12 +335,14 @@ export interface AppConfig {
   /** 上次所在的视图；下次启动停在同一页 */
   lastView: AppView;
   /**
-   * 设置页上次所在的分节。
+   * 设置上次所在的分节。
    *
-   * 与 lastView 同类（下次打开停在同一页），只是粒度细一层 —— 设置仍是一个视图，
-   * 里面却有十二节；不记的话用户每次回来都要在左导航里重新找一遍。
+   * 与 lastView 同类（下次打开停在同一页），但语义上比它多一层：设置现在是覆盖层，
+   * 「开着没有」不落盘，**「上次停在哪一节」落盘** —— 这两件事必须分开。
+   * 前者落盘的后果是每次启动都弹一个设置对话框出来；后者不落盘的后果是
+   * 用户每次回来都要在左导航十二节里重新找一遍。
    *
-   * 刻意不放进 `CONFIG_FIELDS`：它的入口是设置页的左导航（与 railExpanded 同理），
+   * 刻意不放进 `CONFIG_FIELDS`：它的入口是设置里的左导航（与 railExpanded 同理），
    * 塞进通用渲染器只会多一个没人会去找的下拉框。
    */
   settingsSection: SettingsSection;
