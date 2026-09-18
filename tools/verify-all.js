@@ -54,6 +54,7 @@ const SUITES = [
   'preflight-test.js',
   'routing-test.js',
   'theme-test.js',
+  'settings-nav-test.js',
   'notify-test.js',
   'branch-test.js',
   'completion-test.js',

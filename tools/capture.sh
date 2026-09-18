@@ -149,7 +149,13 @@ run_scene() {
 # 这一点也正是「点不到就返回 no-rail」必须存在的原因。
 RAIL_HELPER='const openRail=async(label)=>{const b=[...document.querySelectorAll(".rail-item")].find(x=>x.getAttribute("title")===label);if(!b)return "no-rail:"+label;b.click();await new Promise(r=>setTimeout(r,1600));return "ok";};'
 
-SCENES="${*:-chat composer tree terminal terminal-shell preview hunk settings settings-security sandbox-denial sandbox-escalation skills memory schedule connectors usage browser chart office}"
+# 2026-09-18 起技能 / 记忆 / 自动化 / 连接器 / 用量是**设置页里的分节**，rail 上没有入口。
+# 所以这些场景要两步：先开设置，再按左导航的条目文字点进那一节。
+# 两处都不按索引点：索引会随分组顺序变化而错位，而错位之后画面看起来仍然「正常」——
+# 只是拍到了另一节，而回执里那个名字会被当成这一节的名字。
+SETTINGS_HELPER='const openSettings=async(section)=>{const r=await openRail("设置");if(r!=="ok")return r;const b=[...document.querySelectorAll(".settings-nav-item")].find(x=>x.textContent.trim()===section);if(!b)return "no-section:"+section;b.click();await new Promise(r2=>setTimeout(r2,1800));return "ok";};'
+
+SCENES="${*:-chat composer tree terminal terminal-shell preview hunk settings settings-prefs settings-security sandbox-denial sandbox-escalation skills memory schedule connectors usage browser chart office}"
 
 for scene in $SCENES; do
   case "$scene" in
@@ -185,12 +191,12 @@ for scene in $SCENES; do
         "0"
       ;;
     terminal-shell)
-      # 终端 shell 档位选择器（设置 → 偏好）。这一场要证的是**控件与说明都渲染出来了**：
+      # 终端 shell 档位选择器（设置 → 界面与终端）。这一场要证的是**控件与说明都渲染出来了**：
       # 三个档位 chip、当前档位被选中、以及该档的能力边界提示（PS 5.1 不支持 && 这句
       # 是用户做选择时唯一需要的依据）。回执回读三个 chip 的文案与选中项 ——
       # 图上分不清「chip 少了一个」与「少的那一个被挤出换行」。
       run_scene "ui-terminal-shell" ".terminal-shell-chips" \
-        "$RAIL_HELPER await openRail('设置'); const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('偏好')); if(t){t.click();await new Promise(r=>setTimeout(r,1200));} const box=document.querySelector('.terminal-shell-chips'); if(!box) return 'no-shell-chips'; const chips=[...box.querySelectorAll('.theme-chip')]; const on=box.querySelector('.theme-chip-on'); const kvs=[...document.querySelectorAll('.page-body .modal-label')].findIndex(x=>x.textContent==='终端 shell'); return 'chips:'+chips.map(c=>c.textContent).join('/')+' on:'+(on?on.textContent:'none')+' labelAt:'+kvs;" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('界面与终端'); if(r!=='ok') return r; const box=document.querySelector('.terminal-shell-chips'); if(!box) return 'no-shell-chips'; const chips=[...box.querySelectorAll('.theme-chip')]; const on=box.querySelector('.theme-chip-on'); const labels=[...document.querySelectorAll('.settings-content .modal-label')].map(x=>x.textContent); return 'chips:'+chips.map(c=>c.textContent).join('/')+' on:'+(on?on.textContent:'none')+' labelAt:'+labels.indexOf('终端 shell');" \
         "0"
       ;;
     preview)
@@ -207,27 +213,31 @@ for scene in $SCENES; do
         "1"
       ;;
     settings)
-      run_scene "ui-settings" ".settings-tabs" \
-        "$RAIL_HELPER await openRail('设置'); const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('模型')); if(t){ t.click(); await new Promise(r=>setTimeout(r,2000)); } const on=document.querySelector('.settings-tab-on'); return 'active:'+(on?on.textContent:'none');" \
+      # 设置页的整体形态：左导航（分组）+ 内容列。这一场要证的是**导航与分节都渲染出来了**：
+      # 分组标题、十二个条目、当前那一节被高亮。回执回读导航条目数与选中项 ——
+      # 图上分不清「少了一节」与「那一节被挤到折叠之下」（导航这一列自己不滚动，
+      # 超出就是真的没了）。
+      run_scene "ui-settings" ".settings-nav" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('模型与端点'); if(r!=='ok') return r; const items=[...document.querySelectorAll('.settings-nav-item')]; const on=document.querySelector('.settings-nav-on'); const groups=[...document.querySelectorAll('.settings-nav-title')].map(x=>x.textContent); return 'items:'+items.length+' on:'+(on?on.textContent:'none')+' groups:'+groups.join('/');" \
         "0"
       ;;
     settings-prefs)
-      # 偏好页是「默认模型由用户自选」这条改动的落点：候选来自模型目录、
+      # 「会话默认」这一节是「默认模型由用户自选」这条改动的落点：候选来自模型目录、
       # 首项是「跟随内核默认」、推理档位同样从目录里出。
       # 末尾回读两个下拉的当前值作为回执 —— 只截图不回读的话，
       # 「下拉是空白的」与「下拉里只有一项」在图上不容易区分。
-      run_scene "ui-settings-prefs" ".settings-tabs" \
-        "$RAIL_HELPER await openRail('设置'); const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('偏好')); if(!t) return 'no-prefs-tab'; t.click(); await new Promise(r=>setTimeout(r,1200)); const sels=[...document.querySelectorAll('.page-body select')]; const labels=[...document.querySelectorAll('.page-body .modal-label')].map(x=>x.textContent); const mi=labels.indexOf('新建会话的默认模型'); const ei=labels.indexOf('默认推理档位'); const m=mi>=0?sels[mi]:null; const e=ei>=0?sels[ei]:null; return 'model:'+(m?m.value||'(跟随)':'none')+' options:'+(m?m.options.length:0)+' effort:'+(e?e.options.length:'none');" \
+      run_scene "ui-settings-prefs" ".settings-content" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('会话默认'); if(r!=='ok') return r; const sels=[...document.querySelectorAll('.settings-content select')]; const labels=[...document.querySelectorAll('.settings-content .modal-label')].map(x=>x.textContent); const mi=labels.indexOf('新建会话的默认模型'); const ei=labels.indexOf('默认推理档位'); const m=mi>=0?sels[mi]:null; const e=ei>=0?sels[ei]:null; return 'model:'+(m?m.value||'(跟随)':'none')+' options:'+(m?m.options.length:0)+' effort:'+(e?e.options.length:'none');" \
         "0"
       ;;
     settings-security)
-      # 安全页是 FR-3.5 的落点：**内核沙箱**（模型改文件的实际边界）与**审批档位**
+      # 「审批与沙箱」这一节是 FR-3.5 的落点：**内核沙箱**（模型改文件的实际边界）与**审批档位**
       # （哪些命令要问人）是两层，界面上刻意分开说 —— 混成一条会让用户以为
       # 自己在设置的档位就是拦下越界写入的那道闸，而真实内核下模型的命令不过宿主。
       # 末尾回读两处的文字作为回执：图上分不清「显示为未知」与「压根没渲染」，
       # 而「沙箱模式那一格是空的」恰好是这一轮最该被看见的失败形态。
-      run_scene "ui-settings-security" ".settings-tabs" \
-        "$RAIL_HELPER await openRail('设置'); const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('安全')); if(!t) return 'no-security-tab'; t.click(); await new Promise(r=>setTimeout(r,1200)); const kvs=[...document.querySelectorAll('.settings-kv')].map(x=>x.textContent.replace(/\\s+/g,' ').trim()); const sels=[...document.querySelectorAll('.page-body select')].map(x=>x.value); return 'sandbox:'+JSON.stringify(kvs[0]||'(none)')+' guard:'+JSON.stringify(sels)+' kv:'+kvs.length;" \
+      run_scene "ui-settings-security" ".settings-content" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('审批与沙箱'); if(r!=='ok') return r; const kvs=[...document.querySelectorAll('.settings-kv')].map(x=>x.textContent.replace(/\\s+/g,' ').trim()); const sels=[...document.querySelectorAll('.settings-content select')].map(x=>x.value); return 'sandbox:'+JSON.stringify(kvs[0]||'(none)')+' guard:'+JSON.stringify(sels)+' kv:'+kvs.length;" \
         "0"
       ;;
     sandbox-denial)
@@ -264,9 +274,10 @@ for scene in $SCENES; do
     skills)
       # 技能必须走真实安装路径预置（含审计），而不是手工摆文件 ——
       # 否则画面证明的只是「面板会渲染我塞的 JSON」，而不是「装好的技能真的会出现在这里」。
+      # 入口已从 rail 收进设置（功能与数据 → 技能），所以这里是两步：开设置 + 点那一节。
       # 脚本末尾回读面板里的技能名作为回执：点开了但没列出技能时日志里看得见。
       run_scene "ui-skills" ".skill-item" \
-        "$RAIL_HELPER await openRail('技能'); const n=document.querySelector('.skill-name'); return n ? 'skill:'+n.textContent : 'no-skill-item';" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('技能'); if(r!=='ok') return r; const n=document.querySelector('.skill-name'); return n ? 'skill:'+n.textContent : 'no-skill-item';" \
         "0" \
         "DEEPWORK_HOME='$HOME_WIN' node -e \"const {SkillStore}=require('$REPO/packages/core-host/dist/skills/store'); const r=new SkillStore().install('$REPO/tools/fixtures/demo-skill'); if(!r.ok){console.error(r.reason);process.exit(1)}\""
       ;;
@@ -275,7 +286,7 @@ for scene in $SCENES; do
       # 否则画面证明的只是「面板会渲染我塞的 JSON」，而不是「写下的记忆真的会出现在这里」。
       # 脚本末尾回读面板里的条目文本作为回执：点开了但没列出条目时日志里看得见。
       run_scene "ui-memory" ".memory-entry" \
-        "$RAIL_HELPER await openRail('记忆'); const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('用户级')); if(!t) return 'no-tab'; t.click(); await new Promise(r=>setTimeout(r,800)); const e=document.querySelector('.memory-entry-text'); return e ? 'entry:'+e.textContent.slice(0,14) : 'no-entry';" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('记忆'); if(r!=='ok') return r; const t=[...document.querySelectorAll('.settings-tab')].find(x=>x.textContent.includes('用户级')); if(!t) return 'no-tab'; t.click(); await new Promise(r2=>setTimeout(r2,800)); const e=document.querySelector('.memory-entry-text'); return e ? 'entry:'+e.textContent.slice(0,14) : 'no-entry';" \
         "0" \
         "DEEPWORK_HOME='$HOME_WIN' node -e \"const {MemoryStore}=require('$REPO/packages/core-host/dist/memory/store'); const s=new MemoryStore(); s.setProfile('后端工程师，回答用中文，偏好简洁直接的结论。'); s.add('user','所有项目的提交信息用中文书写。'); s.add('user','依赖安装一律走 npmmirror。'); s.add('workspace','demo 工作区：演示脚本三步链，截图前必须先重置 fixture。',{workspace:'$WORKSPACE_WIN'});\""
       ;;
@@ -284,7 +295,7 @@ for scene in $SCENES; do
       # 否则画面证明的只是「面板会渲染我塞的数据」，而不是「加好的任务真的会出现在这里」。
       # 脚本末尾回读面板里的任务标题作为回执。
       run_scene "ui-schedule" ".schedule-item" \
-        "$RAIL_HELPER await openRail('自动化'); const t=document.querySelector('.schedule-title'); return t ? 'task:'+t.textContent : 'no-task';" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('自动化'); if(r!=='ok') return r; const t=document.querySelector('.schedule-title'); return t ? 'task:'+t.textContent : 'no-task';" \
         "0" \
         "DEEPWORK_HOME='$HOME_WIN' node -e \"const {ScheduleStore}=require('$REPO/packages/core-host/dist/scheduler/store'); const s=new ScheduleStore(); s.add({title:'每周晨会纪要',prompt:'汇总最近一次的提交记录与工作区变动，生成晨会纪要写入 NOTES.md',workspace:'$WORKSPACE_WIN',spec:{kind:'weekly',weekdays:[1,3,5],time:'09:00'}});\""
       ;;
@@ -293,7 +304,7 @@ for scene in $SCENES; do
       # 否则画面证明的只是「面板会渲染我塞的数据」，而不是「清单里的记录真的会出现在这里」。
       # 脚本末尾回读面板里的连接器名称作为回执。mock 内核下「连接器不生效」提示应可见。
       run_scene "ui-connectors" ".connector-name" \
-        "$RAIL_HELPER await openRail('连接器'); const n=document.querySelector('.connector-name'); return n ? 'connector:'+n.textContent : 'no-connector';" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('连接器'); if(r!=='ok') return r; const n=document.querySelector('.connector-name'); return n ? 'connector:'+n.textContent : 'no-connector';" \
         "0" \
         "DEEPWORK_HOME='$HOME_WIN' node -e \"const {ConnectorStore}=require('$REPO/packages/core-host/dist/mcp/store'); const s=new ConnectorStore(); s.add({name:'fs-local',command:'npx',args:['-y','@modelcontextprotocol/server-filesystem'],enabled:true});\""
       ;;
@@ -304,7 +315,7 @@ for scene in $SCENES; do
       # 所以回执同时读出如实说明那条横幅 —— 它是本轮最该被看见的一句话，
       # 图上分不清「没显示」与「显示了但被裁掉」，回执能分。
       run_scene "ui-usage" ".usage-chart" \
-        "$RAIL_HELPER await openRail('用量'); const c=document.querySelector('.usage-card-value'); const w=document.querySelector('.modal-hint-warn'); return 'total:'+(c?c.textContent:'no-usage-card')+' | warn:'+(w?w.textContent.replace(/\\s+/g,' ').slice(0,40):'none');" \
+        "$RAIL_HELPER $SETTINGS_HELPER const r=await openSettings('用量'); if(r!=='ok') return r; const c=document.querySelector('.usage-card-value'); const w=document.querySelector('.modal-hint-warn'); return 'total:'+(c?c.textContent:'no-usage-card')+' | warn:'+(w?w.textContent.replace(/\\s+/g,' ').slice(0,40):'none');" \
         "0" \
         "DEEPWORK_HOME='$HOME_WIN' node '$REPO/tools/fixtures/seed-usage.js' '$WORKSPACE_WIN'"
       ;;
